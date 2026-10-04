@@ -1,4 +1,5 @@
 # PepperSnap v3.0.0.0 — Pure Standalone Win32 / GDI+ C++17 Application
+<img width="708" height="570" alt="Untitled" src="https://github.com/user-attachments/assets/f682dae7-4bd8-4d63-ac4a-b3439f5752e1" />
 
 PepperSnap is a 100% native standalone Windows screenshot, region snip, and vector annotation application written exclusively in **C++17** using the **Win32 API** and **GDI+**. It uses zero web technologies, zero Node.js, zero Electron, and zero external third-party runtime dependencies.
 
