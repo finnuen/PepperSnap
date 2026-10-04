@@ -1,0 +1,8 @@
+{
+  "name": "Remix PepperSnap 100% C++ windows",
+  "description": "Architectural analysis, complete native Win32/GDI+ C++17 rewrite of PepperSnap screenshot \u0026 annotation studio, and direct standalone Windows .exe binary compiler \u0026 workbench.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

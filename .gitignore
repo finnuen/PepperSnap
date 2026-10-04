@@ -1,0 +1,8 @@
+build/
+*.obj
+*.o
+*.pdb
+*.ilk
+*.user
+.vs/
+node_modules/
