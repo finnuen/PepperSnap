@@ -14,7 +14,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.0.0.4";
+    static constexpr const wchar_t* APP_VERSION = L"3.0.0.7";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -485,7 +485,7 @@ void PepperSnapDaemon::InitTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hTrayIcon;
-    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.4 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
+    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.7 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -2800,7 +2800,7 @@ void PepperSnapDaemon::BuildDockedHUD() {
     customStrokeRect = {0, 0, 0, 0};
     hudBoundsRect = {0, 0, 0, 0};
     bool isResizing = (dragMode >= DragMode::ResizeTL && dragMode <= DragMode::ResizeL);
-    if (!hasSelection || dragMode == DragMode::CreatingSelection || isResizing) return;
+    if (!hasSelection || dragMode == DragMode::CreatingSelection || dragMode == DragMode::MovingSelection || isResizing) return;
 
     int sx = std::min(selRect.left, selRect.right);
     int sy = std::min(selRect.top, selRect.bottom);
@@ -2891,8 +2891,8 @@ void PepperSnapDaemon::BuildDockedHUD() {
 
         bool pillRight = false, pillBottom = false;
         GetDimensionPillAnchor(pillRight, pillBottom);
-        int bottomExtra = (pillRight && pillBottom) ? 28 : 0;
-        int topExtra    = (pillRight && !pillBottom) ? 28 : 0;
+        int bottomExtra = (pillRight && pillBottom) ? 31 : 0;
+        int topExtra    = (pillRight && !pillBottom) ? 31 : 0;
 
         bool hasSpaceBelow = (sy + sh + 8 + bottomExtra + totalHudH <= vScreenH - 6);
         bool hasSpaceAbove = (sy - 8 - topExtra - totalHudH >= 6);
@@ -3550,7 +3550,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     HWND hParent = hOverlayWnd ? hOverlayWnd : hTrayWnd;
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"PepperSnapOptionsModal",
-        L"PepperSnap v3.0.0.4 Options — Folder, Formats, Quality, Naming & Updates",
+        L"PepperSnap v3.0.0.7 Options — Folder, Formats, Quality, Naming & Updates",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         (sw - 564) / 2, (sh - 612) / 2, 564, 612, hParent, nullptr, hInst, &st
     );
@@ -3601,7 +3601,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
 void PepperSnapDaemon::ShowShortcutsModal() {
     MessageBoxW(
         hOverlayWnd ? hOverlayWnd : hTrayWnd,
-        L"PepperSnap v3.0.0.4 Native C++17 — Complete Hotkeys Reference\n"
+        L"PepperSnap v3.0.0.7 Native C++17 — Complete Hotkeys Reference\n"
         L"────────────────────────────────────────────────────────\n\n"
         L"GLOBAL CAPTURE HOTKEYS:\n"
         L"  • Ctrl + PrintScreen     Interactive Region Snip & Annotate\n"
@@ -3975,18 +3975,21 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             }
 
             // 5. Typeable Dimension Pill — anchored to the stationary (non-moving) corner when resizing!
+            //    Uses the same 8px distance to the selection outline as the toolbar, and +5px horizontal offset
+            //    so above-selection and inside-selection positions align identically.
             bool pillRight = false, pillBottom = false;
             g_Daemon.GetDimensionPillAnchor(pillRight, pillBottom);
             int pillW = g_Daemon.isEditingSize ? 146 : 140;
             int pillH = 23;
-            int pillX = pillRight ? (sx + sw - pillW) : sx;
-            pillX = std::max(4, std::min(W - pillW - 4, pillX));
+            const int outlineGap = 8; // Same distance to selected window outline as the toolbar (8px)
+            int pillX = pillRight ? (sx + sw - pillW - 5) : (sx + 5);
+            pillX = std::max(5, std::min(W - pillW - 5, pillX));
 
             int pillY = 0;
             if (!pillBottom) {
-                pillY = (sy > 32) ? (sy - 28) : (sy + 6);
+                pillY = (sy >= pillH + outlineGap + 4) ? (sy - outlineGap - pillH) : (sy + 6);
             } else {
-                pillY = (sy + sh + 29 < H) ? (sy + sh + 6) : (sy + sh - 29);
+                pillY = (sy + sh + outlineGap + pillH <= H - 4) ? (sy + sh + outlineGap) : (sy + sh - pillH - 6);
             }
             pillY = std::max(4, std::min(H - pillH - 4, pillY));
 
@@ -3996,7 +3999,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 if (!pillBottom && pillY < sy) {
                     pillY = sy + 6;
                 } else if (pillBottom && pillY > sy + sh) {
-                    pillY = std::max(4, sy + sh - 29);
+                    pillY = std::max(4, sy + sh - pillH - 6);
                 }
             }
             g_Daemon.dimPillRect = { pillX, pillY, pillX + pillW, pillY + pillH };
@@ -5329,11 +5332,11 @@ static DWORD WINAPI UpdateCheckWorkerThread(LPVOID lpParam) {
     result->releaseUrl = L"https://github.com/" + repo + L"/releases";
 
     HINTERNET hInet = InternetOpenW(
-        L"PepperSnap/3.0.0.4 (Win32; +https://github.com)",
+        L"PepperSnap/3.0.0.7 (Win32; +https://github.com)",
         INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0
     );
     if (hInet) {
-        const wchar_t* headers = L"Accept: application/vnd.github+json\r\nUser-Agent: PepperSnap/3.0.0.4\r\n";
+        const wchar_t* headers = L"Accept: application/vnd.github+json\r\nUser-Agent: PepperSnap/3.0.0.7\r\n";
         HINTERNET hUrl = InternetOpenUrlW(
             hInet, apiUrl.c_str(), headers, (DWORD)-1L,
             INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_KEEP_CONNECTION,
@@ -5365,7 +5368,7 @@ static DWORD WINAPI UpdateCheckWorkerThread(LPVOID lpParam) {
         // Fallback: Check GitHub web redirect /releases/latest -> /releases/tag/<version>
         if (!result->networkSuccess) {
             HINTERNET hWeb = InternetOpenUrlW(
-                hInet, fallbackHtmlUrl.c_str(), L"User-Agent: PepperSnap/3.0.0.4\r\n", (DWORD)-1L,
+                hInet, fallbackHtmlUrl.c_str(), L"User-Agent: PepperSnap/3.0.0.7\r\n", (DWORD)-1L,
                 INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE,
                 0
             );
@@ -5681,7 +5684,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         PostMessageW(g_Daemon.hTrayWnd, cliMsg, cliWParam, 0);
     } else {
         g_Daemon.ShowTrayToast(
-            L"PepperSnap v3.0.0.4 Active in System Tray",
+            L"PepperSnap v3.0.0.7 Active in System Tray",
             L"• Ctrl + PrintScreen: Region Snip & Annotate\n"
             L"• Shift + PrintScreen: Instant Fullscreen Capture"
         );
