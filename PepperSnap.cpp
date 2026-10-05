@@ -27,6 +27,7 @@ public:
     std::wstring lastSavedFilePath;
     int captureCounter = 1;
     bool autoSaveOnCopy = true;
+    bool doNotCopyOnSave = false;
 
     // Virtual Screen Metrics
     int vScreenX = 0;
@@ -255,6 +256,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"JpegQuality", std::to_wstring(jpegQuality).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"NonStackingHighlighter", nonStackingHighlighter ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AutoSaveOnCopy", autoSaveOnCopy ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"DoNotCopyOnSave", doNotCopyOnSave ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingEnabled", penSmoothingEnabled ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingStrength", std::to_wstring(penSmoothingStrength).c_str(), iniPath.c_str());
 }
@@ -285,6 +287,7 @@ void PepperSnapDaemon::LoadSettings() {
 
     nonStackingHighlighter = (GetPrivateProfileIntW(L"PepperSnap", L"NonStackingHighlighter", 1, iniPath.c_str()) != 0);
     autoSaveOnCopy = (GetPrivateProfileIntW(L"PepperSnap", L"AutoSaveOnCopy", 1, iniPath.c_str()) != 0);
+    doNotCopyOnSave = (GetPrivateProfileIntW(L"PepperSnap", L"DoNotCopyOnSave", 0, iniPath.c_str()) != 0);
     penSmoothingEnabled = (GetPrivateProfileIntW(L"PepperSnap", L"PenSmoothingEnabled", 1, iniPath.c_str()) != 0);
     int pSmooth = (int)GetPrivateProfileIntW(L"PepperSnap", L"PenSmoothingStrength", penSmoothingStrength, iniPath.c_str());
     penSmoothingStrength = std::max(5, std::min(100, pSmooth));
@@ -1274,7 +1277,9 @@ void PepperSnapDaemon::InstantFullscreenCapture(bool delay3Sec) {
     Bitmap* fullBmp = CaptureVirtualDesktop();
     if (!fullBmp) return;
 
-    CopyBitmapToClipboard(fullBmp);
+    if (!doNotCopyOnSave) {
+        CopyBitmapToClipboard(fullBmp);
+    }
 
     CreateDirectoryW(saveFolder.c_str(), nullptr);
     int seq = captureCounter++;
@@ -1285,7 +1290,7 @@ void PepperSnapDaemon::InstantFullscreenCapture(bool delay3Sec) {
         lastSavedFilePath = fullPath;
         ShowTrayToast(
             L"Instant Fullscreen Captured (" + std::to_wstring(vScreenW) + L"×" + std::to_wstring(vScreenH) + L")",
-            L"Copied to Clipboard & saved to:\n" + fullPath + L"\n(Click notification to reveal in Explorer)"
+            (doNotCopyOnSave ? L"Saved to:\n" : L"Copied to Clipboard & saved to:\n") + fullPath + L"\n(Click notification to reveal in Explorer)"
         );
     }
     delete fullBmp;
@@ -2833,7 +2838,7 @@ void PepperSnapDaemon::BuildDockedHUD() {
         { DBTN_ACT_PIN,      toolBtnW,           L"",     L"Pin to Desktop (F)", false },
         { DBTN_ACT_SAVE_AS,  toolBtnW,           L"",     L"Save As JPG/PNG/WEBP/BMP", false },
         { DBTN_ACT_SAVE,     toolBtnW,           L"",     L"Quick Save (Ctrl+S)", false },
-        { DBTN_ACT_COPY,     toolBtnW * 2 + gap, L"Copy", L"Copy to Clipboard (Ctrl+C / Enter)", true },
+        { DBTN_ACT_COPY,     toolBtnW * 2 + gap, L"Copy", L"Copy to Clipboard (Ctrl+C)", true },
         { DBTN_ACT_CLOSE,    toolBtnW,           L"",     L"Close Overlay (Esc)", false }
     };
     const int actBtnH = 28;
@@ -3095,6 +3100,7 @@ struct OptionsDlgState {
     int jpgQuality = 95;
     std::wstring naming;
     bool autoSaveCopy = true;
+    bool doNotCopySave = false;
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 50;
@@ -3110,6 +3116,7 @@ struct OptionsDlgState {
     HWND hNamingEdit = nullptr;
     HWND hPreviewLbl = nullptr;
     HWND hAutoSaveChk = nullptr;
+    HWND hNoCopySaveChk = nullptr;
     HWND hNonStackingChk = nullptr;
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
@@ -3131,6 +3138,7 @@ struct OptionsDlgState {
 #define IDC_OPT_OPEN_APPDATA     1012
 #define IDC_OPT_PENSMOOTH_CHK    1013
 #define IDC_OPT_PENSMOOTH_SLIDER 1014
+#define IDC_OPT_NOCOPY_SAVE_CHK  1015
 
 static std::wstring FormatPenSmoothLabel(bool enabled, int strength) {
     if (!enabled) return L"Smoothing Strength: Off";
@@ -3264,24 +3272,30 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hNonStackingChk, BM_SETCHECK, st->nonStackingHi ? BST_CHECKED : BST_UNCHECKED, 0);
 
             st->hAutoSaveChk = CreateWindowExW(0, L"BUTTON",
-                L"Automatically save file to Save Folder when copying selected area (Ctrl+C / Enter)",
+                L"Automatically save file to Save Folder when copying selected area (Ctrl+C)",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 360, 516, 24, hWnd, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoSaveChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoSaveChk, BM_SETCHECK, st->autoSaveCopy ? BST_CHECKED : BST_UNCHECKED, 0);
 
+            st->hNoCopySaveChk = CreateWindowExW(0, L"BUTTON",
+                L"Do not automatically copy to clipboard saved Instant Fullscreen or Selected Area",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 388, 516, 24, hWnd, (HMENU)IDC_OPT_NOCOPY_SAVE_CHK, nullptr, nullptr);
+            SendMessageW(st->hNoCopySaveChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hNoCopySaveChk, BM_SETCHECK, st->doNotCopySave ? BST_CHECKED : BST_UNCHECKED, 0);
+
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable Pen & Highlighter Freehand Stroke Smoothing",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 388, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 416, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 422, 224, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 450, 224, 22, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 418, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 446, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
@@ -3293,15 +3307,15 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 Settings is saved to %appdata%\\peppersnap",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_NOTIFY, 18, 469, 294, 22, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_NOTIFY, 18, 497, 294, 22, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
 
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"Save Options",
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 316, 462, 110, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 316, 490, 110, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(hOk, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             HWND hCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE, 434, 462, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 434, 490, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(hCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             UpdateOptionsPreviewLabel(st);
@@ -3413,6 +3427,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
                 st->nonStackingHi = (SendMessageW(st->hNonStackingChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoSaveCopy  = (SendMessageW(st->hAutoSaveChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->doNotCopySave = (SendMessageW(st->hNoCopySaveChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->confirmed = true;
                 DestroyWindow(hWnd);
                 return 0;
@@ -3448,6 +3463,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.jpgQuality = jpegQuality;
     st.naming = namingPattern;
     st.autoSaveCopy = autoSaveOnCopy;
+    st.doNotCopySave = doNotCopyOnSave;
     st.nonStackingHi = nonStackingHighlighter;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
@@ -3458,7 +3474,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"PepperSnapOptionsModal",
         L"PepperSnap v3.0.0.1 Options — Folder, Formats, Quality, Naming & Smoothing",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        (sw - 564) / 2, (sh - 550) / 2, 564, 550, hParent, nullptr, hInst, &st
+        (sw - 564) / 2, (sh - 578) / 2, 564, 578, hParent, nullptr, hInst, &st
     );
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
@@ -3482,6 +3498,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         jpegQuality = st.jpgQuality;
         namingPattern = st.naming;
         autoSaveOnCopy = st.autoSaveCopy;
+        doNotCopyOnSave = st.doNotCopySave;
         nonStackingHighlighter = st.nonStackingHi;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
@@ -3634,13 +3651,18 @@ void PepperSnapDaemon::ActionCopyPixelColorAndClose() {
 void PepperSnapDaemon::ActionQuickSaveAndClose() {
     Bitmap* bmp = RenderCroppedRegionBitmap();
     if (!bmp) return;
-    CopyBitmapToClipboard(bmp);
+    if (!doNotCopyOnSave) {
+        CopyBitmapToClipboard(bmp);
+    }
     CreateDirectoryW(saveFolder.c_str(), nullptr);
     std::wstring fn = FormatFilename(captureCounter++) + GetFormatExtension(regionFormat);
     std::wstring full = saveFolder + L"\\" + fn;
     if (SaveBitmapToPath(bmp, full)) {
         lastSavedFilePath = full;
-        ShowTrayToast(L"Capture Saved & Copied", L"Saved to: " + full + L"\n(Click to reveal in Explorer)");
+        ShowTrayToast(
+            doNotCopyOnSave ? L"Capture Saved" : L"Capture Saved & Copied",
+            L"Saved to: " + full + L"\n(Click to reveal in Explorer)"
+        );
     }
     delete bmp;
     CloseRegionSnipOverlay();
@@ -3670,7 +3692,9 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
     if (GetSaveFileNameW(&ofn)) {
         if (SaveBitmapToPath(bmp, szFile)) {
             lastSavedFilePath = szFile;
-            CopyBitmapToClipboard(bmp);
+            if (!doNotCopyOnSave) {
+                CopyBitmapToClipboard(bmp);
+            }
             ShowTrayToast(L"Saved Capture", std::wstring(szFile) + L"\n(Click to open in Explorer)");
         }
     }
@@ -4946,10 +4970,6 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     return 0;
                 }
                 g_Daemon.CloseRegionSnipOverlay();
-                return 0;
-            }
-            if (wParam == VK_RETURN) {
-                g_Daemon.ActionCopyAndClose();
                 return 0;
             }
             if ((wParam == VK_DELETE || wParam == VK_BACK) && g_Daemon.selectedAnnotationId != -1) {
