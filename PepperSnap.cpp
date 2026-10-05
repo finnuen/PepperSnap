@@ -5,6 +5,7 @@ public:
     HINSTANCE hInst = nullptr;
     HWND hTrayWnd = nullptr;
     HWND hOverlayWnd = nullptr;
+    HWND hOptionsWnd = nullptr;
     HHOOK hKeyHook = nullptr;
     HICON hTrayIcon = nullptr;
     HCURSOR hCurPen = nullptr;
@@ -12,6 +13,9 @@ public:
     NOTIFYICONDATAW nid = {0};
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
+
+    static constexpr const wchar_t* APP_VERSION = L"3.0.0.4";
+    static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
     std::wstring saveFolder;
@@ -28,6 +32,11 @@ public:
     int captureCounter = 1;
     bool autoSaveOnCopy = true;
     bool doNotCopyOnSave = false;
+    bool autoCheckUpdates = true;
+    UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
+    long long lastUpdateCheckTime = 0;
+    std::wstring updateGithubRepo = DEFAULT_GITHUB_REPO;
+    bool isCheckingUpdate = false;
 
     // Virtual Screen Metrics
     int vScreenX = 0;
@@ -172,6 +181,10 @@ public:
 
     void ShowOptionsModal();
     void ShowShortcutsModal();
+    static long long GetUpdateIntervalSeconds(UpdateCheckInterval iv);
+    static int CompareVersionStrings(const std::wstring& v1, const std::wstring& v2);
+    void CheckForUpdatesAsync(bool manualUserTrigger);
+    void MaybeRunScheduledUpdateCheck();
 
     static int GetMosaicBlockSize(float strokeWidth) {
         return std::max(2, (int)std::round((strokeWidth * 2.5f + 6.0f) * 0.25f));
@@ -259,6 +272,10 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"DoNotCopyOnSave", doNotCopyOnSave ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingEnabled", penSmoothingEnabled ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingStrength", std::to_wstring(penSmoothingStrength).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"AutoCheckUpdates", autoCheckUpdates ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"UpdateCheckInterval", std::to_wstring((int)updateInterval).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"LastUpdateCheckTime", std::to_wstring(lastUpdateCheckTime).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"UpdateGithubRepo", updateGithubRepo.c_str(), iniPath.c_str());
 }
 
 void PepperSnapDaemon::LoadSettings() {
@@ -291,6 +308,18 @@ void PepperSnapDaemon::LoadSettings() {
     penSmoothingEnabled = (GetPrivateProfileIntW(L"PepperSnap", L"PenSmoothingEnabled", 1, iniPath.c_str()) != 0);
     int pSmooth = (int)GetPrivateProfileIntW(L"PepperSnap", L"PenSmoothingStrength", penSmoothingStrength, iniPath.c_str());
     penSmoothingStrength = std::max(5, std::min(100, pSmooth));
+
+    autoCheckUpdates = (GetPrivateProfileIntW(L"PepperSnap", L"AutoCheckUpdates", 1, iniPath.c_str()) != 0);
+    int uInt = (int)GetPrivateProfileIntW(L"PepperSnap", L"UpdateCheckInterval", (INT)UpdateCheckInterval::EveryDay, iniPath.c_str());
+    if (uInt >= 0 && uInt <= 4) updateInterval = (UpdateCheckInterval)uInt;
+
+    WCHAR timeBuf[64] = {0};
+    GetPrivateProfileStringW(L"PepperSnap", L"LastUpdateCheckTime", L"0", timeBuf, 63, iniPath.c_str());
+    lastUpdateCheckTime = _wtoi64(timeBuf);
+
+    WCHAR repoBuf[256] = {0};
+    GetPrivateProfileStringW(L"PepperSnap", L"UpdateGithubRepo", DEFAULT_GITHUB_REPO, repoBuf, 255, iniPath.c_str());
+    if (wcslen(repoBuf) > 0) updateGithubRepo = repoBuf;
 }
 
 void PepperSnapDaemon::InitPaths() {
@@ -456,7 +485,7 @@ void PepperSnapDaemon::InitTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hTrayIcon;
-    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.2 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
+    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.4 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -3104,6 +3133,8 @@ struct OptionsDlgState {
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 50;
+    bool autoUpdateEnabled = true;
+    UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
     bool confirmed = false;
     bool openedAppData = false;
 
@@ -3121,6 +3152,9 @@ struct OptionsDlgState {
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
     HWND hPenSmoothValLbl = nullptr;
+    HWND hAutoUpdateChk = nullptr;
+    HWND hComboUpdateInterval = nullptr;
+    HWND hCheckUpdateNowBtn = nullptr;
     HWND hAppDataInfo = nullptr;
 };
 
@@ -3139,6 +3173,9 @@ struct OptionsDlgState {
 #define IDC_OPT_PENSMOOTH_CHK    1013
 #define IDC_OPT_PENSMOOTH_SLIDER 1014
 #define IDC_OPT_NOCOPY_SAVE_CHK  1015
+#define IDC_OPT_AUTOUPDATE_CHK   1016
+#define IDC_OPT_UPDATE_INTERVAL  1017
+#define IDC_OPT_CHECK_UPDATE_NOW 1018
 
 static std::wstring FormatPenSmoothLabel(bool enabled, int strength) {
     if (!enabled) return L"Smoothing Strength: Off";
@@ -3301,21 +3338,48 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
+            // 5. GitHub Releases Automatic Update Check Toggle + Interval Dropdown + Check Now Button
+            st->hAutoUpdateChk = CreateWindowExW(0, L"BUTTON",
+                L"Automatically check for updates (GitHub Releases):",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 484, 286, 24, hWnd, (HMENU)IDC_OPT_AUTOUPDATE_CHK, nullptr, nullptr);
+            SendMessageW(st->hAutoUpdateChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hAutoUpdateChk, BM_SETCHECK, st->autoUpdateEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+
+            st->hComboUpdateInterval = CreateWindowExW(0, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 308, 482, 122, 160, hWnd, (HMENU)IDC_OPT_UPDATE_INTERVAL, nullptr, nullptr);
+            SendMessageW(st->hComboUpdateInterval, WM_SETFONT, (WPARAM)hFont, TRUE);
+            const wchar_t* intervalItems[5] = {
+                L"Every Day",
+                L"3-Day",
+                L"Every Week",
+                L"2-Weekly",
+                L"Every Month"
+            };
+            for (int i = 0; i < 5; ++i) {
+                SendMessageW(st->hComboUpdateInterval, CB_ADDSTRING, 0, (LPARAM)intervalItems[i]);
+            }
+            SendMessageW(st->hComboUpdateInterval, CB_SETCURSEL, (WPARAM)st->updateInterval, 0);
+            EnableWindow(st->hComboUpdateInterval, st->autoUpdateEnabled ? TRUE : FALSE);
+
+            st->hCheckUpdateNowBtn = CreateWindowExW(0, L"BUTTON", L"Check Now",
+                WS_CHILD | WS_VISIBLE, 436, 481, 98, 28, hWnd, (HMENU)IDC_OPT_CHECK_UPDATE_NOW, nullptr, nullptr);
+            SendMessageW(st->hCheckUpdateNowBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+
             // Save & Cancel Buttons + clickable %appdata%\peppersnap persistence link on bottom
             HFONT hLinkFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 Settings is saved to %appdata%\\peppersnap",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_NOTIFY, 18, 497, 294, 22, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_NOTIFY, 18, 531, 294, 22, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
 
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"Save Options",
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 316, 490, 110, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 316, 524, 110, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(hOk, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             HWND hCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE, 434, 490, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 434, 524, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(hCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             UpdateOptionsPreviewLabel(st);
@@ -3364,6 +3428,15 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
                 std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
                 SetWindowTextW(st->hPenSmoothValLbl, psText.c_str());
+                return 0;
+            }
+            if (id == IDC_OPT_AUTOUPDATE_CHK) {
+                st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                EnableWindow(st->hComboUpdateInterval, st->autoUpdateEnabled ? TRUE : FALSE);
+                return 0;
+            }
+            if (id == IDC_OPT_CHECK_UPDATE_NOW) {
+                g_Daemon.CheckForUpdatesAsync(true);
                 return 0;
             }
 
@@ -3428,6 +3501,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->nonStackingHi = (SendMessageW(st->hNonStackingChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoSaveCopy  = (SendMessageW(st->hAutoSaveChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->doNotCopySave = (SendMessageW(st->hNoCopySaveChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                int uSel = (int)SendMessageW(st->hComboUpdateInterval, CB_GETCURSEL, 0, 0);
+                if (uSel >= 0 && uSel <= 4) st->updateInterval = (UpdateCheckInterval)uSel;
                 st->confirmed = true;
                 DestroyWindow(hWnd);
                 return 0;
@@ -3467,15 +3543,18 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.nonStackingHi = nonStackingHighlighter;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
+    st.autoUpdateEnabled = autoCheckUpdates;
+    st.updateInterval = updateInterval;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     HWND hParent = hOverlayWnd ? hOverlayWnd : hTrayWnd;
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"PepperSnapOptionsModal",
-        L"PepperSnap v3.0.0.2 Options — Folder, Formats, Quality, Naming & Smoothing",
+        L"PepperSnap v3.0.0.4 Options — Folder, Formats, Quality, Naming & Updates",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        (sw - 564) / 2, (sh - 578) / 2, 564, 578, hParent, nullptr, hInst, &st
+        (sw - 564) / 2, (sh - 612) / 2, 564, 612, hParent, nullptr, hInst, &st
     );
+    hOptionsWnd = hDlg;
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
         if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) { SendMessageW(hDlg, WM_COMMAND, IDOK, 0); continue; }
@@ -3483,6 +3562,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    hOptionsWnd = nullptr;
     if (st.openedAppData) {
         CloseRegionSnipOverlay();
         std::wstring appDataDir = PepperSnapDaemon::GetAppDataSettingsDir();
@@ -3502,6 +3582,8 @@ void PepperSnapDaemon::ShowOptionsModal() {
         nonStackingHighlighter = st.nonStackingHi;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
+        autoCheckUpdates = st.autoUpdateEnabled;
+        updateInterval = st.updateInterval;
         CreateDirectoryW(saveFolder.c_str(), nullptr);
         SaveSettings();
         if (hOverlayWnd) {
@@ -3519,7 +3601,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
 void PepperSnapDaemon::ShowShortcutsModal() {
     MessageBoxW(
         hOverlayWnd ? hOverlayWnd : hTrayWnd,
-        L"PepperSnap v3.0.0.2 Native C++17 — Complete Hotkeys Reference\n"
+        L"PepperSnap v3.0.0.4 Native C++17 — Complete Hotkeys Reference\n"
         L"────────────────────────────────────────────────────────\n\n"
         L"GLOBAL CAPTURE HOTKEYS:\n"
         L"  • Ctrl + PrintScreen     Interactive Region Snip & Annotate\n"
@@ -4007,7 +4089,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 g_Daemon.isEditingStroke, g_Daemon.strokeCaretPos, g_Daemon.strokeSelAnchor
             );
 
-            if (cHovered && !g_Daemon.isEditingStroke && g_Daemon.hoveredBtnId == -1) {
+            if (cHovered && !g_Daemon.isEditingStroke && g_Daemon.hoveredBtnId == -1 && g_Daemon.dragMode == DragMode::None) {
                 DockButton fakeTip;
                 fakeTip.rect = g_Daemon.customStrokeRect;
                 fakeTip.tooltip = L"Custom Size — Click to type custom size (1–120px)";
@@ -4016,8 +4098,8 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             }
         }
 
-        // Render Floating Speech-Bubble Tooltip when hovering any button
-        if (g_Daemon.hoveredBtnId != -1) {
+        // Render Floating Speech-Bubble Tooltip when hovering any button (hidden while dragging)
+        if (g_Daemon.hoveredBtnId != -1 && g_Daemon.dragMode == DragMode::None) {
             for (const auto& b : g_Daemon.dockButtons) {
                 if (b.id == g_Daemon.hoveredBtnId) {
                     PepperSnapDaemon::DrawHoverBubbleTooltip(g, b, W, H);
@@ -4284,6 +4366,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                 g_Daemon.customHudPos = { g_Daemon.hudBoundsRect.right, g_Daemon.hudBoundsRect.top };
                                 g_Daemon.hasCustomHudPos = true;
                             }
+                            g_Daemon.hoveredBtnId = -1;
                             g_Daemon.dragMode = DragMode::DraggingHUD;
                             g_Daemon.dragHudStartMouse = pt;
                             g_Daemon.dragHudOrigPos = g_Daemon.customHudPos;
@@ -5151,6 +5234,191 @@ void PepperSnapDaemon::OpenImageIntoOverlay() {
 }
 
 // ----------------------------------------------------------------------------
+// GitHub Releases Update Checker (WinInet HTTPS + Scheduled Auto-Check)
+// ----------------------------------------------------------------------------
+
+struct UpdateCheckPayload {
+    bool manualTrigger = false;
+    bool networkSuccess = false;
+    std::wstring latestTag;
+    std::wstring releaseUrl;
+};
+
+long long PepperSnapDaemon::GetUpdateIntervalSeconds(UpdateCheckInterval iv) {
+    switch (iv) {
+        case UpdateCheckInterval::EveryDay:    return 86400LL;        // 1 day
+        case UpdateCheckInterval::Every3Days:  return 259200LL;       // 3 days
+        case UpdateCheckInterval::EveryWeek:   return 604800LL;       // 7 days
+        case UpdateCheckInterval::Every2Weeks: return 1209600LL;      // 14 days
+        case UpdateCheckInterval::EveryMonth:  return 2592000LL;      // 30 days
+        default:                               return 86400LL;
+    }
+}
+
+static std::vector<int> ParseVersionNumbers(const std::wstring& verStr) {
+    std::vector<int> parts;
+    std::wstring clean;
+    bool startedDigits = false;
+    for (wchar_t c : verStr) {
+        if (c >= L'0' && c <= L'9') {
+            clean.push_back(c);
+            startedDigits = true;
+        } else if (c == L'.' && startedDigits) {
+            clean.push_back(L' ');
+        } else if (startedDigits) {
+            break;
+        }
+    }
+    std::wstringstream ss(clean);
+    int v = 0;
+    while (ss >> v) {
+        parts.push_back(v);
+    }
+    while (parts.size() < 4) parts.push_back(0);
+    return parts;
+}
+
+int PepperSnapDaemon::CompareVersionStrings(const std::wstring& v1, const std::wstring& v2) {
+    std::vector<int> p1 = ParseVersionNumbers(v1);
+    std::vector<int> p2 = ParseVersionNumbers(v2);
+    size_t n = std::max(p1.size(), p2.size());
+    for (size_t i = 0; i < n; ++i) {
+        int a = (i < p1.size()) ? p1[i] : 0;
+        int b = (i < p2.size()) ? p2[i] : 0;
+        if (a > b) return 1;
+        if (a < b) return -1;
+    }
+    return 0;
+}
+
+static std::string ExtractJsonFieldValue(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\"";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos + pattern.size());
+    if (pos == std::string::npos) return "";
+    pos = json.find('"', pos + 1);
+    if (pos == std::string::npos) return "";
+    size_t endPos = pos + 1;
+    while (endPos < json.size()) {
+        if (json[endPos] == '"' && json[endPos - 1] != '\\') break;
+        endPos++;
+    }
+    if (endPos >= json.size()) return "";
+    return json.substr(pos + 1, endPos - (pos + 1));
+}
+
+static std::wstring Utf8ToWideStr(const std::string& s) {
+    if (s.empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    if (len <= 0) return L"";
+    std::wstring out(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &out[0], len);
+    return out;
+}
+
+static DWORD WINAPI UpdateCheckWorkerThread(LPVOID lpParam) {
+    bool manual = (lpParam != nullptr);
+    UpdateCheckPayload* result = new UpdateCheckPayload();
+    result->manualTrigger = manual;
+    result->networkSuccess = false;
+
+    std::wstring repo = g_Daemon.updateGithubRepo.empty() ? PepperSnapDaemon::DEFAULT_GITHUB_REPO : g_Daemon.updateGithubRepo;
+    std::wstring apiUrl = L"https://api.github.com/repos/" + repo + L"/releases/latest";
+    std::wstring fallbackHtmlUrl = L"https://github.com/" + repo + L"/releases/latest";
+    result->releaseUrl = L"https://github.com/" + repo + L"/releases";
+
+    HINTERNET hInet = InternetOpenW(
+        L"PepperSnap/3.0.0.4 (Win32; +https://github.com)",
+        INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0
+    );
+    if (hInet) {
+        const wchar_t* headers = L"Accept: application/vnd.github+json\r\nUser-Agent: PepperSnap/3.0.0.4\r\n";
+        HINTERNET hUrl = InternetOpenUrlW(
+            hInet, apiUrl.c_str(), headers, (DWORD)-1L,
+            INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_KEEP_CONNECTION,
+            0
+        );
+        if (hUrl) {
+            std::string body;
+            char buf[4096];
+            DWORD bytesRead = 0;
+            while (InternetReadFile(hUrl, buf, sizeof(buf), &bytesRead) && bytesRead > 0) {
+                body.append(buf, bytesRead);
+                if (body.size() > 262144) break;
+            }
+            InternetCloseHandle(hUrl);
+
+            std::string tag = ExtractJsonFieldValue(body, "tag_name");
+            std::string htmlUrl = ExtractJsonFieldValue(body, "html_url");
+            if (!tag.empty()) {
+                result->networkSuccess = true;
+                result->latestTag = Utf8ToWideStr(tag);
+                if (!htmlUrl.empty()) {
+                    result->releaseUrl = Utf8ToWideStr(htmlUrl);
+                } else {
+                    result->releaseUrl = fallbackHtmlUrl;
+                }
+            }
+        }
+
+        // Fallback: Check GitHub web redirect /releases/latest -> /releases/tag/<version>
+        if (!result->networkSuccess) {
+            HINTERNET hWeb = InternetOpenUrlW(
+                hInet, fallbackHtmlUrl.c_str(), L"User-Agent: PepperSnap/3.0.0.4\r\n", (DWORD)-1L,
+                INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE,
+                0
+            );
+            if (hWeb) {
+                WCHAR finalUrl[1024] = {0};
+                DWORD urlLen = sizeof(finalUrl);
+                if (InternetQueryOptionW(hWeb, INTERNET_OPTION_URL, finalUrl, &urlLen)) {
+                    std::wstring fUrl(finalUrl);
+                    size_t tagPos = fUrl.find(L"/releases/tag/");
+                    if (tagPos != std::wstring::npos) {
+                        result->latestTag = fUrl.substr(tagPos + 14);
+                        result->releaseUrl = fUrl;
+                        result->networkSuccess = !result->latestTag.empty();
+                    }
+                }
+                InternetCloseHandle(hWeb);
+            }
+        }
+        InternetCloseHandle(hInet);
+    }
+
+    if (g_Daemon.hTrayWnd) {
+        PostMessageW(g_Daemon.hTrayWnd, WM_UPDATE_CHECK_RESULT, 0, (LPARAM)result);
+    } else {
+        delete result;
+        g_Daemon.isCheckingUpdate = false;
+    }
+    return 0;
+}
+
+void PepperSnapDaemon::CheckForUpdatesAsync(bool manualUserTrigger) {
+    if (isCheckingUpdate) return;
+    isCheckingUpdate = true;
+    HANDLE hThread = CreateThread(nullptr, 0, UpdateCheckWorkerThread, manualUserTrigger ? (LPVOID)1 : nullptr, 0, nullptr);
+    if (hThread) {
+        CloseHandle(hThread);
+    } else {
+        isCheckingUpdate = false;
+    }
+}
+
+void PepperSnapDaemon::MaybeRunScheduledUpdateCheck() {
+    if (!autoCheckUpdates || isCheckingUpdate) return;
+    long long nowEpoch = (long long)_time64(nullptr);
+    long long intervalSec = GetUpdateIntervalSeconds(updateInterval);
+    if (lastUpdateCheckTime <= 0 || (nowEpoch - lastUpdateCheckTime) >= intervalSec) {
+        lastUpdateCheckTime = nowEpoch;
+        SaveSettings();
+        CheckForUpdatesAsync(false);
+    }
+}
+
+// ----------------------------------------------------------------------------
 // System Tray Daemon Window Procedure
 // ----------------------------------------------------------------------------
 
@@ -5174,8 +5442,9 @@ static void ShowTrayContextMenu(HWND hWnd) {
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CLOSE_PINS, L"Close All Pinned Captures");
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHORTCUTS, L"Keyboard Shortcuts & Help...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT,      L"Exit PepperSnap");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CHECK_UPDATE, L"Check for Updates (GitHub Releases)...");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHORTCUTS,    L"Keyboard Shortcuts & Help...");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT,         L"Exit PepperSnap");
 
     SetForegroundWindow(hWnd);
     TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
@@ -5185,6 +5454,62 @@ static void ShowTrayContextMenu(HWND hWnd) {
 
 static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_TIMER:
+            if (wParam == TIMER_AUTO_UPDATE_CHECK) {
+                g_Daemon.MaybeRunScheduledUpdateCheck();
+            }
+            return 0;
+        case WM_UPDATE_CHECK_RESULT: {
+            g_Daemon.isCheckingUpdate = false;
+            UpdateCheckPayload* res = (UpdateCheckPayload*)lParam;
+            if (!res) return 0;
+
+            g_Daemon.lastUpdateCheckTime = (long long)_time64(nullptr);
+            g_Daemon.SaveSettings();
+
+            HWND hOwner = (g_Daemon.hOptionsWnd && IsWindow(g_Daemon.hOptionsWnd))
+                ? g_Daemon.hOptionsWnd
+                : (g_Daemon.hOverlayWnd ? g_Daemon.hOverlayWnd : hWnd);
+            if (res->networkSuccess && !res->latestTag.empty()) {
+                if (PepperSnapDaemon::CompareVersionStrings(res->latestTag, PepperSnapDaemon::APP_VERSION) > 0) {
+                    std::wstring msgText =
+                        L"A new version of PepperSnap (" + res->latestTag + L") is available on GitHub Releases!\n\n"
+                        L"Current Version: v" + std::wstring(PepperSnapDaemon::APP_VERSION) + L"\n"
+                        L"Latest Release:  " + res->latestTag + L"\n\n"
+                        L"Would you like to open the GitHub Releases page to download the update?";
+                    int ans = MessageBoxW(
+                        hOwner, msgText.c_str(), L"PepperSnap Update Available",
+                        MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
+                    );
+                    if (ans == IDYES) {
+                        ShellExecuteW(nullptr, L"open", res->releaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    }
+                } else if (res->manualTrigger) {
+                    std::wstring msgText =
+                        L"You are running the latest version of PepperSnap (v" + std::wstring(PepperSnapDaemon::APP_VERSION) + L").\n\n"
+                        L"Latest GitHub Release: " + res->latestTag;
+                    MessageBoxW(
+                        hOwner, msgText.c_str(), L"PepperSnap — Up to Date",
+                        MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
+                    );
+                }
+            } else if (res->manualTrigger) {
+                std::wstring msgText =
+                    L"Could not find a newer release tag on GitHub Releases (or no releases have been published yet).\n\n"
+                    L"Current Version: v" + std::wstring(PepperSnapDaemon::APP_VERSION) + L"\n"
+                    L"Repository: " + g_Daemon.updateGithubRepo + L"\n\n"
+                    L"Would you like to open the GitHub Releases page in your browser?";
+                int ans = MessageBoxW(
+                    hOwner, msgText.c_str(), L"PepperSnap — Check for Updates",
+                    MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
+                );
+                if (ans == IDYES) {
+                    ShellExecuteW(nullptr, L"open", res->releaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
+            }
+            delete res;
+            return 0;
+        }
         case WM_TRIGGER_REGION_SNIP:
             g_Daemon.StartRegionSnipOverlay();
             return 0;
@@ -5230,6 +5555,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     for (HWND hp : g_Daemon.pinnedWindows) if (IsWindow(hp)) DestroyWindow(hp);
                     g_Daemon.pinnedWindows.clear();
                     break;
+                case IDM_TRAY_CHECK_UPDATE:   g_Daemon.CheckForUpdatesAsync(true); break;
                 case IDM_TRAY_SHORTCUTS:      g_Daemon.ShowShortcutsModal(); break;
                 case IDM_TRAY_EXIT:
                     g_Daemon.SaveSettings();
@@ -5240,6 +5566,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             }
             return 0;
         case WM_DESTROY:
+            KillTimer(hWnd, TIMER_AUTO_UPDATE_CHECK);
             g_Daemon.RemoveTrayIcon();
             PostQuitMessage(0);
             return 0;
@@ -5346,11 +5673,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
 
     g_Daemon.hKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
 
+    // Periodic background timer (every 30 minutes) + initial startup check for scheduled GitHub Releases updates
+    SetTimer(g_Daemon.hTrayWnd, TIMER_AUTO_UPDATE_CHECK, 30 * 60 * 1000, nullptr);
+    g_Daemon.MaybeRunScheduledUpdateCheck();
+
     if (cliMsg != 0) {
         PostMessageW(g_Daemon.hTrayWnd, cliMsg, cliWParam, 0);
     } else {
         g_Daemon.ShowTrayToast(
-            L"PepperSnap v3.0.0.2 Active in System Tray",
+            L"PepperSnap v3.0.0.4 Active in System Tray",
             L"• Ctrl + PrintScreen: Region Snip & Annotate\n"
             L"• Shift + PrintScreen: Instant Fullscreen Capture"
         );

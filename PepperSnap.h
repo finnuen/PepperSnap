@@ -18,6 +18,7 @@
 #include <shlwapi.h>
 #include <dwmapi.h>
 #include <objidl.h>
+#include <wininet.h>
 #include <gdiplus.h>
 
 #if defined(_MSC_VER)
@@ -31,6 +32,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "wininet.lib")
 #endif
 
 #include <vector>
@@ -38,6 +40,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <ctime>
 #include <algorithm>
 #include <memory>
 
@@ -49,6 +52,9 @@ using namespace Gdiplus;
 #define WM_TRIGGER_REGION_SNIP (WM_USER + 102)
 #define WM_TRIGGER_FULL_SNAP   (WM_USER + 103)
 #define WM_TRIGGER_DELAY_SNAP  (WM_USER + 104)
+#define WM_UPDATE_CHECK_RESULT (WM_USER + 105)
+
+#define TIMER_AUTO_UPDATE_CHECK 77
 
 #define HK_CTRL_PRTSCN         9101
 #define HK_SHIFT_PRTSCN        9102
@@ -62,6 +68,14 @@ enum class ImageFormat {
     BMP  = 3
 };
 
+enum class UpdateCheckInterval {
+    EveryDay    = 0,
+    Every3Days  = 1,
+    EveryWeek   = 2,
+    Every2Weeks = 3,
+    EveryMonth  = 4
+};
+
 enum TrayMenuID {
     IDM_TRAY_REGION = 2001,
     IDM_TRAY_FULL,
@@ -72,6 +86,7 @@ enum TrayMenuID {
     IDM_TRAY_AUTOSAVE_COPY,
     IDM_TRAY_STARTUP_RUN,
     IDM_TRAY_CLOSE_PINS,
+    IDM_TRAY_CHECK_UPDATE,
     IDM_TRAY_SHORTCUTS,
     IDM_TRAY_EXIT
 };
