@@ -456,7 +456,7 @@ void PepperSnapDaemon::InitTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hTrayIcon;
-    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.1 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
+    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.2 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -3472,7 +3472,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     HWND hParent = hOverlayWnd ? hOverlayWnd : hTrayWnd;
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"PepperSnapOptionsModal",
-        L"PepperSnap v3.0.0.1 Options — Folder, Formats, Quality, Naming & Smoothing",
+        L"PepperSnap v3.0.0.2 Options — Folder, Formats, Quality, Naming & Smoothing",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         (sw - 564) / 2, (sh - 578) / 2, 564, 578, hParent, nullptr, hInst, &st
     );
@@ -3519,7 +3519,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
 void PepperSnapDaemon::ShowShortcutsModal() {
     MessageBoxW(
         hOverlayWnd ? hOverlayWnd : hTrayWnd,
-        L"PepperSnap v3.0.0.1 Native C++17 — Complete Hotkeys Reference\n"
+        L"PepperSnap v3.0.0.2 Native C++17 — Complete Hotkeys Reference\n"
         L"────────────────────────────────────────────────────────\n\n"
         L"GLOBAL CAPTURE HOTKEYS:\n"
         L"  • Ctrl + PrintScreen     Interactive Region Snip & Annotate\n"
@@ -5350,7 +5350,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         PostMessageW(g_Daemon.hTrayWnd, cliMsg, cliWParam, 0);
     } else {
         g_Daemon.ShowTrayToast(
-            L"PepperSnap v3.0.0.1 Active in System Tray",
+            L"PepperSnap v3.0.0.2 Active in System Tray",
             L"• Ctrl + PrintScreen: Region Snip & Annotate\n"
             L"• Shift + PrintScreen: Instant Fullscreen Capture"
         );
