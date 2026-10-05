@@ -180,7 +180,7 @@ int main() {
 
         std::ostringstream page;
         page << "<!doctype html><html><head><meta charset=\"utf-8\">"
-             << "<title>PepperSnap v3.0.0.7 — Pure Win32 C++17 Application</title>"
+             << "<title>PepperSnap v3.1.0.6 — Pure Win32 C++17 Application</title>"
              << "<style>"
              << "body{margin:0;background:#090D16;color:#F8FAFC;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.5}"
              << ".wrap{max-width:1080px;margin:0 auto;padding:32px 24px}"
@@ -198,7 +198,7 @@ int main() {
              << "</style></head><body><div class=\"wrap\">"
              << "<div class=\"card\">"
              << "<div class=\"badge\">100% PURE WIN32 API + GDI+ C++17 · ZERO WEB / ZERO NODE.JS / ZERO ELECTRON / ZERO TYPESCRIPT</div>"
-             << "<h1>PepperSnap.exe v3.0.0.7 — Standalone Native Windows Executable</h1>"
+             << "<h1>PepperSnap.exe v3.1.0.6 — Standalone Native Windows Executable</h1>"
              << "<p>This repository is a pure standalone C++17 Win32 API application (<code>PepperSnap.cpp</code>, <code>PepperSnap.h</code>, <code>peppersnap.rc</code>, <code>CMakeLists.txt</code>, <code>PepperSnap.sln</code>, <code>PepperSnap.vcxproj</code>, <code>Makefile</code>, <code>build.bat</code>). Even this binary inspection page is served directly by a compiled C++17 POSIX socket executable.</p>"
              << "<a class=\"btn\" href=\"/PepperSnap.exe\" download=\"PepperSnap.exe\">Download Standalone PepperSnap.exe (" << (exeBytes / 1024) << " KB)</a>"
              << "<div class=\"grid\">"

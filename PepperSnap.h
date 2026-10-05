@@ -51,15 +51,21 @@ using namespace Gdiplus;
 #define WM_TRAYICON            (WM_USER + 101)
 #define WM_TRIGGER_REGION_SNIP (WM_USER + 102)
 #define WM_TRIGGER_FULL_SNAP   (WM_USER + 103)
-#define WM_TRIGGER_DELAY_SNAP  (WM_USER + 104)
+#define WM_TRIGGER_PREV_REGION (WM_USER + 104)
 #define WM_UPDATE_CHECK_RESULT (WM_USER + 105)
+#define WM_SHORTCUT_RECORDED   (WM_USER + 106)
 
+#define COPYDATA_OPEN_IMAGE    0x5053494DUL
 #define TIMER_AUTO_UPDATE_CHECK 77
 
-#define HK_CTRL_PRTSCN         9101
-#define HK_SHIFT_PRTSCN        9102
-#define HK_FALLBACK_REGION     9103
-#define HK_FALLBACK_FULL       9104
+#define HK_REGION_SNIP         9101
+#define HK_FULL_SNAP           9102
+#define HK_PREV_REGION         9103
+
+struct HotkeyBinding {
+    UINT modifiers = MOD_CONTROL;
+    UINT vk = VK_SNAPSHOT;
+};
 
 enum class ImageFormat {
     JPEG = 0,
@@ -79,11 +85,10 @@ enum class UpdateCheckInterval {
 enum TrayMenuID {
     IDM_TRAY_REGION = 2001,
     IDM_TRAY_FULL,
-    IDM_TRAY_DELAY,
+    IDM_TRAY_PREV_REGION,
     IDM_TRAY_OPEN_IMAGE,
     IDM_TRAY_OPEN_FOLDER,
     IDM_TRAY_OPTIONS,
-    IDM_TRAY_AUTOSAVE_COPY,
     IDM_TRAY_STARTUP_RUN,
     IDM_TRAY_CLOSE_PINS,
     IDM_TRAY_CHECK_UPDATE,
