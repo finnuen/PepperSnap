@@ -4,7 +4,7 @@
 idk what things below talking about, gemini created it.
 
 ---
-# PepperSnap v3.1.0.6 — Pure Standalone Win32 / GDI+ C++17 Application
+# PepperSnap v3.1.0.7 — Pure Standalone Win32 / GDI+ C++17 Application
 
 
 PepperSnap is a 100% native standalone Windows screenshot, region snip, and vector annotation application written exclusively in **C++17** using the **Win32 API** and **GDI+**. It uses zero web technologies, zero Node.js, zero Electron, and zero external third-party runtime dependencies.

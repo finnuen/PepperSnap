@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.1.0.6";
+    static constexpr const wchar_t* APP_VERSION = L"3.1.0.7";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -25,14 +25,14 @@ public:
     ImageFormat regionFormat = ImageFormat::JPEG;
     ImageFormat fullscreenFormat = ImageFormat::JPEG;
     ImageFormat copyFormat = ImageFormat::JPEG;
-    int jpegQuality = 95;
+    int jpegQuality = 90;
     bool nonStackingHighlighter = true;
     bool penSmoothingEnabled = true;
     int penSmoothingStrength = 15; // 5% to 100% (default 15%)
     std::wstring lastSavedFilePath;
     int captureCounter = 1;
     bool autoSaveOnCopy = true;
-    bool alsoCopyFullscreen = false;
+    bool alsoCopyFullscreen = true;
     bool autoCheckUpdates = true;
     UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
     long long lastUpdateCheckTime = 0;
@@ -290,6 +290,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingEnabled", penSmoothingEnabled ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingStrength", std::to_wstring(penSmoothingStrength).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingDefaultV31", L"1", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"DefaultsV3107", L"1", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AutoCheckUpdates", autoCheckUpdates ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"UpdateCheckInterval", std::to_wstring((int)updateInterval).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastUpdateCheckTime", std::to_wstring(lastUpdateCheckTime).c_str(), iniPath.c_str());
@@ -328,12 +329,12 @@ void PepperSnapDaemon::LoadSettings() {
     if (fFmt >= 0 && fFmt <= 3) fullscreenFormat = (ImageFormat)fFmt;
     if (cFmt >= 0 && cFmt <= 3) copyFormat = (ImageFormat)cFmt;
 
-    int q = (int)GetPrivateProfileIntW(L"PepperSnap", L"JpegQuality", jpegQuality, iniPath.c_str());
+    int q = (int)GetPrivateProfileIntW(L"PepperSnap", L"JpegQuality", 90, iniPath.c_str());
     jpegQuality = std::max(10, std::min(100, q));
 
     nonStackingHighlighter = (GetPrivateProfileIntW(L"PepperSnap", L"NonStackingHighlighter", 1, iniPath.c_str()) != 0);
     autoSaveOnCopy = (GetPrivateProfileIntW(L"PepperSnap", L"AutoSaveOnCopy", 1, iniPath.c_str()) != 0);
-    alsoCopyFullscreen = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoCopyFullscreen", 0, iniPath.c_str()) != 0);
+    alsoCopyFullscreen = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoCopyFullscreen", 1, iniPath.c_str()) != 0);
     if (GetPrivateProfileIntW(L"PepperSnap", L"PenSmoothingDefaultV31", 0, iniPath.c_str()) == 0) {
         penSmoothingEnabled = true;
         penSmoothingStrength = 15;
@@ -347,6 +348,21 @@ void PepperSnapDaemon::LoadSettings() {
     }
 
     autoCheckUpdates = (GetPrivateProfileIntW(L"PepperSnap", L"AutoCheckUpdates", 1, iniPath.c_str()) != 0);
+    if (GetPrivateProfileIntW(L"PepperSnap", L"DefaultsV3107", 0, iniPath.c_str()) == 0) {
+        jpegQuality = 90;
+        autoCheckUpdates = true;
+        nonStackingHighlighter = true;
+        autoSaveOnCopy = true;
+        alsoCopyFullscreen = true;
+        penSmoothingEnabled = true;
+        WritePrivateProfileStringW(L"PepperSnap", L"JpegQuality", L"90", iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", L"AutoCheckUpdates", L"1", iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", L"NonStackingHighlighter", L"1", iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", L"AutoSaveOnCopy", L"1", iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", L"AlsoCopyFullscreen", L"1", iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingEnabled", L"1", iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", L"DefaultsV3107", L"1", iniPath.c_str());
+    }
     int uInt = (int)GetPrivateProfileIntW(L"PepperSnap", L"UpdateCheckInterval", (INT)UpdateCheckInterval::EveryDay, iniPath.c_str());
     if (uInt >= 0 && uInt <= 4) updateInterval = (UpdateCheckInterval)uInt;
 
@@ -3616,10 +3632,10 @@ struct OptionsDlgState {
     ImageFormat regionFmt = ImageFormat::JPEG;
     ImageFormat fullFmt = ImageFormat::JPEG;
     ImageFormat copyFmt = ImageFormat::JPEG;
-    int jpgQuality = 95;
+    int jpgQuality = 90;
     std::wstring naming;
     bool autoSaveCopy = true;
-    bool alsoCopyFull = false;
+    bool alsoCopyFull = true;
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 15;
@@ -3784,7 +3800,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 168, 175, 140, hWnd, (HMENU)IDC_OPT_COMBO_COPY, nullptr, nullptr);
             SendMessageW(st->hComboCopy, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            const wchar_t* fmtItems[4] = { L"JPEG (.jpg) — default", L"PNG (.png)", L"WebP (.webp)", L"BMP (.bmp)" };
+            const wchar_t* fmtItems[4] = { L"JPEG (.jpg)", L"PNG (.png)", L"WebP (.webp)", L"BMP (.bmp)" };
             for (int i = 0; i < 4; ++i) {
                 SendMessageW(st->hComboRegion, CB_ADDSTRING, 0, (LPARAM)fmtItems[i]);
                 SendMessageW(st->hComboFull,   CB_ADDSTRING, 0, (LPARAM)fmtItems[i]);
