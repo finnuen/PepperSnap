@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.1.0.7";
+    static constexpr const wchar_t* APP_VERSION = L"3.2.0.0";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -58,6 +58,9 @@ public:
     Bitmap* frozenDesktopBmp = nullptr;
     bool hasSelection = false;
     RECT selRect{0, 0, 0, 0};
+    std::vector<RECT> desktopWindowRects;
+    bool hasCtrlHoverWindow = false;
+    RECT ctrlHoverWindowRect{0, 0, 0, 0};
     RECT dimPillRect{0, 0, 0, 0};
     RECT customStrokeRect{0, 0, 0, 0};
     DragMode dragMode = DragMode::None;
@@ -170,6 +173,8 @@ public:
     void InstantFullscreenCapture();
     void InstantPreviousRegionCapture();
     void RecordLastCustomSelection();
+    void SnapshotDesktopWindows();
+    bool UpdateCtrlWindowHover();
     void StartRegionSnipOverlay(Bitmap* customBmp = nullptr, const RECT* customSelRect = nullptr);
     void CloseRegionSnipOverlay();
     void OpenImageIntoOverlay();
@@ -756,7 +761,11 @@ void PepperSnapDaemon::UpdateOverlayCursor(int mx, int my) {
     }
 
     if (!hasSelection || dragMode == DragMode::CreatingSelection) {
-        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        if (!hasSelection && hasCtrlHoverWindow) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        } else {
+            SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        }
         return;
     }
 
@@ -4582,6 +4591,15 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
     if (g_Daemon.hDimmedDesktopDC) {
         BitBlt(memDC, 0, 0, W, H, g_Daemon.hDimmedDesktopDC, 0, 0, SRCCOPY);
     }
+    if (!g_Daemon.hasSelection && g_Daemon.hasCtrlHoverWindow && g_Daemon.hBrightDesktopDC) {
+        int wx0 = std::max(0, std::min(W, (int)g_Daemon.ctrlHoverWindowRect.left));
+        int wy0 = std::max(0, std::min(H, (int)g_Daemon.ctrlHoverWindowRect.top));
+        int ww0 = std::min(W - wx0, (int)(g_Daemon.ctrlHoverWindowRect.right - g_Daemon.ctrlHoverWindowRect.left));
+        int wh0 = std::min(H - wy0, (int)(g_Daemon.ctrlHoverWindowRect.bottom - g_Daemon.ctrlHoverWindowRect.top));
+        if (ww0 >= 1 && wh0 >= 1) {
+            BitBlt(memDC, wx0, wy0, ww0, wh0, g_Daemon.hBrightDesktopDC, wx0, wy0, SRCCOPY);
+        }
+    }
     if (g_Daemon.hasSelection && g_Daemon.hBrightDesktopDC) {
         int sx0 = std::max(0, std::min(W, (int)std::min(g_Daemon.selRect.left, g_Daemon.selRect.right)));
         int sy0 = std::max(0, std::min(H, (int)std::min(g_Daemon.selRect.top, g_Daemon.selRect.bottom)));
@@ -4883,16 +4901,59 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             }
         }
     } else {
-        Pen crossPen(Color(150, 239, 68, 68), 1.0f);
-        crossPen.SetDashStyle(DashStyleDash);
-        g.DrawLine(&crossPen, g_Daemon.mousePt.x, 0, g_Daemon.mousePt.x, H);
-        g.DrawLine(&crossPen, 0, g_Daemon.mousePt.y, W, g_Daemon.mousePt.y);
+        if (g_Daemon.hasCtrlHoverWindow) {
+            int wx = std::max(0, std::min(W, (int)g_Daemon.ctrlHoverWindowRect.left));
+            int wy = std::max(0, std::min(H, (int)g_Daemon.ctrlHoverWindowRect.top));
+            int ww = std::min(W - wx, (int)(g_Daemon.ctrlHoverWindowRect.right - g_Daemon.ctrlHoverWindowRect.left));
+            int wh = std::min(H - wy, (int)(g_Daemon.ctrlHoverWindowRect.bottom - g_Daemon.ctrlHoverWindowRect.top));
+            if (ww >= 1 && wh >= 1) {
+                Pen winBorder(Color(255, 239, 68, 68), 2.0f);
+                winBorder.SetAlignment(PenAlignmentInset);
+                int drawX = std::max(0, wx);
+                int drawY = std::max(0, wy);
+                int drawR = std::min(W - 1, wx + ww);
+                int drawB = std::min(H - 1, wy + wh);
+                g.DrawRectangle(&winBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
+
+                int pillW = 140;
+                int pillH = 23;
+                const int outlineGap = 8;
+                int pillX = std::max(5, std::min(W - pillW - 5, wx + 5));
+                int pillY = (wy >= pillH + outlineGap + 4) ? (wy - outlineGap - pillH) : (wy + 6);
+                pillY = std::max(4, std::min(H - pillH - 4, pillY));
+
+                SolidBrush pillBg(Color(235, 15, 23, 42));
+                g.FillRectangle(&pillBg, pillX, pillY, pillW, pillH);
+                Pen pillBorder(Color(160, 71, 85, 105), 1.4f);
+                g.DrawRectangle(&pillBorder, pillX, pillY, pillW, pillH);
+
+                std::wstring dimValStr = std::to_wstring(ww) + L" × " + std::to_wstring(wh);
+                PepperSnapDaemon::DrawEditablePillText(
+                    g, monoFont, pillX + 7, pillY + 4, pillY, pillH,
+                    dimValStr, L" px", false, 0, 0
+                );
+            }
+        } else {
+            Pen crossPen(Color(150, 239, 68, 68), 1.0f);
+            crossPen.SetDashStyle(DashStyleDash);
+            g.DrawLine(&crossPen, g_Daemon.mousePt.x, 0, g_Daemon.mousePt.x, H);
+            g.DrawLine(&crossPen, 0, g_Daemon.mousePt.y, W, g_Daemon.mousePt.y);
+        }
     }
 
     // 5x Magnifier Loupe when aiming
     if (!g_Daemon.hasSelection || g_Daemon.dragMode == DragMode::CreatingSelection) {
         int mx = g_Daemon.mousePt.x, my = g_Daemon.mousePt.y;
-        int loupeW = 132, loupeH = 136;
+        const wchar_t* ctrlHintText = L"Hold Ctrl to select window";
+        RectF hintBounds;
+        g.MeasureString(ctrlHintText, -1, &smallFont, PointF(0.0f, 0.0f), &hintBounds);
+        int hintPillW = (int)std::ceil(hintBounds.Width) + 6;
+        int hintPillH = 18;
+        int imgW = std::max(120, ((hintPillW + 2) + 1) & ~1);
+        int imgH = 90;
+        int loupeW = imgW + 12;
+        int loupeH = 135 + hintPillH + 6;
+
         int lx = (mx + 24 + loupeW < W) ? (mx + 24) : (mx - loupeW - 24);
         int ly = (my + 24 + loupeH < H) ? (my + 24) : (my - loupeH - 24);
 
@@ -4906,18 +4967,20 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 int srcX = std::max(0, std::min(W - 22, mx - 11));
                 int srcY = std::max(0, std::min(H - 16, my - 8));
                 SetStretchBltMode(memDC, COLORONCOLOR);
-                StretchBlt(memDC, lx + 6, ly + 6, 120, 90, g_Daemon.hBrightDesktopDC, srcX, srcY, 22, 16, SRCCOPY);
+                StretchBlt(memDC, lx + 6, ly + 6, imgW, imgH, g_Daemon.hBrightDesktopDC, srcX, srcY, 22, 16, SRCCOPY);
             } else {
                 GraphicsState st = g.Save();
                 g.SetInterpolationMode(InterpolationModeNearestNeighbor);
                 g.SetPixelOffsetMode(PixelOffsetModeHalf);
-                g.DrawImage(g_Daemon.frozenDesktopBmp, Rect(lx + 6, ly + 6, 120, 90), mx - 11, my - 8, 22, 16, UnitPixel);
+                g.DrawImage(g_Daemon.frozenDesktopBmp, Rect(lx + 6, ly + 6, imgW, imgH), mx - 11, my - 8, 22, 16, UnitPixel);
                 g.Restore(st);
             }
 
             Pen centerCross(Color(200, 239, 68, 68), 1.5f);
-            g.DrawLine(&centerCross, lx + 66, ly + 6, lx + 66, ly + 96);
-            g.DrawLine(&centerCross, lx + 6, ly + 51, lx + 126, ly + 51);
+            int crossX = lx + 6 + imgW / 2;
+            int crossY = ly + 6 + imgH / 2;
+            g.DrawLine(&centerCross, crossX, ly + 6, crossX, ly + 6 + imgH);
+            g.DrawLine(&centerCross, lx + 6, crossY, lx + 6 + imgW, crossY);
 
             int cMx = std::max(0, std::min(W - 1, mx));
             int cMy = std::max(0, std::min(H - 1, my));
@@ -4936,8 +4999,19 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             }
             wchar_t hexBuf[64];
             swprintf_s(hexBuf, L"(%d,%d) #%02X%02X%02X", mx, my, pr, pg, pb);
-            g.DrawString(hexBuf, -1, &monoFont, PointF((float)(lx + 8), (float)(ly + 102)), &whiteBrush);
-            g.DrawString(L"Ctrl+C copy RGB · Esc", -1, &smallFont, PointF((float)(lx + 8), (float)(ly + 118)), &mutedBrush);
+            g.DrawString(hexBuf, -1, &monoFont, PointF((float)(lx + 7), (float)(ly + 101)), &whiteBrush);
+            g.DrawString(L"Ctrl+C copy RGB · Esc", -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 117)), &mutedBrush);
+
+            // White font with red highlighted background inside the magnifier box below 'Ctrl+C copy RGB · Esc'
+            int hintX = lx + 7;
+            int hintY = ly + 135;
+            SolidBrush redHighlightBg(Color(255, 239, 68, 68));
+            g.FillRectangle(&redHighlightBg, hintX, hintY, hintPillW, hintPillH);
+            StringFormat hintSf;
+            hintSf.SetAlignment(StringAlignmentCenter);
+            hintSf.SetLineAlignment(StringAlignmentCenter);
+            RectF hintRc((float)hintX, (float)hintY, (float)hintPillW, (float)hintPillH);
+            g.DrawString(ctrlHintText, -1, &smallFont, hintRc, &hintSf, &whiteBrush);
         }
         g.DrawRectangle(&loupeBorder, lx, ly, loupeW, loupeH);
     }
@@ -4955,10 +5029,22 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     switch (msg) {
         case WM_CREATE:
             SetTimer(hWnd, 1, 450, nullptr); // Caret blink timer for in-place text box
+            SetTimer(hWnd, 2, 40, nullptr);  // Ctrl-key state poll for automatic window hover selection
             return 0;
 
         case WM_TIMER:
-            if (g_Daemon.isEditingText || g_Daemon.isEditingSize || g_Daemon.isEditingStroke) InvalidateRect(hWnd, nullptr, FALSE);
+            if (wParam == 1) {
+                if (g_Daemon.isEditingText || g_Daemon.isEditingSize || g_Daemon.isEditingStroke) {
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+            } else if (wParam == 2) {
+                if (!g_Daemon.hasSelection && g_Daemon.dragMode == DragMode::None) {
+                    if (g_Daemon.UpdateCtrlWindowHover()) {
+                        g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                    }
+                }
+            }
             return 0;
 
         case WM_ERASEBKGND:
@@ -5302,7 +5388,29 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
             }
 
-            // 4. Outside Selection Box -> Do NOT reset selection on simple click or click-and-hold!
+            // 4. Outside Selection Box -> Check Ctrl + click automatic window selection first!
+            bool ctrlHeld = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) || ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
+            if (!g_Daemon.hasSelection && ctrlHeld) {
+                g_Daemon.UpdateCtrlWindowHover();
+                if (g_Daemon.hasCtrlHoverWindow) {
+                    g_Daemon.hasSelection = true;
+                    g_Daemon.selRect = g_Daemon.ctrlHoverWindowRect;
+                    g_Daemon.hasCtrlHoverWindow = false;
+                    g_Daemon.hasCustomHudPos = false;
+                    g_Daemon.activeTool = OverlayTool::SelectMove;
+                    g_Daemon.annotations.clear();
+                    g_Daemon.undoStack.clear();
+                    g_Daemon.redoStack.clear();
+                    g_Daemon.nextStepNum = 1;
+                    g_Daemon.selectedAnnotationId = -1;
+                    g_Daemon.dragMode = DragMode::None;
+                    g_Daemon.UpdateOverlayCursor(mx, my);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // Do NOT reset selection on simple click or click-and-hold!
             // Only enter PendingOutsideSelection; actual reset happens in WM_MOUSEMOVE only if dragged >= 5px.
             g_Daemon.selectedAnnotationId = -1;
             g_Daemon.dragMode = DragMode::PendingOutsideSelection;
@@ -5350,6 +5458,11 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             }
 
             if (g_Daemon.dragMode == DragMode::None) {
+                if (!g_Daemon.hasSelection) {
+                    g_Daemon.UpdateCtrlWindowHover();
+                } else {
+                    g_Daemon.hasCtrlHoverWindow = false;
+                }
                 int newHover = -1;
                 for (const auto& b : g_Daemon.dockButtons) {
                     if (PtInRect(&b.rect, pt)) {
@@ -5842,6 +5955,15 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
+            if (wParam == VK_CONTROL) {
+                if (!g_Daemon.hasSelection && g_Daemon.dragMode == DragMode::None) {
+                    if (g_Daemon.UpdateCtrlWindowHover()) {
+                        g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                    }
+                }
+                return 0;
+            }
             if (ctrl) {
                 if (wParam == 'C') {
                     if (!g_Daemon.hasSelection ||
@@ -5877,11 +5999,123 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
+        case WM_KEYUP: {
+            if (wParam == VK_CONTROL) {
+                if (g_Daemon.UpdateCtrlWindowHover()) {
+                    g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            break;
+        }
+
         case WM_DESTROY:
             KillTimer(hWnd, 1);
+            KillTimer(hWnd, 2);
             return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+struct EnumDesktopWindowsCtx {
+    PepperSnapDaemon* daemon;
+    std::vector<RECT>* rects;
+};
+
+static BOOL CALLBACK EnumDesktopWindowsProc(HWND hwnd, LPARAM lParam) {
+    EnumDesktopWindowsCtx* ctx = (EnumDesktopWindowsCtx*)lParam;
+    if (!ctx || !ctx->daemon || !ctx->rects) return TRUE;
+    PepperSnapDaemon* d = ctx->daemon;
+
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
+    if (hwnd == d->hOverlayWnd || hwnd == d->hTrayWnd ||
+        hwnd == d->hOptionsWnd || hwnd == d->hShortcutsWnd) {
+        return TRUE;
+    }
+
+    // Skip cloaked Windows 10/11 UWP / background windows (DWMWA_CLOAKED = 14)
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, 14, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+        return TRUE;
+    }
+
+    LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (exStyle & WS_EX_TRANSPARENT) {
+        return TRUE;
+    }
+    if (exStyle & WS_EX_LAYERED) {
+        BYTE bAlpha = 255;
+        DWORD dwFlags = 0;
+        if (GetLayeredWindowAttributes(hwnd, nullptr, &bAlpha, &dwFlags) &&
+            (dwFlags & LWA_ALPHA) && bAlpha < 15) {
+            return TRUE;
+        }
+    }
+
+    WCHAR clsName[128] = {0};
+    GetClassNameW(hwnd, clsName, 127);
+    if (wcscmp(clsName, L"Progman") == 0 ||
+        wcscmp(clsName, L"WorkerW") == 0 ||
+        wcscmp(clsName, L"PepperSnapOverlayWnd") == 0 ||
+        wcscmp(clsName, L"PepperSnapTrayDaemonClass") == 0) {
+        return TRUE;
+    }
+
+    RECT rc = {0, 0, 0, 0};
+    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rc, sizeof(rc)))) {
+        if (!GetWindowRect(hwnd, &rc)) return TRUE;
+    }
+
+    // Convert from virtual desktop screen coordinates to overlay-local coordinates
+    rc.left   -= d->vScreenX;
+    rc.top    -= d->vScreenY;
+    rc.right  -= d->vScreenX;
+    rc.bottom -= d->vScreenY;
+
+    rc.left   = std::max(0L, std::min((LONG)d->vScreenW, rc.left));
+    rc.top    = std::max(0L, std::min((LONG)d->vScreenH, rc.top));
+    rc.right  = std::max(0L, std::min((LONG)d->vScreenW, rc.right));
+    rc.bottom = std::max(0L, std::min((LONG)d->vScreenH, rc.bottom));
+
+    if (rc.right - rc.left >= 16 && rc.bottom - rc.top >= 16) {
+        ctx->rects->push_back(rc);
+    }
+    return TRUE;
+}
+
+void PepperSnapDaemon::SnapshotDesktopWindows() {
+    desktopWindowRects.clear();
+    hasCtrlHoverWindow = false;
+    ctrlHoverWindowRect = {0, 0, 0, 0};
+    EnumDesktopWindowsCtx ctx{ this, &desktopWindowRects };
+    EnumWindows(EnumDesktopWindowsProc, (LPARAM)&ctx);
+}
+
+bool PepperSnapDaemon::UpdateCtrlWindowHover() {
+    bool prevHas = hasCtrlHoverWindow;
+    RECT prevRc = ctrlHoverWindowRect;
+
+    bool ctrlHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (!ctrlHeld || hasSelection || dragMode != DragMode::None) {
+        hasCtrlHoverWindow = false;
+        return (prevHas != hasCtrlHoverWindow);
+    }
+
+    bool found = false;
+    RECT matched = {0, 0, 0, 0};
+    for (const auto& rc : desktopWindowRects) {
+        if (PtInRect(&rc, mousePt)) {
+            found = true;
+            matched = rc;
+            break;
+        }
+    }
+    hasCtrlHoverWindow = found;
+    if (found) ctrlHoverWindowRect = matched;
+
+    return (prevHas != hasCtrlHoverWindow) ||
+           (found && !EqualRect(&prevRc, &ctrlHoverWindowRect));
 }
 
 void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* customSelRect) {
@@ -5903,6 +6137,8 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
         vScreenY = GetSystemMetrics(SM_YVIRTUALSCREEN);
         vScreenW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         vScreenH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        desktopWindowRects.clear();
+        hasCtrlHoverWindow = false;
         frozenDesktopBmp = customBmp;
         hasSelection = true;
         if (customSelRect) {
@@ -5917,6 +6153,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     } else {
         frozenDesktopBmp = CaptureVirtualDesktop();
         hasSelection = false;
+        SnapshotDesktopWindows();
     }
     if (!frozenDesktopBmp) return;
     BuildOverlaySurfaceCache();
@@ -5943,6 +6180,9 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     GetCursorPos(&mousePt);
     mousePt.x -= vScreenX;
     mousePt.y -= vScreenY;
+    if (!hasSelection) {
+        UpdateCtrlWindowHover();
+    }
 
     hOverlayWnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -5990,6 +6230,8 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
         frozenDesktopBmp = nullptr;
     }
     hasSelection = false;
+    hasCtrlHoverWindow = false;
+    desktopWindowRects.clear();
     dragMode = DragMode::None;
 }
 
