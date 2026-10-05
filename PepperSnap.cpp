@@ -84,14 +84,10 @@ public:
 
     std::vector<Color> palette = {
         Color(255, 239, 68, 68),   // Red #EF4444
-        Color(255, 249, 115, 22),  // Orange #F97316
-        Color(255, 234, 179, 8),   // Yellow #EAB308
         Color(255, 34, 197, 94),   // Green #22C55E
         Color(255, 59, 130, 246),  // Blue #3B82F6
-        Color(255, 168, 85, 247),  // Purple #A855F7
-        Color(255, 236, 72, 153),  // Pink #EC4899
         Color(255, 255, 255, 255), // White #FFFFFF
-        Color(255, 15, 23, 42)     // Black/Slate #0F172A
+        Color(255, 0, 0, 0)        // Black #000000
     };
 
     std::vector<float> strokeSizes = { 2.0f, 4.0f, 8.0f, 14.0f };
@@ -136,6 +132,7 @@ public:
     void DestroyCustomCursors();
     void UpdateOverlayCursor(int mx, int my);
     void InitTrayIcon();
+    void EnsureNotificationSoundEnabled();
     void ShowTrayToast(const std::wstring& title, const std::wstring& message);
     void RemoveTrayIcon();
     std::wstring FormatFilename(int seqNum) const;
@@ -383,7 +380,71 @@ HICON PepperSnapDaemon::CreateCustomTrayIcon() {
     return hIcon ? hIcon : LoadIconW(nullptr, IDI_APPLICATION);
 }
 
+void PepperSnapDaemon::EnsureNotificationSoundEnabled() {
+    // 1. Check & enable global Windows 10/11 notification sound setting + per-app PlaySound setting
+    HKEY hSettingsKey = nullptr;
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings",
+            0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, &hSettingsKey, nullptr) == ERROR_SUCCESS) {
+        DWORD allowSound = 0;
+        DWORD cb = sizeof(allowSound);
+        DWORD type = 0;
+        if (RegQueryValueExW(hSettingsKey, L"NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND", nullptr, &type, (LPBYTE)&allowSound, &cb) != ERROR_SUCCESS || allowSound == 0) {
+            allowSound = 1;
+            RegSetValueExW(hSettingsKey, L"NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND", 0, REG_DWORD, (const BYTE*)&allowSound, sizeof(allowSound));
+        }
+
+        auto ensureAppSubKeySound = [&](const wchar_t* subKeyName) {
+            HKEY hAppKey = nullptr;
+            if (RegOpenKeyExW(hSettingsKey, subKeyName, 0, KEY_READ | KEY_WRITE, &hAppKey) == ERROR_SUCCESS) {
+                DWORD val = 0, sz = sizeof(val), vType = 0;
+                if (RegQueryValueExW(hAppKey, L"Enabled", nullptr, &vType, (LPBYTE)&val, &sz) != ERROR_SUCCESS || val == 0) {
+                    val = 1;
+                    RegSetValueExW(hAppKey, L"Enabled", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+                }
+                sz = sizeof(val);
+                if (RegQueryValueExW(hAppKey, L"PlaySound", nullptr, &vType, (LPBYTE)&val, &sz) != ERROR_SUCCESS || val == 0) {
+                    val = 1;
+                    RegSetValueExW(hAppKey, L"PlaySound", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+                }
+                RegCloseKey(hAppKey);
+            }
+        };
+
+        DWORD idx = 0;
+        WCHAR subName[512];
+        DWORD subLen = 512;
+        while (RegEnumKeyExW(hSettingsKey, idx++, subName, &subLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            if (wcsstr(subName, L"PepperSnap") != nullptr || wcsstr(subName, L"peppersnap") != nullptr ||
+                wcsstr(subName, L"Microsoft.Explorer.Notification") != nullptr) {
+                ensureAppSubKeySound(subName);
+            }
+            subLen = 512;
+        }
+        RegCloseKey(hSettingsKey);
+    }
+
+    // 2. Check & enable HKCU\Control Panel\Sound -> Beep & ExtendedSounds
+    HKEY hSoundKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Sound", 0, KEY_READ | KEY_WRITE, &hSoundKey) == ERROR_SUCCESS) {
+        WCHAR buf[32] = {0};
+        DWORD cb = sizeof(buf);
+        if (RegQueryValueExW(hSoundKey, L"Beep", nullptr, nullptr, (LPBYTE)buf, &cb) == ERROR_SUCCESS && _wcsicmp(buf, L"yes") != 0) {
+            const wchar_t* yesStr = L"yes";
+            RegSetValueExW(hSoundKey, L"Beep", 0, REG_SZ, (const BYTE*)yesStr, (DWORD)((wcslen(yesStr) + 1) * sizeof(wchar_t)));
+        }
+        cb = sizeof(buf);
+        if (RegQueryValueExW(hSoundKey, L"ExtendedSounds", nullptr, nullptr, (LPBYTE)buf, &cb) == ERROR_SUCCESS && _wcsicmp(buf, L"yes") != 0) {
+            const wchar_t* yesStr = L"yes";
+            RegSetValueExW(hSoundKey, L"ExtendedSounds", 0, REG_SZ, (const BYTE*)yesStr, (DWORD)((wcslen(yesStr) + 1) * sizeof(wchar_t)));
+        }
+        RegCloseKey(hSoundKey);
+    }
+}
+
 void PepperSnapDaemon::InitTrayIcon() {
+    EnsureNotificationSoundEnabled();
     hTrayIcon = CreateCustomTrayIcon();
     ZeroMemory(&nid, sizeof(nid));
     nid.cbSize = sizeof(NOTIFYICONDATAW);
@@ -392,13 +453,20 @@ void PepperSnapDaemon::InitTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hTrayIcon;
-    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.0 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
+    wcsncpy_s(nid.szTip, L"PepperSnap v3.0.0.1 — Ctrl+PrtScn: Region Snip | Shift+PrtScn: Instant Fullscreen", _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
 void PepperSnapDaemon::ShowTrayToast(const std::wstring& title, const std::wstring& message) {
+    EnsureNotificationSoundEnabled();
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
+    nid.dwInfoFlags &= ~NIIF_NOSOUND;
+    // Clear any currently visible balloon first so Windows always plays the notification sound on consecutive captures
+    nid.szInfoTitle[0] = L'\0';
+    nid.szInfo[0] = L'\0';
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+
     wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
     wcsncpy_s(nid.szInfo, message.c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -2737,36 +2805,36 @@ void PepperSnapDaemon::BuildDockedHUD() {
     }
 
     const int gap = 3;
-    const int rowGap = 4;
+    const int rowGap = gap;
 
     // Row 1 metrics (Tools)
     const int toolBtnW = 32, toolBtnH = 28;
     int totalToolCount = 11 + (hasNumberArrow ? 1 : 0);
     int row1W = totalToolCount * toolBtnW + (totalToolCount - 1) * gap;
 
-    // Row 2 metrics (9 Colors + 4 Stroke Sizes + Custom Size Box)
-    const int colorW = 20, colorH = 20;
-    const int strokeW = 22, strokeH = 22;
-    const int customBoxW = 62, customBoxH = 22;
-    const int groupGap = 6;
+    // Row 2 metrics (5 Colors + 4 Stroke Sizes + Custom Size Box equal to 2 toolbar buttons)
+    const int colorW = toolBtnW, colorH = toolBtnH;
+    const int strokeW = toolBtnW, strokeH = toolBtnH;
+    const int customBoxW = toolBtnW * 2 + gap, customBoxH = toolBtnH;
+    const int groupGap = gap;
     int colorsTotalW = (int)palette.size() * colorW + ((int)palette.size() - 1) * gap;
     int strokesTotalW = (int)strokeSizes.size() * strokeW + ((int)strokeSizes.size() - 1) * gap;
     int row2W = colorsTotalW + groupGap + strokesTotalW + gap + customBoxW;
-    const int row2H = 22;
+    const int row2H = toolBtnH;
 
     // Row 3 metrics (Drag Handle + Undo/Redo/Clear/Options/Pin/SaveAs/Save/Copy/Close)
     struct ActEntry { int id; int w; const wchar_t* lbl; const wchar_t* tip; bool primary; };
     ActEntry acts[] = {
-        { DBTN_ACT_DRAG_HUD, 30, L"",     L"Drag to Move Toolbar (Resets when selection moves)", false },
-        { DBTN_ACT_UNDO,     32, L"",     L"Undo (Ctrl+Z)", false },
-        { DBTN_ACT_REDO,     32, L"",     L"Redo (Ctrl+Y)", false },
-        { DBTN_ACT_CLEAR,    32, L"",     L"Clear All Annotations", false },
-        { DBTN_ACT_OPTIONS,  34, L"",     L"Options (Folder, Formats & Naming)", false },
-        { DBTN_ACT_PIN,      32, L"",     L"Pin to Desktop (F)", false },
-        { DBTN_ACT_SAVE_AS,  34, L"",     L"Save As JPG/PNG/WEBP/BMP", false },
-        { DBTN_ACT_SAVE,     34, L"",     L"Quick Save (Ctrl+S)", false },
-        { DBTN_ACT_COPY,     62, L"Copy", L"Copy to Clipboard (Ctrl+C / Enter)", true },
-        { DBTN_ACT_CLOSE,    30, L"",     L"Close Overlay (Esc)", false }
+        { DBTN_ACT_DRAG_HUD, toolBtnW,           L"",     L"Drag to Move Toolbar (Resets when selection moves)", false },
+        { DBTN_ACT_UNDO,     toolBtnW,           L"",     L"Undo (Ctrl+Z)", false },
+        { DBTN_ACT_REDO,     toolBtnW,           L"",     L"Redo (Ctrl+Y)", false },
+        { DBTN_ACT_CLEAR,    toolBtnW,           L"",     L"Clear All Annotations", false },
+        { DBTN_ACT_OPTIONS,  toolBtnW,           L"",     L"Options (Folder, Formats & Naming)", false },
+        { DBTN_ACT_PIN,      toolBtnW,           L"",     L"Pin to Desktop (F)", false },
+        { DBTN_ACT_SAVE_AS,  toolBtnW,           L"",     L"Save As JPG/PNG/WEBP/BMP", false },
+        { DBTN_ACT_SAVE,     toolBtnW,           L"",     L"Quick Save (Ctrl+S)", false },
+        { DBTN_ACT_COPY,     toolBtnW * 2 + gap, L"Copy", L"Copy to Clipboard (Ctrl+C / Enter)", true },
+        { DBTN_ACT_CLOSE,    toolBtnW,           L"",     L"Close Overlay (Esc)", false }
     };
     const int actBtnH = 28;
     int row3W = 0;
@@ -2843,15 +2911,17 @@ void PepperSnapDaemon::BuildDockedHUD() {
     // --- Row 2: Colors and Sizes Toolbar (Right-aligned to rightX) ---
     int r2X = rightX - row2W;
     int r2Y = topY + toolBtnH + rowGap;
-    const wchar_t* colorNames[9] = {
-        L"Red (#EF4444)", L"Orange (#F97316)", L"Yellow (#EAB308)",
-        L"Green (#22C55E)", L"Blue (#3B82F6)", L"Purple (#A855F7)",
-        L"Pink (#EC4899)", L"White (#FFFFFF)", L"Dark Slate (#0F172A)"
+    const wchar_t* colorNames[5] = {
+        L"Red (#EF4444)",
+        L"Green (#22C55E)",
+        L"Blue (#3B82F6)",
+        L"White (#FFFFFF)",
+        L"Black (#000000)"
     };
     for (size_t i = 0; i < palette.size(); ++i) {
         DockButton b;
         b.id = DBTN_COLOR_BASE + (int)i;
-        b.rect = { r2X, r2Y + 1, r2X + colorW, r2Y + 1 + colorH };
+        b.rect = { r2X, r2Y, r2X + colorW, r2Y + colorH };
         b.isColor = true;
         b.swatchColor = palette[i];
         b.tooltip = colorNames[i];
@@ -3386,7 +3456,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     HWND hParent = hOverlayWnd ? hOverlayWnd : hTrayWnd;
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"PepperSnapOptionsModal",
-        L"PepperSnap v3.0.0.0 Options — Folder, Formats, Quality, Naming & Smoothing",
+        L"PepperSnap v3.0.0.1 Options — Folder, Formats, Quality, Naming & Smoothing",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         (sw - 564) / 2, (sh - 550) / 2, 564, 550, hParent, nullptr, hInst, &st
     );
@@ -3432,7 +3502,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
 void PepperSnapDaemon::ShowShortcutsModal() {
     MessageBoxW(
         hOverlayWnd ? hOverlayWnd : hTrayWnd,
-        L"PepperSnap v3.0.0.0 Native C++17 — Complete Hotkeys Reference\n"
+        L"PepperSnap v3.0.0.1 Native C++17 — Complete Hotkeys Reference\n"
         L"────────────────────────────────────────────────────────\n\n"
         L"GLOBAL CAPTURE HOTKEYS:\n"
         L"  • Ctrl + PrintScreen     Interactive Region Snip & Annotate\n"
@@ -3854,7 +3924,11 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 SolidBrush swB(b.swatchColor);
                 g.FillRectangle(&swB, rf);
                 bool actCol = (b.swatchColor.GetValue() == g_Daemon.activeColor.GetValue());
-                Pen swP(actCol ? Color(255, 255, 255, 255) : Color(180, 15, 23, 42), actCol ? 2.2f : 1.0f);
+                bool isWhiteSwatch = (b.swatchColor.GetR() > 235 && b.swatchColor.GetG() > 235 && b.swatchColor.GetB() > 235);
+                Color borderCol = actCol
+                    ? (isWhiteSwatch ? Color(255, 239, 68, 68) : Color(255, 255, 255, 255))
+                    : (hovered ? Color(255, 203, 213, 225) : Color(220, 71, 85, 105));
+                Pen swP(borderCol, actCol ? 2.2f : 1.0f);
                 g.DrawRectangle(&swP, rf.X, rf.Y, rf.Width, rf.Height);
                 continue;
             }
@@ -3902,7 +3976,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             PepperSnapDaemon::DrawEditablePillText(
                 g, monoFont,
                 g_Daemon.customStrokeRect.left + 6,
-                g_Daemon.customStrokeRect.top + 3,
+                g_Daemon.customStrokeRect.top + 6,
                 g_Daemon.customStrokeRect.top,
                 g_Daemon.customStrokeRect.bottom - g_Daemon.customStrokeRect.top,
                 cValStr, L" px",
@@ -5256,7 +5330,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         PostMessageW(g_Daemon.hTrayWnd, cliMsg, cliWParam, 0);
     } else {
         g_Daemon.ShowTrayToast(
-            L"PepperSnap v3.0.0.0 Active in System Tray",
+            L"PepperSnap v3.0.0.1 Active in System Tray",
             L"• Ctrl + PrintScreen: Region Snip & Annotate\n"
             L"• Shift + PrintScreen: Instant Fullscreen Capture"
         );
