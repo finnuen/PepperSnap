@@ -1,4 +1,5 @@
-<img width="708" height="570" alt="Untitled" src="https://github.com/user-attachments/assets/f682dae7-4bd8-4d63-ac4a-b3439f5752e1" />
+<img width="552" height="370" alt="Untitled" src="https://github.com/user-attachments/assets/70255a13-2e2d-4828-8842-ea96317710d4" />
+
 
 idk what things below talking about, gemini created it.
 
