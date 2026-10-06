@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.2.0.3";
+    static constexpr const wchar_t* APP_VERSION = L"3.2.0.4";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -6856,10 +6856,10 @@ static void ShowTrayContextMenu(HWND hWnd) {
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_FULL,           fullMenu.c_str());
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,    prevMenu.c_str());
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,     L"Open image to edit with PepperSnap...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE, L"Open image to pin on top");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE, L"Open image to pin on top...");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_FOLDER,   L"Open save folder");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPTIONS,       L"Options");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_FOLDER,   L"Open save folder...");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPTIONS,       L"Options...");
     AppendMenuW(hMenu, MF_STRING | (g_Daemon.IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED),
                 IDM_TRAY_STARTUP_RUN, L"Launch PepperSnap at Windows startup");
     if (!g_Daemon.pinnedWindows.empty()) {
@@ -6867,7 +6867,7 @@ static void ShowTrayContextMenu(HWND hWnd) {
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CHECK_UPDATE,  L"Check for updates (GitHub releases)...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHORTCUTS,     L"Keyboard shortcuts and info");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHORTCUTS,     L"Keyboard shortcuts and info...");
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT,          L"Exit PepperSnap");
 
     SetForegroundWindow(hWnd);
