@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.2.0.2";
+    static constexpr const wchar_t* APP_VERSION = L"3.2.0.3";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -3770,12 +3770,20 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         g.DrawImage(data->bmp, imgLeft, 0, imgW, imgH);
                         g.Restore(st);
 
-                        Pen border(Color(255, 239, 68, 68), 2.0f);
-                        border.SetAlignment(PenAlignmentInset);
-                        g.DrawRectangle(&border, imgLeft, 0, imgW, imgH);
+                        GraphicsState stBorder = g.Save();
+                        g.SetSmoothingMode(SmoothingModeNone);
+                        g.SetPixelOffsetMode(PixelOffsetModeNone);
+                        Pen border1px(Color(255, 239, 68, 68), 1.0f);
+                        g.DrawRectangle(&border1px, imgLeft, 0, imgW - 1, imgH - 1);
+                        if (imgW >= 4 && imgH >= 4) {
+                            g.DrawRectangle(&border1px, imgLeft + 1, 1, imgW - 3, imgH - 3);
+                        }
+                        g.Restore(stBorder);
 
                         for (const auto& b : data->buttons) {
-                            RectF rf((float)b.rect.left, (float)b.rect.top, (float)(b.rect.right - b.rect.left), (float)(b.rect.bottom - b.rect.top));
+                            int bw = (int)(b.rect.right - b.rect.left);
+                            int bh = (int)(b.rect.bottom - b.rect.top);
+                            RectF rf((float)b.rect.left, (float)b.rect.top, (float)bw, (float)bh);
                             bool hovered = (b.id == data->hoveredBtnId);
                             Color bgCol = Color(240, 15, 23, 42);
                             if (b.isPrimaryAction) {
@@ -3785,10 +3793,20 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                             }
                             SolidBrush btnBg(bgCol);
                             Pen btnBorder(Color(220, 51, 65, 85), 1.0f);
-                            btnBorder.SetAlignment(PenAlignmentInset);
-                            g.FillRectangle(&btnBg, rf);
-                            g.DrawRectangle(&btnBorder, rf.X, rf.Y, rf.Width, rf.Height);
+
+                            GraphicsState stBtn = g.Save();
+                            g.SetSmoothingMode(SmoothingModeNone);
+                            g.SetPixelOffsetMode(PixelOffsetModeNone);
+                            g.FillRectangle(&btnBg, (INT)b.rect.left, (INT)b.rect.top, (INT)bw, (INT)bh);
+                            g.Restore(stBtn);
+
                             PepperSnapDaemon::DrawDockButtonIcon(g, b, rf);
+
+                            GraphicsState stOutline = g.Save();
+                            g.SetSmoothingMode(SmoothingModeNone);
+                            g.SetPixelOffsetMode(PixelOffsetModeNone);
+                            g.DrawRectangle(&btnBorder, (INT)b.rect.left, (INT)b.rect.top, (INT)(bw - 1), (INT)(bh - 1));
+                            g.Restore(stOutline);
                         }
                     }
                 }
@@ -4468,8 +4486,10 @@ void PepperSnapDaemon::ShowOptionsModal() {
             }
             continue;
         }
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) { SendMessageW(hDlg, WM_COMMAND, IDOK, 0); continue; }
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { SendMessageW(hDlg, WM_COMMAND, IDCANCEL, 0); continue; }
+        if (!hOverlayWnd && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) { SendMessageW(hDlg, WM_COMMAND, IDOK, 0); continue; }
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { SendMessageW(hDlg, WM_COMMAND, IDCANCEL, 0); continue; }
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -4652,7 +4672,8 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     SetForegroundWindow(hDlg);
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (msg.message == WM_KEYDOWN && (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE)) {
+        if (!hOverlayWnd && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)) &&
+            msg.message == WM_KEYDOWN && (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE)) {
             DestroyWindow(hDlg);
             continue;
         }
@@ -6276,8 +6297,7 @@ static BOOL CALLBACK EnumDesktopWindowsProc(HWND hwnd, LPARAM lParam) {
     PepperSnapDaemon* d = ctx->daemon;
 
     if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
-    if (hwnd == d->hOverlayWnd || hwnd == d->hTrayWnd ||
-        hwnd == d->hOptionsWnd || hwnd == d->hShortcutsWnd) {
+    if (hwnd == d->hOverlayWnd || hwnd == d->hTrayWnd) {
         return TRUE;
     }
 
