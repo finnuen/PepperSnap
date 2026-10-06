@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.2.0.0";
+    static constexpr const wchar_t* APP_VERSION = L"3.2.0.1";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -6057,6 +6057,9 @@ static BOOL CALLBACK EnumDesktopWindowsProc(HWND hwnd, LPARAM lParam) {
     GetClassNameW(hwnd, clsName, 127);
     if (wcscmp(clsName, L"Progman") == 0 ||
         wcscmp(clsName, L"WorkerW") == 0 ||
+        wcscmp(clsName, L"DummyDWMListenerWindow") == 0 ||
+        wcscmp(clsName, L"EdgeUiInputTopWndClass") == 0 ||
+        wcscmp(clsName, L"EdgeUiInputWndClass") == 0 ||
         wcscmp(clsName, L"PepperSnapOverlayWnd") == 0 ||
         wcscmp(clsName, L"PepperSnapTrayDaemonClass") == 0) {
         return TRUE;
@@ -6068,6 +6071,46 @@ static BOOL CALLBACK EnumDesktopWindowsProc(HWND hwnd, LPARAM lParam) {
     }
 
     // Convert from virtual desktop screen coordinates to overlay-local coordinates
+    rc.left   -= d->vScreenX;
+    rc.top    -= d->vScreenY;
+    rc.right  -= d->vScreenX;
+    rc.bottom -= d->vScreenY;
+
+    rc.left   = std::max(0L, std::min((LONG)d->vScreenW, rc.left));
+    rc.top    = std::max(0L, std::min((LONG)d->vScreenH, rc.top));
+    rc.right  = std::max(0L, std::min((LONG)d->vScreenW, rc.right));
+    rc.bottom = std::max(0L, std::min((LONG)d->vScreenH, rc.bottom));
+
+    // Skip untitled fullscreen background host windows so they never block desktop work-area selection
+    if ((rc.right - rc.left) >= d->vScreenW && (rc.bottom - rc.top) >= d->vScreenH &&
+        GetWindowTextLengthW(hwnd) == 0) {
+        return TRUE;
+    }
+
+    if (rc.right - rc.left >= 16 && rc.bottom - rc.top >= 16) {
+        ctx->rects->push_back(rc);
+    }
+    return TRUE;
+}
+
+static BOOL CALLBACK EnumMonitorWorkAreaProc(HMONITOR hMonitor, HDC, LPRECT, LPARAM lParam) {
+    EnumDesktopWindowsCtx* ctx = (EnumDesktopWindowsCtx*)lParam;
+    if (!ctx || !ctx->daemon || !ctx->rects) return TRUE;
+    PepperSnapDaemon* d = ctx->daemon;
+
+    MONITORINFO mi = { sizeof(MONITORINFO) };
+    if (!GetMonitorInfoW(hMonitor, &mi)) return TRUE;
+
+    // mi.rcWork is the monitor's desktop area excluding the Windows taskbar
+    RECT rc = mi.rcWork;
+    HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (hTaskbar && IsWindowVisible(hTaskbar)) {
+        RECT tbRc = {0, 0, 0, 0};
+        if (GetWindowRect(hTaskbar, &tbRc)) {
+            SubtractRect(&rc, &rc, &tbRc);
+        }
+    }
+
     rc.left   -= d->vScreenX;
     rc.top    -= d->vScreenY;
     rc.right  -= d->vScreenX;
@@ -6090,6 +6133,8 @@ void PepperSnapDaemon::SnapshotDesktopWindows() {
     ctrlHoverWindowRect = {0, 0, 0, 0};
     EnumDesktopWindowsCtx ctx{ this, &desktopWindowRects };
     EnumWindows(EnumDesktopWindowsProc, (LPARAM)&ctx);
+    // Append each monitor's desktop work area (desktop screen without taskbar) at the back of Z-order
+    EnumDisplayMonitors(nullptr, nullptr, EnumMonitorWorkAreaProc, (LPARAM)&ctx);
 }
 
 bool PepperSnapDaemon::UpdateCtrlWindowHover() {
