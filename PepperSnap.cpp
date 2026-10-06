@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.2.0.4";
+    static constexpr const wchar_t* APP_VERSION = L"3.2.0.5";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -4623,7 +4623,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         L"  • M   Mosaic circle tool (+ crosshair + live dashed guide)\n"
         L"  • F   Pin on top\n\n"
         L"Size input & Escape behavior:\n"
-        L"  • Click size pill (W × H px) to type custom size (e.g. 1280x720 + Enter)\n"
+        L"  • Click size indicator to type custom size, then press enter\n"
         L"  • Esc (when using any drawing tool) -> switches to select mode\n"
         L"  • Esc (when in select mode)         -> exits capture overlay";
 
