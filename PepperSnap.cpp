@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.2.0.5";
+    static constexpr const wchar_t* APP_VERSION = L"3.2.0.6";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -4219,12 +4219,12 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
-                L"\x24D8 Settings is saved to %appdata%\\peppersnap",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_NOTIFY, 18, 699, 294, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                L"\x24D8 settings.ini is saved in %appdata%\\peppersnap",
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 699, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
 
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 316, 692, 110, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 318, 692, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(hOk, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             HWND hCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
