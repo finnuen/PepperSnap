@@ -23,15 +23,9 @@ if not os.path.exists(zig_bin):
 }
 
 compile_win32_exe() {
-  if [ -f PepperSnap.exe ] && [ ! PepperSnap.cpp -nt PepperSnap.exe ] && [ ! PepperSnap.h -nt PepperSnap.exe ] && [ ! peppersnap.rc -nt PepperSnap.exe ]; then
-    echo "[OK] Standalone Windows PE32+ executable is up to date: PepperSnap.exe ($(wc -c < PepperSnap.exe) bytes)"
-    return 0
-  fi
   ensure_compiler
-  if [ ! -f peppersnap.res ] || [ peppersnap.rc -nt peppersnap.res ]; then
-    echo "[Win32 Resource] Compiling peppersnap.rc -> peppersnap.res..."
-    "$ZIG_BIN" rc peppersnap.rc peppersnap.res 2>/dev/null || true
-  fi
+  echo "[Win32 Resource] Compiling peppersnap.rc -> peppersnap.res..."
+  "$ZIG_BIN" rc -- peppersnap.rc peppersnap.res
   echo "[C++17 Win32 Build] Compiling PepperSnap.cpp -> PepperSnap.exe (x86_64-windows-gnu, static CRT)..."
   "$ZIG_BIN" c++ \
     -target x86_64-windows-gnu \
@@ -56,6 +50,7 @@ compile_win32_exe() {
     -lshlwapi \
     -ladvapi32 \
     -lwininet
+  touch /tmp/peppersnap_built_v3_3_0_0
   echo "[OK] Built standalone Windows PE32+ executable: PepperSnap.exe ($(wc -c < PepperSnap.exe) bytes)"
 }
 
@@ -75,7 +70,7 @@ check_win32_syntax() {
 
 run_native_cpp_host() {
   ensure_compiler
-  if [ ! -f PepperSnap.exe ] || [ PepperSnap.cpp -nt PepperSnap.exe ] || [ PepperSnap.h -nt PepperSnap.exe ]; then
+  if [ ! -f /tmp/peppersnap_built_v3_3_0_0 ] || [ ! -f PepperSnap.exe ] || [ PepperSnap.cpp -nt PepperSnap.exe ] || [ PepperSnap.h -nt PepperSnap.exe ] || [ peppersnap.rc -nt PepperSnap.exe ]; then
     compile_win32_exe
   fi
 
@@ -140,7 +135,7 @@ int main() {
         return 1;
     }
     listen(srv, 64);
-    printf("[PepperSnap Native C++17 Host] Serving PepperSnap.exe on port 3000\n");
+    printf("[PepperSnap Native C++17 Host] Serving PepperSnap.exe v3.3.0.0 on port 3000\n");
     fflush(stdout);
 
     while (true) {
@@ -161,6 +156,9 @@ int main() {
             hdr << "HTTP/1.1 200 OK\r\n"
                 << "Content-Type: application/vnd.microsoft.portable-executable\r\n"
                 << "Content-Disposition: attachment; filename=\"PepperSnap.exe\"\r\n"
+                << "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
+                << "Pragma: no-cache\r\n"
+                << "Expires: 0\r\n"
                 << "Content-Length: " << exe.size() << "\r\n"
                 << "Connection: close\r\n\r\n";
             std::string h = hdr.str();
@@ -180,7 +178,7 @@ int main() {
 
         std::ostringstream page;
         page << "<!doctype html><html><head><meta charset=\"utf-8\">"
-             << "<title>PepperSnap v3.2.0.8 — Pure Win32 C++17 Application</title>"
+             << "<title>PepperSnap v3.3.0.0 — Pure Win32 C++17 Application</title>"
              << "<style>"
              << "body{margin:0;background:#090D16;color:#F8FAFC;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.5}"
              << ".wrap{max-width:1080px;margin:0 auto;padding:32px 24px}"
@@ -198,9 +196,9 @@ int main() {
              << "</style></head><body><div class=\"wrap\">"
              << "<div class=\"card\">"
              << "<div class=\"badge\">100% PURE WIN32 API + GDI+ C++17 · ZERO WEB / ZERO NODE.JS / ZERO ELECTRON / ZERO TYPESCRIPT</div>"
-             << "<h1>PepperSnap.exe v3.2.0.8 — Standalone Native Windows Executable</h1>"
+             << "<h1>PepperSnap.exe v3.3.0.0 — Standalone Native Windows Executable</h1>"
              << "<p>This repository is a pure standalone C++17 Win32 API application (<code>PepperSnap.cpp</code>, <code>PepperSnap.h</code>, <code>peppersnap.rc</code>, <code>CMakeLists.txt</code>, <code>PepperSnap.sln</code>, <code>PepperSnap.vcxproj</code>, <code>Makefile</code>, <code>build.bat</code>). Even this binary inspection page is served directly by a compiled C++17 POSIX socket executable.</p>"
-             << "<a class=\"btn\" href=\"/PepperSnap.exe\" download=\"PepperSnap.exe\">Download Standalone PepperSnap.exe (" << (exeBytes / 1024) << " KB)</a>"
+             << "<a class=\"btn\" href=\"/PepperSnap.exe?v=3.3.0.0\" download=\"PepperSnap.exe\">Download Standalone PepperSnap.exe v3.3.0.0 (" << (exeBytes / 1024) << " KB)</a>"
              << "<div class=\"grid\">"
              << "<div class=\"kv\"><span>BINARY TARGET</span>PE32+ GUI (x86_64-windows-gnu) · " << exeBytes << " bytes</div>"
              << "<div class=\"kv\"><span>WIN32 SOURCE SIZE</span>" << cppLines << " lines C++17 (PepperSnap.cpp + PepperSnap.h)</div>"
@@ -219,6 +217,9 @@ int main() {
         std::ostringstream hdr;
         hdr << "HTTP/1.1 200 OK\r\n"
             << "Content-Type: text/html; charset=utf-8\r\n"
+            << "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
+            << "Pragma: no-cache\r\n"
+            << "Expires: 0\r\n"
             << "Content-Length: " << body.size() << "\r\n"
             << "Connection: close\r\n\r\n";
         std::string h = hdr.str();
@@ -239,9 +240,6 @@ case "$1" in
     check_win32_syntax
     ;;
   --serve)
-    if [ -x /tmp/peppersnap_host ] && [ -f PepperSnap.exe ] && [ ! PepperSnap.cpp -nt PepperSnap.exe ] && [ ! PepperSnap.h -nt PepperSnap.exe ]; then
-      exec /tmp/peppersnap_host
-    fi
     run_native_cpp_host
     ;;
   *)

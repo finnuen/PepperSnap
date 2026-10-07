@@ -18,6 +18,7 @@
 #include <shlwapi.h>
 #include <dwmapi.h>
 #include <objidl.h>
+#include <uiautomation.h>
 #include <wininet.h>
 #include <gdiplus.h>
 

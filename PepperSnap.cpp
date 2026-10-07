@@ -15,7 +15,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.2.0.8";
+    static constexpr const wchar_t* APP_VERSION = L"3.3.0.0";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -30,6 +30,7 @@ public:
     bool penSmoothingEnabled = true;
     int penSmoothingStrength = 15; // 5% to 100% (default 15%)
     std::wstring lastSavedFilePath;
+    std::wstring lastBalloonClickFolder;
     int captureCounter = 1;
     bool autoSaveOnCopy = true;
     bool alsoCopyFullscreen = true;
@@ -61,6 +62,7 @@ public:
     bool hasSelection = false;
     RECT selRect{0, 0, 0, 0};
     std::vector<RECT> desktopWindowRects;
+    std::vector<HWND> suppressedAboveOverlayWindows;
     bool hasCtrlHoverWindow = false;
     RECT ctrlHoverWindowRect{0, 0, 0, 0};
     RECT dimPillRect{0, 0, 0, 0};
@@ -159,7 +161,7 @@ public:
     void InitTrayIcon();
     void UpdateTrayTooltip();
     void EnsureNotificationSoundEnabled();
-    void ShowTrayToast(const std::wstring& title, const std::wstring& message);
+    void ShowTrayToast(const std::wstring& title, const std::wstring& message, const std::wstring& clickFolder = L"");
     void RemoveTrayIcon();
     std::wstring FormatFilename(int seqNum) const;
     static std::wstring FormatFilenameWithPattern(const std::wstring& pattern, int seqNum);
@@ -176,6 +178,8 @@ public:
     void InstantPreviousRegionCapture();
     void RecordLastCustomSelection();
     void SnapshotDesktopWindows();
+    void SuppressAboveOverlayWindows();
+    void RestoreSuppressedAboveOverlayWindows();
     bool UpdateCtrlWindowHover();
     void StartRegionSnipOverlay(Bitmap* customBmp = nullptr, const RECT* customSelRect = nullptr);
     void CloseRegionSnipOverlay();
@@ -561,10 +565,7 @@ void PepperSnapDaemon::EnsureNotificationSoundEnabled() {
 }
 
 void PepperSnapDaemon::UpdateTrayTooltip() {
-    std::wstring tip = L"PepperSnap v" + std::wstring(APP_VERSION) + L" — " +
-        FormatHotkeyString(hkRegionSnip) + L": Custom area | " +
-        FormatHotkeyString(hkFullSnap) + L": Instant fullscreen";
-    wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
+    wcsncpy_s(nid.szTip, L"PepperSnap", _TRUNCATE);
     if (nid.hWnd) {
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -581,14 +582,12 @@ void PepperSnapDaemon::InitTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hTrayIcon;
-    std::wstring tip = L"PepperSnap v" + std::wstring(APP_VERSION) + L" — " +
-        FormatHotkeyString(hkRegionSnip) + L": Custom area | " +
-        FormatHotkeyString(hkFullSnap) + L": Instant fullscreen";
-    wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
+    wcsncpy_s(nid.szTip, L"PepperSnap", _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
-void PepperSnapDaemon::ShowTrayToast(const std::wstring& title, const std::wstring& message) {
+void PepperSnapDaemon::ShowTrayToast(const std::wstring& title, const std::wstring& message, const std::wstring& clickFolder) {
+    lastBalloonClickFolder = clickFolder;
     EnsureNotificationSoundEnabled();
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
@@ -1007,6 +1006,37 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
         }
 
+        // If the Custom Area overlay is active (with no modal child window open), ensure Esc and overlay keys
+        // reach hOverlayWnd immediately even if a higher-band shell flyout (Notification Sidebar) held focus
+        if (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd) &&
+            (!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
+            (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd))) {
+            if (isKeyDown && vk == VK_ESCAPE) {
+                PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, VK_ESCAPE, 0);
+                return 1;
+            }
+            if (GetForegroundWindow() != g_Daemon.hOverlayWnd) {
+                if (isKeyDown && !IsModifierVk(vk)) {
+                    switch (vk) {
+                        case VK_RETURN:
+                        case VK_DELETE:
+                        case VK_BACK:
+                        case 'V': case 'P': case 'H': case 'L': case 'A': case 'N':
+                        case 'R': case 'E': case 'T': case 'X': case 'M': case 'F':
+                        case 'O': case 'C': case 'S': case 'Z': case 'Y':
+                            PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, vk, 0);
+                            return 1;
+                        default:
+                            break;
+                    }
+                } else if (isKeyDown && vk == VK_CONTROL) {
+                    PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, VK_CONTROL, 0);
+                } else if (isKeyUp && vk == VK_CONTROL) {
+                    PostMessageW(g_Daemon.hOverlayWnd, WM_KEYUP, VK_CONTROL, 0);
+                }
+            }
+        }
+
         // Handle key-down for all hotkeys, plus key-up fallback for VK_SNAPSHOT
         // (Many keyboards/games swallow WM_KEYDOWN for Shift+PrintScreen and only emit WM_KEYUP)
         if ((isKeyDown || (isKeyUp && vk == VK_SNAPSHOT)) && !IsModifierVk(vk)) {
@@ -1191,7 +1221,9 @@ Bitmap* PepperSnapDaemon::CaptureVirtualDesktop() {
         GetClassNameW(hFg, clsName, 127);
         if (wcscmp(clsName, L"Progman") != 0 &&
             wcscmp(clsName, L"WorkerW") != 0 &&
-            wcscmp(clsName, L"Shell_TrayWnd") != 0) {
+            wcscmp(clsName, L"Shell_TrayWnd") != 0 &&
+            wcscmp(clsName, L"Windows.UI.Core.CoreWindow") != 0 &&
+            wcscmp(clsName, L"XamlExplorerHostIslandWindow") != 0) {
             RECT rcFg = {0};
             if (GetWindowRect(hFg, &rcFg)) {
                 int fgW = rcFg.right - rcFg.left;
@@ -4256,12 +4288,12 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
-            // Save & Cancel Buttons + clickable %appdata%\peppersnap persistence link on bottom
+            // Save & Cancel Buttons + clickable %appdata%\PepperSnap persistence link on bottom
             HFONT hLinkFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
-                L"\x24D8 settings.ini is saved in %appdata%\\peppersnap",
+                L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 727, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
 
@@ -4502,7 +4534,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkPrev = hkPrevRegion;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
-    HWND hParent = hOverlayWnd ? hOverlayWnd : hTrayWnd;
+    HWND hParent = hTrayWnd;
     std::wstring optTitle = L"PepperSnap v" + std::wstring(APP_VERSION) + L" — options";
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"PepperSnapOptionsModal",
@@ -4511,6 +4543,8 @@ void PepperSnapDaemon::ShowOptionsModal() {
         (sw - 564) / 2, (sh - 818) / 2, 564, 818, hParent, nullptr, hInst, &st
     );
     hOptionsWnd = hDlg;
+    BringWindowToTop(hDlg);
+    SetForegroundWindow(hDlg);
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
         if (g_RecordingHotkeySlot != 0 && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
@@ -4571,11 +4605,11 @@ void PepperSnapDaemon::ShowOptionsModal() {
         if (hOverlayWnd) {
             InvalidateRect(hOverlayWnd, nullptr, FALSE);
         }
+        std::wstring appDataDir = PepperSnapDaemon::GetAppDataSettingsDir();
         ShowTrayToast(
             L"PepperSnap options saved",
-            L"Folder: " + saveFolder +
-            L"\nRegion: " + GetFormatLabel(regionFormat) +
-            L" · Copy: " + GetFormatLabel(copyFormat)
+            L"settings.ini is saved in " + appDataDir,
+            appDataDir
         );
     }
 }
@@ -4705,7 +4739,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     HWND hOwner = (hOptionsWnd && IsWindow(hOptionsWnd))
         ? hOptionsWnd
-        : (hOverlayWnd ? hOverlayWnd : hTrayWnd);
+        : hTrayWnd;
 
     HWND hDlg = CreateWindowExW(
         dwExStyle, L"PepperSnapShortcutsModal",
@@ -5700,6 +5734,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         case WM_CREATE:
             SetTimer(hWnd, 1, 450, nullptr); // Caret blink timer for in-place text box
             SetTimer(hWnd, 2, 40, nullptr);  // Ctrl-key state poll for automatic window hover selection
+            SetFocus(hWnd);
+            return 0;
+
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) != WA_INACTIVE) {
+                SetFocus(hWnd);
+            }
             return 0;
 
         case WM_TIMER:
@@ -5708,6 +5749,17 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     InvalidateRect(hWnd, nullptr, FALSE);
                 }
             } else if (wParam == 2) {
+                g_Daemon.SuppressAboveOverlayWindows();
+                if ((!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
+                    (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd))) {
+                    SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    if (GetForegroundWindow() != hWnd) {
+                        LockSetForegroundWindow(LSFW_UNLOCK);
+                        SetForegroundWindow(hWnd);
+                        SetActiveWindow(hWnd);
+                        SetFocus(hWnd);
+                    }
+                }
                 if (!g_Daemon.hasSelection && g_Daemon.dragMode == DragMode::None) {
                     if (g_Daemon.UpdateCtrlWindowHover()) {
                         g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
@@ -6533,8 +6585,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_KEYDOWN: {
-            bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
             if (g_Daemon.isEditingStroke) {
                 if (wParam == VK_ESCAPE) {
@@ -6695,53 +6747,30 @@ struct EnumDesktopWindowsCtx {
     std::vector<RECT>* rects;
 };
 
-static BOOL CALLBACK EnumDesktopWindowsProc(HWND hwnd, LPARAM lParam) {
-    EnumDesktopWindowsCtx* ctx = (EnumDesktopWindowsCtx*)lParam;
-    if (!ctx || !ctx->daemon || !ctx->rects) return TRUE;
-    PepperSnapDaemon* d = ctx->daemon;
+struct CandidateWindowEntry {
+    HWND hwnd = nullptr;
+    int layerTier = 2; // 0 = frontmost notifications/sidebars/flyouts/menus, 1 = topmost/taskbars, 2 = standard windows
+    int zOrderIdx = 0;
+};
 
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
-    if (hwnd == d->hOverlayWnd || hwnd == d->hTrayWnd) {
-        return TRUE;
-    }
+static bool IsSameOrNearlySameRect(const RECT& a, const RECT& b, LONG tol = 3) {
+    return std::abs(a.left - b.left) <= tol &&
+           std::abs(a.top - b.top) <= tol &&
+           std::abs(a.right - b.right) <= tol &&
+           std::abs(a.bottom - b.bottom) <= tol;
+}
 
-    // Skip cloaked Windows 10/11 UWP / background windows (DWMWA_CLOAKED = 14)
-    DWORD cloaked = 0;
-    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, 14, &cloaked, sizeof(cloaked))) && cloaked != 0) {
-        return TRUE;
-    }
-
-    LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    if (exStyle & WS_EX_TRANSPARENT) {
-        return TRUE;
-    }
-    if (exStyle & WS_EX_LAYERED) {
-        BYTE bAlpha = 255;
-        DWORD dwFlags = 0;
-        if (GetLayeredWindowAttributes(hwnd, nullptr, &bAlpha, &dwFlags) &&
-            (dwFlags & LWA_ALPHA) && bAlpha < 15) {
-            return TRUE;
+static void PushUniqueWindowRect(std::vector<RECT>& outRects, const RECT& rc) {
+    if (rc.right - rc.left < 16 || rc.bottom - rc.top < 16) return;
+    for (const auto& existing : outRects) {
+        if (IsSameOrNearlySameRect(existing, rc, 3)) {
+            return;
         }
     }
+    outRects.push_back(rc);
+}
 
-    WCHAR clsName[128] = {0};
-    GetClassNameW(hwnd, clsName, 127);
-    if (wcscmp(clsName, L"Progman") == 0 ||
-        wcscmp(clsName, L"WorkerW") == 0 ||
-        wcscmp(clsName, L"DummyDWMListenerWindow") == 0 ||
-        wcscmp(clsName, L"EdgeUiInputTopWndClass") == 0 ||
-        wcscmp(clsName, L"EdgeUiInputWndClass") == 0 ||
-        wcscmp(clsName, L"PepperSnapOverlayWnd") == 0 ||
-        wcscmp(clsName, L"PepperSnapTrayDaemonClass") == 0) {
-        return TRUE;
-    }
-
-    RECT rc = {0, 0, 0, 0};
-    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rc, sizeof(rc)))) {
-        if (!GetWindowRect(hwnd, &rc)) return TRUE;
-    }
-
-    // Convert from virtual desktop screen coordinates to overlay-local coordinates
+static RECT ClampScreenRectToOverlay(const PepperSnapDaemon* d, RECT rc) {
     rc.left   -= d->vScreenX;
     rc.top    -= d->vScreenY;
     rc.right  -= d->vScreenX;
@@ -6751,15 +6780,93 @@ static BOOL CALLBACK EnumDesktopWindowsProc(HWND hwnd, LPARAM lParam) {
     rc.top    = std::max(0L, std::min((LONG)d->vScreenH, rc.top));
     rc.right  = std::max(0L, std::min((LONG)d->vScreenW, rc.right));
     rc.bottom = std::max(0L, std::min((LONG)d->vScreenH, rc.bottom));
+    return rc;
+}
 
-    // Skip untitled fullscreen background host windows so they never block desktop work-area selection
-    if ((rc.right - rc.left) >= d->vScreenW && (rc.bottom - rc.top) >= d->vScreenH &&
-        GetWindowTextLengthW(hwnd) == 0) {
-        return TRUE;
-    }
+// Extract visible sub-panels (such as Windows 11 Notification Center cards, Calendar flyout,
+// Toast notification popups, Emoji/Clipboard popups, etc.) from large CoreWindow / XAML Island hosts
+static void ExtractUiaSubWindowRects(
+    IUIAutomation* pUia,
+    IUIAutomationTreeWalker* pWalker,
+    HWND hwnd,
+    const RECT& hostOverlayRc,
+    const PepperSnapDaemon* d,
+    bool isFullscreenHost,
+    std::vector<RECT>& outSubRects
+) {
+    if (!pUia || !pWalker || !hwnd) return;
+    IUIAutomationElement* pRoot = nullptr;
+    if (FAILED(pUia->ElementFromHandle((UIA_HWND)hwnd, &pRoot)) || !pRoot) return;
 
-    if (rc.right - rc.left >= 16 && rc.bottom - rc.top >= 16) {
-        ctx->rects->push_back(rc);
+    LONG hostW = hostOverlayRc.right - hostOverlayRc.left;
+    LONG hostH = hostOverlayRc.bottom - hostOverlayRc.top;
+    long long hostArea = (long long)hostW * (long long)hostH;
+
+    auto collectLevelPanels = [&](IUIAutomationElement* parentElem, auto& selfRef, int depth) -> void {
+        if (!parentElem || depth > 3) return;
+        IUIAutomationElement* pChild = nullptr;
+        if (FAILED(pWalker->GetFirstChildElement(parentElem, &pChild)) || !pChild) return;
+
+        while (pChild) {
+            WINBOOL isOffscreen = FALSE;
+            RECT childScreenRc = {0, 0, 0, 0};
+            CONTROLTYPEID ctrlType = 0;
+            bool okBounds = SUCCEEDED(pChild->get_CurrentBoundingRectangle(&childScreenRc));
+            pChild->get_CurrentIsOffscreen(&isOffscreen);
+            pChild->get_CurrentControlType(&ctrlType);
+
+            if (okBounds && !isOffscreen) {
+                RECT cRc = ClampScreenRectToOverlay(d, childScreenRc);
+                LONG cw = cRc.right - cRc.left;
+                LONG ch = cRc.bottom - cRc.top;
+                long long cArea = (long long)cw * (long long)ch;
+
+                if (cw >= 48 && ch >= 28) {
+                    // If this child is a full-size wrapper around the host (>= 92% of host area), unwrap it
+                    if (hostArea > 0 && cArea >= (hostArea * 92) / 100) {
+                        selfRef(pChild, selfRef, depth + 1);
+                    } else {
+                        bool isContainerType =
+                            ctrlType == UIA_WindowControlTypeId ||
+                            ctrlType == UIA_PaneControlTypeId ||
+                            ctrlType == UIA_GroupControlTypeId ||
+                            ctrlType == UIA_CustomControlTypeId ||
+                            ctrlType == UIA_MenuControlTypeId ||
+                            ctrlType == UIA_ToolTipControlTypeId ||
+                            ctrlType == UIA_ToolBarControlTypeId ||
+                            ctrlType == UIA_ListControlTypeId;
+
+                        bool validPanelSize = isFullscreenHost
+                            ? (cw >= 80 && ch >= 32 && cArea < (hostArea * 85) / 100)
+                            : (cw >= (hostW * 65) / 100 && ch >= 40 && ch < (hostH * 94) / 100);
+
+                        if (isContainerType && validPanelSize) {
+                            PushUniqueWindowRect(outSubRects, cRc);
+                        } else if (depth < 2 && cArea >= (hostArea * 25) / 100) {
+                            selfRef(pChild, selfRef, depth + 1);
+                        }
+                    }
+                }
+            }
+
+            IUIAutomationElement* pNext = nullptr;
+            if (FAILED(pWalker->GetNextSiblingElement(pChild, &pNext))) {
+                pNext = nullptr;
+            }
+            pChild->Release();
+            pChild = pNext;
+        }
+    };
+
+    collectLevelPanels(pRoot, collectLevelPanels, 1);
+    pRoot->Release();
+}
+
+static BOOL CALLBACK CollectEnumWindowsHwndProc(HWND hwnd, LPARAM lParam) {
+    std::vector<HWND>* list = (std::vector<HWND>*)lParam;
+    if (!list || !hwnd) return TRUE;
+    if (std::find(list->begin(), list->end(), hwnd) == list->end()) {
+        list->push_back(hwnd);
     }
     return TRUE;
 }
@@ -6781,20 +6888,18 @@ static BOOL CALLBACK EnumMonitorWorkAreaProc(HMONITOR hMonitor, HDC, LPRECT, LPA
             SubtractRect(&rc, &rc, &tbRc);
         }
     }
-
-    rc.left   -= d->vScreenX;
-    rc.top    -= d->vScreenY;
-    rc.right  -= d->vScreenX;
-    rc.bottom -= d->vScreenY;
-
-    rc.left   = std::max(0L, std::min((LONG)d->vScreenW, rc.left));
-    rc.top    = std::max(0L, std::min((LONG)d->vScreenH, rc.top));
-    rc.right  = std::max(0L, std::min((LONG)d->vScreenW, rc.right));
-    rc.bottom = std::max(0L, std::min((LONG)d->vScreenH, rc.bottom));
-
-    if (rc.right - rc.left >= 16 && rc.bottom - rc.top >= 16) {
-        ctx->rects->push_back(rc);
+    HWND hSecTaskbar = nullptr;
+    while ((hSecTaskbar = FindWindowExW(nullptr, hSecTaskbar, L"Shell_SecondaryTrayWnd", nullptr)) != nullptr) {
+        if (IsWindowVisible(hSecTaskbar)) {
+            RECT tbRc = {0, 0, 0, 0};
+            if (GetWindowRect(hSecTaskbar, &tbRc)) {
+                SubtractRect(&rc, &rc, &tbRc);
+            }
+        }
     }
+
+    rc = ClampScreenRectToOverlay(d, rc);
+    PushUniqueWindowRect(*ctx->rects, rc);
     return TRUE;
 }
 
@@ -6802,10 +6907,312 @@ void PepperSnapDaemon::SnapshotDesktopWindows() {
     desktopWindowRects.clear();
     hasCtrlHoverWindow = false;
     ctrlHoverWindowRect = {0, 0, 0, 0};
-    EnumDesktopWindowsCtx ctx{ this, &desktopWindowRects };
-    EnumWindows(EnumDesktopWindowsProc, (LPARAM)&ctx);
+
+    // 1. Collect all top-level windows across ALL Z-order bands (ZBID_DESKTOP, ZBID_IMMERSIVE_NOTIFICATIONS,
+    //    ZBID_IMMERSIVE_MOGO, ZBID_IMMERSIVE_SEARCH, ZBID_SYSTEM_TOOLS, ZBID_ABOVELOCK_UX, etc.)
+    std::vector<HWND> rawHwnds;
+    rawHwnds.reserve(256);
+
+    // FindWindowExW(nullptr, prev, nullptr, nullptr) traverses the desktop's global child list across all ZBID bands
+    HWND hCur = nullptr;
+    for (int iter = 0; iter < 4096; ++iter) {
+        hCur = FindWindowExW(nullptr, hCur, nullptr, nullptr);
+        if (!hCur) break;
+        if (std::find(rawHwnds.begin(), rawHwnds.end(), hCur) == rawHwnds.end()) {
+            rawHwnds.push_back(hCur);
+        }
+    }
+
+    // Also run EnumWindows & EnumDesktopWindows to ensure no desktop window is missed
+    EnumWindows(CollectEnumWindowsHwndProc, (LPARAM)&rawHwnds);
+    EnumDesktopWindows(GetThreadDesktop(GetCurrentThreadId()), CollectEnumWindowsHwndProc, (LPARAM)&rawHwnds);
+
+    typedef BOOL (WINAPI *PFN_GetWindowBand)(HWND, PDWORD);
+    static PFN_GetWindowBand s_fnGetWindowBand = nullptr;
+    static bool s_resolvedBandFn = false;
+    if (!s_resolvedBandFn) {
+        HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+        if (hUser32) {
+            s_fnGetWindowBand = (PFN_GetWindowBand)GetProcAddress(hUser32, "GetWindowBand");
+        }
+        s_resolvedBandFn = true;
+    }
+
+    std::vector<CandidateWindowEntry> candidates;
+    candidates.reserve(rawHwnds.size());
+
+    for (size_t i = 0; i < rawHwnds.size(); ++i) {
+        HWND hwnd = rawHwnds[i];
+        if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) continue;
+        if (hwnd == hOverlayWnd || hwnd == hTrayWnd) continue;
+
+        HWND hRootOwner = GetAncestor(hwnd, GA_ROOTOWNER);
+        if (hRootOwner && hRootOwner != hwnd && IsIconic(hRootOwner)) continue;
+
+        // Skip cloaked Windows 10/11 UWP / background shell windows (DWMWA_CLOAKED = 14)
+        DWORD cloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(hwnd, 14, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+            continue;
+        }
+
+        LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if (exStyle & WS_EX_LAYERED) {
+            BYTE bAlpha = 255;
+            DWORD dwFlags = 0;
+            if (GetLayeredWindowAttributes(hwnd, nullptr, &bAlpha, &dwFlags) &&
+                (dwFlags & LWA_ALPHA) && bAlpha < 15) {
+                continue;
+            }
+        }
+
+        WCHAR clsName[128] = {0};
+        GetClassNameW(hwnd, clsName, 127);
+        if (wcscmp(clsName, L"Progman") == 0 ||
+            wcscmp(clsName, L"WorkerW") == 0 ||
+            wcscmp(clsName, L"DummyDWMListenerWindow") == 0 ||
+            wcscmp(clsName, L"EdgeUiInputTopWndClass") == 0 ||
+            wcscmp(clsName, L"EdgeUiInputWndClass") == 0 ||
+            wcscmp(clsName, L"IME") == 0 ||
+            wcscmp(clsName, L"Default IME") == 0 ||
+            wcscmp(clsName, L"MSCTFIME UI") == 0 ||
+            wcscmp(clsName, L"SysShadow") == 0 ||
+            wcscmp(clsName, L"PepperSnapOverlayWnd") == 0 ||
+            wcscmp(clsName, L"PepperSnapTrayDaemonClass") == 0) {
+            continue;
+        }
+
+        DWORD band = 1; // ZBID_DESKTOP = 1
+        if (s_fnGetWindowBand) {
+            s_fnGetWindowBand(hwnd, &band);
+        }
+
+        bool isTaskbar = (wcscmp(clsName, L"Shell_TrayWnd") == 0 ||
+                          wcscmp(clsName, L"Shell_SecondaryTrayWnd") == 0);
+        bool isCoreOrIsland = (wcscmp(clsName, L"Windows.UI.Core.CoreWindow") == 0 ||
+                               wcscmp(clsName, L"XamlExplorerHostIslandWindow") == 0 ||
+                               wcscmp(clsName, L"ControlCenterWindow") == 0 ||
+                               wcscmp(clsName, L"TopLevelWindowForOverflowXamlIsland") == 0 ||
+                               wcscmp(clsName, L"Xaml_WindowedPopupClass") == 0 ||
+                               wcscmp(clsName, L"PopupHost") == 0 ||
+                               wcscmp(clsName, L"NotifyIconOverflowWindow") == 0 ||
+                               wcscmp(clsName, L"tooltips_class32") == 0 ||
+                               wcscmp(clsName, L"#32768") == 0);
+
+        int tier = 2;
+        if (!isTaskbar && (isCoreOrIsland ||
+            band == 2  /* ZBID_UIACCESS */ ||
+            band == 3  /* ZBID_IMMERSIVE_IHM */ ||
+            band == 4  /* ZBID_IMMERSIVE_NOTIFICATIONS */ ||
+            band == 6  /* ZBID_IMMERSIVE_MOGO */ ||
+            band == 13 /* ZBID_IMMERSIVE_SEARCH */ ||
+            band == 16 /* ZBID_SYSTEM_TOOLS */ ||
+            band == 18 /* ZBID_ABOVELOCK_UX */)) {
+            tier = 0; // Frontmost notifications, notification sidebar, flyouts, popups, menus
+        } else if (isTaskbar || (exStyle & WS_EX_TOPMOST) != 0) {
+            tier = 1; // Topmost windows & taskbars
+        }
+
+        candidates.push_back({ hwnd, tier, (int)i });
+    }
+
+    std::stable_sort(candidates.begin(), candidates.end(), [](const CandidateWindowEntry& a, const CandidateWindowEntry& b) {
+        if (a.layerTier != b.layerTier) return a.layerTier < b.layerTier;
+        return a.zOrderIdx < b.zOrderIdx;
+    });
+
+    // Lazily initialize UI Automation only if we encounter a large CoreWindow / XAML Island host
+    IUIAutomation* pUia = nullptr;
+    IUIAutomationTreeWalker* pWalker = nullptr;
+    bool triedUiaInit = false;
+
+    auto ensureUia = [&]() -> bool {
+        if (!triedUiaInit) {
+            triedUiaInit = true;
+            static const GUID CLSID_CUIAutomation_Local = { 0xff48dba4, 0x60ef, 0x4201, { 0xaa, 0x87, 0x54, 0x10, 0x3e, 0xef, 0x59, 0x4e } };
+            static const GUID IID_IUIAutomation_Local   = { 0x30cbe57d, 0xd9d0, 0x452a, { 0xab, 0x13, 0x7a, 0xc5, 0xac, 0x48, 0x25, 0xee } };
+            if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation_Local, nullptr, CLSCTX_INPROC_SERVER, IID_IUIAutomation_Local, (void**)&pUia)) && pUia) {
+                pUia->get_ControlViewWalker(&pWalker);
+            }
+        }
+        return (pUia != nullptr && pWalker != nullptr);
+    };
+
+    for (const auto& cand : candidates) {
+        HWND hwnd = cand.hwnd;
+        WCHAR clsName[128] = {0};
+        GetClassNameW(hwnd, clsName, 127);
+        WCHAR winTitle[256] = {0};
+        GetWindowTextW(hwnd, winTitle, 255);
+
+        RECT rawRc = {0, 0, 0, 0};
+        if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rawRc, sizeof(rawRc))) ||
+            (rawRc.right - rawRc.left) <= 0 || (rawRc.bottom - rawRc.top) <= 0) {
+            if (!GetWindowRect(hwnd, &rawRc)) continue;
+        }
+
+        RECT rc = ClampScreenRectToOverlay(this, rawRc);
+        LONG w = rc.right - rc.left;
+        LONG h = rc.bottom - rc.top;
+        if (w < 16 || h < 16) continue;
+
+        HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(MONITORINFO) };
+        LONG monW = vScreenW, monH = vScreenH;
+        if (hMon && GetMonitorInfoW(hMon, &mi)) {
+            monW = std::max(1L, mi.rcMonitor.right - mi.rcMonitor.left);
+            monH = std::max(1L, mi.rcMonitor.bottom - mi.rcMonitor.top);
+        }
+
+        LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        bool isFullscreenMon = (w >= (monW * 85) / 100 && h >= (monH * 85) / 100);
+        bool isTallColumn    = (h >= (monH * 75) / 100);
+
+        // Skip fullscreen click-through transparent overlays (while keeping non-fullscreen notification balloons/popups!)
+        if ((exStyle & WS_EX_TRANSPARENT) && isFullscreenMon) {
+            continue;
+        }
+
+        // Skip untitled fullscreen background host windows on the desktop
+        if (w >= vScreenW && h >= vScreenH && winTitle[0] == L'\0' &&
+            wcscmp(clsName, L"Windows.UI.Core.CoreWindow") != 0 &&
+            wcscmp(clsName, L"XamlExplorerHostIslandWindow") != 0) {
+            continue;
+        }
+
+        bool isCoreOrXamlHost = (wcscmp(clsName, L"Windows.UI.Core.CoreWindow") == 0 ||
+                                 wcscmp(clsName, L"XamlExplorerHostIslandWindow") == 0 ||
+                                 wcscmp(clsName, L"TopLevelWindowForOverflowXamlIsland") == 0);
+
+        if (isCoreOrXamlHost && (isFullscreenMon || isTallColumn)) {
+            std::vector<RECT> subRects;
+            if (ensureUia()) {
+                ExtractUiaSubWindowRects(pUia, pWalker, hwnd, rc, this, isFullscreenMon, subRects);
+            }
+
+            if (!subRects.empty()) {
+                RECT unionRc = subRects[0];
+                for (const auto& sr : subRects) {
+                    PushUniqueWindowRect(desktopWindowRects, sr);
+                    unionRc.left   = std::min(unionRc.left, sr.left);
+                    unionRc.top    = std::min(unionRc.top, sr.top);
+                    unionRc.right  = std::max(unionRc.right, sr.right);
+                    unionRc.bottom = std::max(unionRc.bottom, sr.bottom);
+                }
+                if (subRects.size() > 1) {
+                    PushUniqueWindowRect(desktopWindowRects, unionRc);
+                }
+            }
+
+            // If this is a fullscreen transparent shell canvas (like "Windows Input Experience" TextInputHost.exe),
+            // do NOT push the fullscreen container rect itself—only its active child popup rects above.
+            bool isInputExperienceCanvas =
+                isFullscreenMon &&
+                (wcsstr(winTitle, L"Input Experience") != nullptr ||
+                 wcsstr(winTitle, L"Text Input") != nullptr ||
+                 winTitle[0] == L'\0' ||
+                 wcscmp(clsName, L"XamlExplorerHostIslandWindow") == 0);
+
+            if (!isInputExperienceCanvas) {
+                PushUniqueWindowRect(desktopWindowRects, rc);
+            }
+            continue;
+        }
+
+        PushUniqueWindowRect(desktopWindowRects, rc);
+    }
+
+    if (pWalker) pWalker->Release();
+    if (pUia) pUia->Release();
+
     // Append each monitor's desktop work area (desktop screen without taskbar) at the back of Z-order
+    EnumDesktopWindowsCtx ctx{ this, &desktopWindowRects };
     EnumDisplayMonitors(nullptr, nullptr, EnumMonitorWorkAreaProc, (LPARAM)&ctx);
+}
+
+void PepperSnapDaemon::SuppressAboveOverlayWindows() {
+    typedef BOOL (WINAPI *PFN_GetWindowBand)(HWND, PDWORD);
+    static PFN_GetWindowBand s_fnGetWindowBand = nullptr;
+    static bool s_resolvedBandFn = false;
+    if (!s_resolvedBandFn) {
+        HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+        if (hUser32) {
+            s_fnGetWindowBand = (PFN_GetWindowBand)GetProcAddress(hUser32, "GetWindowBand");
+        }
+        s_resolvedBandFn = true;
+    }
+
+    HWND hCur = nullptr;
+    for (int iter = 0; iter < 1024; ++iter) {
+        hCur = FindWindowExW(nullptr, hCur, nullptr, nullptr);
+        if (!hCur) break;
+        if (!IsWindow(hCur) || !IsWindowVisible(hCur) || IsIconic(hCur)) continue;
+        if (hCur == hOverlayWnd || hCur == hOptionsWnd || hCur == hShortcutsWnd || hCur == hTrayWnd) continue;
+        if (std::find(pinnedWindows.begin(), pinnedWindows.end(), hCur) != pinnedWindows.end()) continue;
+
+        DWORD cloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(hCur, 14 /* DWMWA_CLOAKED */, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+            continue;
+        }
+
+        WCHAR clsName[128] = {0};
+        GetClassNameW(hCur, clsName, 127);
+        if (wcscmp(clsName, L"Progman") == 0 ||
+            wcscmp(clsName, L"WorkerW") == 0 ||
+            wcscmp(clsName, L"Shell_TrayWnd") == 0 ||
+            wcscmp(clsName, L"Shell_SecondaryTrayWnd") == 0 ||
+            wcscmp(clsName, L"PepperSnapOverlayWnd") == 0 ||
+            wcscmp(clsName, L"PepperSnapOptionsModal") == 0 ||
+            wcscmp(clsName, L"PepperSnapShortcutsModal") == 0 ||
+            wcscmp(clsName, L"PepperSnapPinWnd") == 0 ||
+            wcscmp(clsName, L"PepperSnapTrayDaemonClass") == 0) {
+            continue;
+        }
+
+        DWORD band = 1; // ZBID_DESKTOP = 1
+        if (s_fnGetWindowBand) {
+            s_fnGetWindowBand(hCur, &band);
+        }
+
+        bool isHigherBand = (band > 1);
+        bool isShellNotificationOrFlyout =
+            wcscmp(clsName, L"Windows.UI.Core.CoreWindow") == 0 ||
+            wcscmp(clsName, L"XamlExplorerHostIslandWindow") == 0 ||
+            wcscmp(clsName, L"ControlCenterWindow") == 0 ||
+            wcscmp(clsName, L"TopLevelWindowForOverflowXamlIsland") == 0 ||
+            wcscmp(clsName, L"Xaml_WindowedPopupClass") == 0 ||
+            wcscmp(clsName, L"PopupHost") == 0 ||
+            wcscmp(clsName, L"NotifyIconOverflowWindow") == 0 ||
+            wcscmp(clsName, L"tooltips_class32") == 0;
+
+        if (!isHigherBand && !isShellNotificationOrFlyout) continue;
+
+        if (std::find(suppressedAboveOverlayWindows.begin(), suppressedAboveOverlayWindows.end(), hCur) == suppressedAboveOverlayWindows.end()) {
+            suppressedAboveOverlayWindows.push_back(hCur);
+        }
+
+        // Clip the live higher-band window to an empty 0x0 region and hide it so hOverlayWnd (which already captured
+        // its frozen pixels and selectable rects) renders on the very top without obstruction
+        HRGN hEmptyRgn = CreateRectRgn(0, 0, 0, 0);
+        if (hEmptyRgn) {
+            if (!SetWindowRgn(hCur, hEmptyRgn, TRUE)) {
+                DeleteObject(hEmptyRgn);
+            }
+        }
+        SetWindowPos(hCur, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_HIDEWINDOW);
+        ShowWindow(hCur, SW_HIDE);
+        PostMessageW(hCur, WM_ACTIVATE, WA_INACTIVE, 0);
+        PostMessageW(hCur, WM_CANCELMODE, 0, 0);
+    }
+}
+
+void PepperSnapDaemon::RestoreSuppressedAboveOverlayWindows() {
+    for (HWND hwnd : suppressedAboveOverlayWindows) {
+        if (hwnd && IsWindow(hwnd)) {
+            SetWindowRgn(hwnd, nullptr, TRUE);
+            ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+    suppressedAboveOverlayWindows.clear();
 }
 
 bool PepperSnapDaemon::UpdateCtrlWindowHover() {
@@ -6836,7 +7243,7 @@ bool PepperSnapDaemon::UpdateCtrlWindowHover() {
 
 void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* customSelRect) {
     if (hOverlayWnd) {
-        if (customBmp) {
+        if (customBmp || (hOptionsWnd && IsWindow(hOptionsWnd)) || (hShortcutsWnd && IsWindow(hShortcutsWnd))) {
             CloseRegionSnipOverlay();
         } else {
             SetForegroundWindow(hOverlayWnd);
@@ -6900,14 +7307,62 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
         UpdateCtrlWindowHover();
     }
 
-    hOverlayWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        L"PepperSnapOverlayWnd", L"PepperSnap Region Snip",
-        WS_POPUP | WS_VISIBLE,
-        vScreenX, vScreenY, vScreenW, vScreenH,
-        nullptr, nullptr, hInst, nullptr
-    );
+    typedef HWND (WINAPI *PFN_CreateWindowInBand)(DWORD, LPCWSTR, LPCWSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID, DWORD);
+    typedef BOOL (WINAPI *PFN_SetWindowBand)(HWND, HWND, DWORD);
+    static PFN_CreateWindowInBand s_fnCreateWindowInBand = nullptr;
+    static PFN_SetWindowBand s_fnSetWindowBand = nullptr;
+    static bool s_resolvedWinBandApis = false;
+    if (!s_resolvedWinBandApis) {
+        HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+        if (hUser32) {
+            s_fnCreateWindowInBand = (PFN_CreateWindowInBand)GetProcAddress(hUser32, "CreateWindowInBand");
+            s_fnSetWindowBand      = (PFN_SetWindowBand)GetProcAddress(hUser32, "SetWindowBand");
+        }
+        s_resolvedWinBandApis = true;
+    }
+
+    hOverlayWnd = nullptr;
+    if (s_fnCreateWindowInBand) {
+        const DWORD candidateBands[] = { 16 /* ZBID_SYSTEM_TOOLS */, 4 /* ZBID_IMMERSIVE_NOTIFICATIONS */, 2 /* ZBID_UIACCESS */ };
+        for (DWORD b : candidateBands) {
+            hOverlayWnd = s_fnCreateWindowInBand(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                L"PepperSnapOverlayWnd", L"PepperSnap Region Snip",
+                WS_POPUP | WS_VISIBLE,
+                vScreenX, vScreenY, vScreenW, vScreenH,
+                nullptr, nullptr, hInst, nullptr, b
+            );
+            if (hOverlayWnd) break;
+        }
+    }
+    if (!hOverlayWnd) {
+        hOverlayWnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            L"PepperSnapOverlayWnd", L"PepperSnap Region Snip",
+            WS_POPUP | WS_VISIBLE,
+            vScreenX, vScreenY, vScreenW, vScreenH,
+            nullptr, nullptr, hInst, nullptr
+        );
+    }
+    if (hOverlayWnd && s_fnSetWindowBand) {
+        if (!s_fnSetWindowBand(hOverlayWnd, HWND_TOPMOST, 16 /* ZBID_SYSTEM_TOOLS */)) {
+            if (!s_fnSetWindowBand(hOverlayWnd, HWND_TOPMOST, 4 /* ZBID_IMMERSIVE_NOTIFICATIONS */)) {
+                s_fnSetWindowBand(hOverlayWnd, HWND_TOPMOST, 2 /* ZBID_UIACCESS */);
+            }
+        }
+    }
+
+    // Immediately suppress/clip any live higher-band notification sidebars or notification pop-ups
+    // (their pixels and selectable window rects are already captured in frozenDesktopBmp & desktopWindowRects)
+    SuppressAboveOverlayWindows();
+
+    SetWindowPos(hOverlayWnd, HWND_TOPMOST, vScreenX, vScreenY, vScreenW, vScreenH, SWP_SHOWWINDOW);
     UpdateOverlayCursor(mousePt.x, mousePt.y);
+
+    // Unlock foreground activation so SetForegroundWindow succeeds even when a UWP CoreWindow (Notification Center / Start) had focus
+    LockSetForegroundWindow(LSFW_UNLOCK);
+    keybd_event(0, 0, KEYEVENTF_KEYUP, 0);
+
     HWND hFore = GetForegroundWindow();
     DWORD foreThread = hFore ? GetWindowThreadProcessId(hFore, nullptr) : 0;
     DWORD curThread = GetCurrentThreadId();
@@ -6915,10 +7370,13 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
         AttachThreadInput(foreThread, curThread, TRUE);
         BringWindowToTop(hOverlayWnd);
         SetForegroundWindow(hOverlayWnd);
+        SetActiveWindow(hOverlayWnd);
         SetFocus(hOverlayWnd);
         AttachThreadInput(foreThread, curThread, FALSE);
     } else {
+        BringWindowToTop(hOverlayWnd);
         SetForegroundWindow(hOverlayWnd);
+        SetActiveWindow(hOverlayWnd);
         SetFocus(hOverlayWnd);
     }
 }
@@ -6940,6 +7398,7 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
         DestroyWindow(hOverlayWnd);
         hOverlayWnd = nullptr;
     }
+    RestoreSuppressedAboveOverlayWindows();
     FreeOverlaySurfaceCache();
     if (frozenDesktopBmp) {
         delete frozenDesktopBmp;
@@ -7385,7 +7844,10 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             if (lParam == WM_LBUTTONUP) g_Daemon.StartRegionSnipOverlay();
             else if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) ShowTrayContextMenu(hWnd);
             else if (lParam == NIN_BALLOONUSERCLICK) {
-                if (!g_Daemon.lastSavedFilePath.empty()) {
+                if (!g_Daemon.lastBalloonClickFolder.empty()) {
+                    CreateDirectoryW(g_Daemon.lastBalloonClickFolder.c_str(), nullptr);
+                    ShellExecuteW(nullptr, L"open", g_Daemon.lastBalloonClickFolder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                } else if (!g_Daemon.lastSavedFilePath.empty()) {
                     std::wstring param = L"/select,\"" + g_Daemon.lastSavedFilePath + L"\"";
                     ShellExecuteW(nullptr, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOWNORMAL);
                 } else {
@@ -7476,20 +7938,53 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         cliMsg = WM_TRIGGER_REGION_SNIP;
     }
 
-    // If an existing PepperSnap instance is already running, forward CLI commands immediately
-    HWND hExistingPreCheck = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
-    if (hExistingPreCheck) {
+    std::wstring currentDaemonTitle = L"PepperSnap v" + std::wstring(PepperSnapDaemon::APP_VERSION);
+
+    auto isSameVersionDaemon = [&](HWND hExisting) -> bool {
+        if (!hExisting || !IsWindow(hExisting)) return false;
+        WCHAR existingTitle[128] = {0};
+        GetWindowTextW(hExisting, existingTitle, 127);
+        return (wcscmp(existingTitle, currentDaemonTitle.c_str()) == 0);
+    };
+
+    auto forwardToRunningDaemon = [&](HWND hExisting) {
         if (!cliEditFilePath.empty()) {
             COPYDATASTRUCT cds = {0};
             cds.dwData = COPYDATA_OPEN_IMAGE;
             cds.cbData = (DWORD)((cliEditFilePath.size() + 1) * sizeof(wchar_t));
             cds.lpData = (PVOID)cliEditFilePath.c_str();
-            SendMessageTimeoutW(hExistingPreCheck, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 3000, nullptr);
+            SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 3000, nullptr);
         } else if (cliMsg != 0) {
-            PostMessageW(hExistingPreCheck, cliMsg, cliWParam, 0);
+            PostMessageW(hExisting, cliMsg, cliWParam, 0);
         } else {
-            PostMessageW(hExistingPreCheck, WM_TRIGGER_REGION_SNIP, 0, 0);
+            PostMessageW(hExisting, WM_TRIGGER_REGION_SNIP, 0, 0);
         }
+    };
+
+    auto shutdownOlderDaemon = [&](HWND hOld) {
+        if (!hOld || !IsWindow(hOld)) return;
+        DWORD oldPid = 0;
+        GetWindowThreadProcessId(hOld, &oldPid);
+        SendMessageTimeoutW(hOld, WM_COMMAND, IDM_TRAY_EXIT, 0, SMTO_ABORTIFHUNG, 1000, nullptr);
+        PostMessageW(hOld, WM_CLOSE, 0, 0);
+        for (int waitIter = 0; waitIter < 25; ++waitIter) {
+            if (!FindWindowW(L"PepperSnapTrayDaemonClass", nullptr)) break;
+            Sleep(40);
+        }
+        if (oldPid != 0 && FindWindowW(L"PepperSnapTrayDaemonClass", nullptr) != nullptr) {
+            HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, oldPid);
+            if (hProc) {
+                TerminateProcess(hProc, 0);
+                WaitForSingleObject(hProc, 500);
+                CloseHandle(hProc);
+            }
+        }
+    };
+
+    // If an existing PepperSnap instance of the SAME version is already running, forward CLI commands immediately
+    HWND hExistingPreCheck = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
+    if (hExistingPreCheck && isSameVersionDaemon(hExistingPreCheck)) {
+        forwardToRunningDaemon(hExistingPreCheck);
         return 0;
     }
 
@@ -7511,23 +8006,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         }
     }
 
+    // If an older version of PepperSnap is running in the tray, cleanly replace it with this newer version
+    HWND hExistingCheck = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
+    if (hExistingCheck && !isSameVersionDaemon(hExistingCheck)) {
+        shutdownOlderDaemon(hExistingCheck);
+    }
+
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Global\\PepperSnap_TrayDaemon_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND hExisting = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
         if (hExisting) {
-            if (!cliEditFilePath.empty()) {
-                COPYDATASTRUCT cds = {0};
-                cds.dwData = COPYDATA_OPEN_IMAGE;
-                cds.cbData = (DWORD)((cliEditFilePath.size() + 1) * sizeof(wchar_t));
-                cds.lpData = (PVOID)cliEditFilePath.c_str();
-                SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 3000, nullptr);
-            } else if (cliMsg != 0) {
-                PostMessageW(hExisting, cliMsg, cliWParam, 0);
-            } else {
-                PostMessageW(hExisting, WM_TRIGGER_REGION_SNIP, 0, 0);
+            if (isSameVersionDaemon(hExisting)) {
+                forwardToRunningDaemon(hExisting);
+                return 0;
             }
+            shutdownOlderDaemon(hExisting);
         }
-        return 0;
     }
     if (cliMsg == WM_COMMAND && cliWParam == IDM_TRAY_EXIT) {
         if (hMutex) CloseHandle(hMutex);
@@ -7575,7 +8069,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     RegisterClassExW(&wcPin);
 
     g_Daemon.hTrayWnd = CreateWindowExW(
-        0, L"PepperSnapTrayDaemonClass", L"PepperSnap",
+        0, L"PepperSnapTrayDaemonClass", currentDaemonTitle.c_str(),
         0, 0, 0, 0, 0, nullptr, nullptr, hInstance, nullptr
     );
     ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
