@@ -1,5 +1,5 @@
 # =============================================================================
-# PepperSnap v3.3.0.0 — Standalone Native Win32 / GDI+ C++17 Makefile
+# PepperSnap v3.5.8 — Standalone Native Win32 / GDI+ C++17 Makefile
 # Supports MinGW-w64 (x86_64-w64-mingw32-g++), Clang++, and Zig C++
 # =============================================================================
 

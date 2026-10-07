@@ -57,6 +57,7 @@ using namespace Gdiplus;
 #define WM_SHORTCUT_RECORDED   (WM_USER + 106)
 
 #define COPYDATA_OPEN_IMAGE    0x5053494DUL
+#define COPYDATA_PIN_IMAGE     0x5053504EUL
 #define TIMER_AUTO_UPDATE_CHECK 77
 
 #define HK_REGION_SNIP         9101
@@ -167,6 +168,11 @@ enum DockBtnID {
     DBTN_ACT_SAVE_AS,
     DBTN_ACT_PIN,
     DBTN_ACT_OCR,
+    DBTN_ACT_ZOOM_OUT,
+    DBTN_ACT_ZOOM_IN,
+    DBTN_ACT_ZOOM_RESET,
+    DBTN_ACT_PIN_OUTLINE,
+    DBTN_ACT_PIN_UNFILTER,
     DBTN_ACT_UNDO,
     DBTN_ACT_REDO,
     DBTN_ACT_CLEAR,
@@ -182,10 +188,28 @@ struct PinnedWindowData {
     int origW = 0;
     int origH = 0;
     float scale = 1.0f;
+    int screenImgX = 0;
+    int screenImgY = 0;
+    RECT imgRect{0, 0, 0, 0};
+    RECT lastRgnImgRect{0, 0, 0, 0};
+    RECT lastRgnStripRect{0, 0, 0, 0};
+    bool lastRgnHideToolbar = false;
+    bool hasAppliedRgn = false;
+    bool hideToolbar = false;
+    bool hideOutline = false;
+    bool smoothImage = false;
     bool dragging = false;
     POINT dragStartMouse{0, 0};
     POINT dragStartWnd{0, 0};
     int hoveredBtnId = -1;
     bool trackingMouseLeave = false;
     std::vector<DockButton> buttons;
+    HDC hCacheDC = nullptr;
+    HBITMAP hCacheBmp = nullptr;
+    HGDIOBJ hCacheOldBmp = nullptr;
+    int cachedImgW = 0;
+    int cachedImgH = 0;
+    bool cachedHideOutline = false;
+    bool cachedSmooth = false;
+    bool cachedHq = false;
 };

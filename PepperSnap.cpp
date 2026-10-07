@@ -6,6 +6,7 @@ public:
     HWND hTrayWnd = nullptr;
     HWND hOverlayWnd = nullptr;
     HWND hOptionsWnd = nullptr;
+    HWND hCustomizeKeysWnd = nullptr;
     HWND hShortcutsWnd = nullptr;
     HHOOK hKeyHook = nullptr;
     HICON hTrayIcon = nullptr;
@@ -15,7 +16,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.3.0.0";
+    static constexpr const wchar_t* APP_VERSION = L"3.5.8";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -36,6 +37,11 @@ public:
     bool alsoCopyFullscreen = true;
     bool alsoSavePinned = true;
     bool alsoSaveOcrText = true;
+    bool hidePinnedOutline = false;
+    bool smoothPinnedImage = false;
+    int optionsWindowHeight = 716;
+    int customizeKeysWindowHeight = 560;
+    int shortcutsWindowHeight = 560;
     bool autoCheckUpdates = true;
     UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
     long long lastUpdateCheckTime = 0;
@@ -46,6 +52,37 @@ public:
     HotkeyBinding hkRegionSnip{ MOD_CONTROL, VK_SNAPSHOT };
     HotkeyBinding hkFullSnap{ MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkPrevRegion{ MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
+
+    // Custom Area Tool Shortcut Bindings
+    HotkeyBinding hkToolSelect{ 0, 'V' };
+    HotkeyBinding hkToolPen{ 0, 'P' };
+    HotkeyBinding hkToolStabilo{ 0, 'H' };
+    HotkeyBinding hkToolLine{ 0, 'L' };
+    HotkeyBinding hkToolArrow{ 0, 'A' };
+    HotkeyBinding hkToolNumber{ 0, 'N' };
+    HotkeyBinding hkToolRect{ 0, 'R' };
+    HotkeyBinding hkToolEllipse{ 0, 'E' };
+    HotkeyBinding hkToolText{ 0, 'T' };
+    HotkeyBinding hkToolMosaicSq{ 0, 'X' };
+    HotkeyBinding hkToolMosaicCir{ 0, 'M' };
+
+    // Custom Area Toolbar Action Shortcut Bindings
+    HotkeyBinding hkActUndo{ MOD_CONTROL, 'Z' };
+    HotkeyBinding hkActRedo{ MOD_CONTROL, 'Y' };
+    HotkeyBinding hkActPin{ 0, 'F' };
+    HotkeyBinding hkActOcr{ 0, 'O' };
+    HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
+    HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+
+    // Pinned Image Toolbar Shortcut Bindings
+    HotkeyBinding hkPinZoomOut{ 0, VK_OEM_MINUS };
+    HotkeyBinding hkPinZoomIn{ 0, VK_OEM_PLUS };
+    HotkeyBinding hkPinZoomReset{ 0, '0' };
+    HotkeyBinding hkPinOutline{ 0, 'O' };
+    HotkeyBinding hkPinSmooth{ 0, 'S' };
+    HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
+    HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
+    HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
 
     // Previously Selected Custom Window Size & Position
     bool hasLastCustomSel = false;
@@ -305,6 +342,14 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoCopyFullscreen", alsoCopyFullscreen ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoSavePinned", alsoSavePinned ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoSaveOcrText", alsoSaveOcrText ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"HidePinnedOutline", hidePinnedOutline ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"SmoothPinnedImage", smoothPinnedImage ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowHeight", std::to_wstring(shortcutsWindowHeight).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"ActiveColorARGB", std::to_wstring(activeColor.GetValue()).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"ActiveStrokeWidth", std::to_wstring((int)std::round(activeStroke)).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"CaptureCounter", std::to_wstring(captureCounter).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingEnabled", penSmoothingEnabled ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingStrength", std::to_wstring(penSmoothingStrength).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingDefaultV31", L"1", iniPath.c_str());
@@ -313,12 +358,38 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"UpdateCheckInterval", std::to_wstring((int)updateInterval).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastUpdateCheckTime", std::to_wstring(lastUpdateCheckTime).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"UpdateGithubRepo", updateGithubRepo.c_str(), iniPath.c_str());
-    WritePrivateProfileStringW(L"PepperSnap", L"HkRegionMod", std::to_wstring(hkRegionSnip.modifiers).c_str(), iniPath.c_str());
-    WritePrivateProfileStringW(L"PepperSnap", L"HkRegionVk", std::to_wstring(hkRegionSnip.vk).c_str(), iniPath.c_str());
-    WritePrivateProfileStringW(L"PepperSnap", L"HkFullMod", std::to_wstring(hkFullSnap.modifiers).c_str(), iniPath.c_str());
-    WritePrivateProfileStringW(L"PepperSnap", L"HkFullVk", std::to_wstring(hkFullSnap.vk).c_str(), iniPath.c_str());
-    WritePrivateProfileStringW(L"PepperSnap", L"HkPrevMod", std::to_wstring(hkPrevRegion.modifiers).c_str(), iniPath.c_str());
-    WritePrivateProfileStringW(L"PepperSnap", L"HkPrevVk", std::to_wstring(hkPrevRegion.vk).c_str(), iniPath.c_str());
+    auto writeHk = [&](const wchar_t* modKey, const wchar_t* vkKey, const HotkeyBinding& hk) {
+        WritePrivateProfileStringW(L"PepperSnap", modKey, std::to_wstring(hk.modifiers).c_str(), iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", vkKey,  std::to_wstring(hk.vk).c_str(), iniPath.c_str());
+    };
+    writeHk(L"HkRegionMod",        L"HkRegionVk",        hkRegionSnip);
+    writeHk(L"HkFullMod",          L"HkFullVk",          hkFullSnap);
+    writeHk(L"HkPrevMod",          L"HkPrevVk",          hkPrevRegion);
+    writeHk(L"HkToolSelectMod",    L"HkToolSelectVk",    hkToolSelect);
+    writeHk(L"HkToolPenMod",       L"HkToolPenVk",       hkToolPen);
+    writeHk(L"HkToolStabiloMod",   L"HkToolStabiloVk",   hkToolStabilo);
+    writeHk(L"HkToolLineMod",      L"HkToolLineVk",      hkToolLine);
+    writeHk(L"HkToolArrowMod",     L"HkToolArrowVk",     hkToolArrow);
+    writeHk(L"HkToolNumberMod",    L"HkToolNumberVk",    hkToolNumber);
+    writeHk(L"HkToolRectMod",      L"HkToolRectVk",      hkToolRect);
+    writeHk(L"HkToolEllipseMod",   L"HkToolEllipseVk",   hkToolEllipse);
+    writeHk(L"HkToolTextMod",      L"HkToolTextVk",      hkToolText);
+    writeHk(L"HkToolMosaicSqMod",  L"HkToolMosaicSqVk",  hkToolMosaicSq);
+    writeHk(L"HkToolMosaicCirMod", L"HkToolMosaicCirVk", hkToolMosaicCir);
+    writeHk(L"HkActUndoMod",       L"HkActUndoVk",       hkActUndo);
+    writeHk(L"HkActRedoMod",       L"HkActRedoVk",       hkActRedo);
+    writeHk(L"HkActPinMod",        L"HkActPinVk",        hkActPin);
+    writeHk(L"HkActOcrMod",        L"HkActOcrVk",        hkActOcr);
+    writeHk(L"HkActSaveMod",       L"HkActSaveVk",       hkActSave);
+    writeHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy);
+    writeHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut);
+    writeHk(L"HkPinZoomInMod",     L"HkPinZoomInVk",     hkPinZoomIn);
+    writeHk(L"HkPinZoomResetMod",  L"HkPinZoomResetVk",  hkPinZoomReset);
+    writeHk(L"HkPinOutlineMod",    L"HkPinOutlineVk",    hkPinOutline);
+    writeHk(L"HkPinSmoothMod",     L"HkPinSmoothVk",     hkPinSmooth);
+    writeHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs);
+    writeHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave);
+    writeHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy);
     WritePrivateProfileStringW(L"PepperSnap", L"HasLastCustomSel", hasLastCustomSel ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelLeft", std::to_wstring(lastCustomSelRect.left).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelTop", std::to_wstring(lastCustomSelRect.top).c_str(), iniPath.c_str());
@@ -355,6 +426,25 @@ void PepperSnapDaemon::LoadSettings() {
     alsoCopyFullscreen = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoCopyFullscreen", 1, iniPath.c_str()) != 0);
     alsoSavePinned = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSavePinned", 1, iniPath.c_str()) != 0);
     alsoSaveOcrText = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSaveOcrText", 1, iniPath.c_str()) != 0);
+    hidePinnedOutline = false;
+    smoothPinnedImage = false;
+    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 716, iniPath.c_str());
+    optionsWindowHeight = std::max(320, std::min(2160, optWinH));
+    int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 560, iniPath.c_str());
+    customizeKeysWindowHeight = std::max(280, std::min(2160, ckWinH));
+    int scWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowHeight", 560, iniPath.c_str());
+    shortcutsWindowHeight = std::max(260, std::min(2160, scWinH));
+
+    WCHAR colBuf[64] = {0};
+    GetPrivateProfileStringW(L"PepperSnap", L"ActiveColorARGB", L"", colBuf, 63, iniPath.c_str());
+    if (wcslen(colBuf) > 0) {
+        ARGB parsedCol = (ARGB)_wcstoui64(colBuf, nullptr, 10);
+        if ((parsedCol >> 24) != 0) activeColor = Color(parsedCol);
+    }
+    int savedStroke = (int)GetPrivateProfileIntW(L"PepperSnap", L"ActiveStrokeWidth", 4, iniPath.c_str());
+    activeStroke = (float)std::max(1, std::min(120, savedStroke));
+    int savedCounter = (int)GetPrivateProfileIntW(L"PepperSnap", L"CaptureCounter", 1, iniPath.c_str());
+    captureCounter = std::max(1, savedCounter);
     if (GetPrivateProfileIntW(L"PepperSnap", L"PenSmoothingDefaultV31", 0, iniPath.c_str()) == 0) {
         penSmoothingEnabled = true;
         penSmoothingStrength = 15;
@@ -394,12 +484,47 @@ void PepperSnapDaemon::LoadSettings() {
     GetPrivateProfileStringW(L"PepperSnap", L"UpdateGithubRepo", DEFAULT_GITHUB_REPO, repoBuf, 255, iniPath.c_str());
     if (wcslen(repoBuf) > 0) updateGithubRepo = repoBuf;
 
-    hkRegionSnip.modifiers = (UINT)GetPrivateProfileIntW(L"PepperSnap", L"HkRegionMod", MOD_CONTROL, iniPath.c_str());
-    hkRegionSnip.vk        = (UINT)GetPrivateProfileIntW(L"PepperSnap", L"HkRegionVk",  VK_SNAPSHOT, iniPath.c_str());
-    hkFullSnap.modifiers   = (UINT)GetPrivateProfileIntW(L"PepperSnap", L"HkFullMod",   MOD_SHIFT,   iniPath.c_str());
-    hkFullSnap.vk          = (UINT)GetPrivateProfileIntW(L"PepperSnap", L"HkFullVk",    VK_SNAPSHOT, iniPath.c_str());
-    hkPrevRegion.modifiers = (UINT)GetPrivateProfileIntW(L"PepperSnap", L"HkPrevMod",   MOD_CONTROL | MOD_SHIFT, iniPath.c_str());
-    hkPrevRegion.vk        = (UINT)GetPrivateProfileIntW(L"PepperSnap", L"HkPrevVk",    VK_SNAPSHOT, iniPath.c_str());
+    auto readHk = [&](const wchar_t* modKey, const wchar_t* vkKey, HotkeyBinding& hk, UINT defMod, UINT defVk) {
+        int vkVal = (int)GetPrivateProfileIntW(L"PepperSnap", vkKey, -1, iniPath.c_str());
+        if (vkVal < 0) {
+            hk.modifiers = defMod;
+            hk.vk = defVk;
+        } else if (vkVal == 0) {
+            hk.modifiers = 0;
+            hk.vk = 0;
+        } else {
+            hk.modifiers = (UINT)GetPrivateProfileIntW(L"PepperSnap", modKey, defMod, iniPath.c_str());
+            hk.vk = (UINT)vkVal;
+        }
+    };
+    readHk(L"HkRegionMod",        L"HkRegionVk",        hkRegionSnip,    MOD_CONTROL,             VK_SNAPSHOT);
+    readHk(L"HkFullMod",          L"HkFullVk",          hkFullSnap,      MOD_SHIFT,               VK_SNAPSHOT);
+    readHk(L"HkPrevMod",          L"HkPrevVk",          hkPrevRegion,    MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT);
+    readHk(L"HkToolSelectMod",    L"HkToolSelectVk",    hkToolSelect,    0,                       'V');
+    readHk(L"HkToolPenMod",       L"HkToolPenVk",       hkToolPen,       0,                       'P');
+    readHk(L"HkToolStabiloMod",   L"HkToolStabiloVk",   hkToolStabilo,   0,                       'H');
+    readHk(L"HkToolLineMod",      L"HkToolLineVk",      hkToolLine,      0,                       'L');
+    readHk(L"HkToolArrowMod",     L"HkToolArrowVk",     hkToolArrow,     0,                       'A');
+    readHk(L"HkToolNumberMod",    L"HkToolNumberVk",    hkToolNumber,    0,                       'N');
+    readHk(L"HkToolRectMod",      L"HkToolRectVk",      hkToolRect,      0,                       'R');
+    readHk(L"HkToolEllipseMod",   L"HkToolEllipseVk",   hkToolEllipse,   0,                       'E');
+    readHk(L"HkToolTextMod",      L"HkToolTextVk",      hkToolText,      0,                       'T');
+    readHk(L"HkToolMosaicSqMod",  L"HkToolMosaicSqVk",  hkToolMosaicSq,  0,                       'X');
+    readHk(L"HkToolMosaicCirMod", L"HkToolMosaicCirVk", hkToolMosaicCir, 0,                       'M');
+    readHk(L"HkActUndoMod",       L"HkActUndoVk",       hkActUndo,       MOD_CONTROL,             'Z');
+    readHk(L"HkActRedoMod",       L"HkActRedoVk",       hkActRedo,       MOD_CONTROL,             'Y');
+    readHk(L"HkActPinMod",        L"HkActPinVk",        hkActPin,        0,                       'F');
+    readHk(L"HkActOcrMod",        L"HkActOcrVk",        hkActOcr,        0,                       'O');
+    readHk(L"HkActSaveMod",       L"HkActSaveVk",       hkActSave,       MOD_CONTROL,             'S');
+    readHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy,       MOD_CONTROL,             'C');
+    readHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut,    0,                       VK_OEM_MINUS);
+    readHk(L"HkPinZoomInMod",     L"HkPinZoomInVk",     hkPinZoomIn,     0,                       VK_OEM_PLUS);
+    readHk(L"HkPinZoomResetMod",  L"HkPinZoomResetVk",  hkPinZoomReset,  0,                       '0');
+    readHk(L"HkPinOutlineMod",    L"HkPinOutlineVk",    hkPinOutline,    0,                       'O');
+    readHk(L"HkPinSmoothMod",     L"HkPinSmoothVk",     hkPinSmooth,     0,                       'S');
+    readHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs,     MOD_CONTROL | MOD_SHIFT, 'S');
+    readHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave,       MOD_CONTROL,             'S');
+    readHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy,       MOD_CONTROL,             'C');
 
     hasLastCustomSel = (GetPrivateProfileIntW(L"PepperSnap", L"HasLastCustomSel", 0, iniPath.c_str()) != 0);
     lastCustomSelRect.left   = (LONG)GetPrivateProfileIntW(L"PepperSnap", L"LastCustomSelLeft",   0, iniPath.c_str());
@@ -849,7 +974,7 @@ static int g_RecordingHotkeySlot = 0; // 0 = None, 1 = Custom Window, 2 = Instan
 static DWORD g_LastHotkeyTriggerTick = 0;
 
 std::wstring PepperSnapDaemon::FormatHotkeyString(const HotkeyBinding& hk) {
-    if (hk.vk == 0) return L"None";
+    if (hk.vk == 0) return L"";
     std::wstring out;
     if (hk.modifiers & MOD_CONTROL) out += L"Ctrl + ";
     if (hk.modifiers & MOD_SHIFT)   out += L"Shift + ";
@@ -873,6 +998,10 @@ std::wstring PepperSnapDaemon::FormatHotkeyString(const HotkeyBinding& hk) {
         case VK_DOWN:     out += L"Down"; break;
         case VK_LEFT:     out += L"Left"; break;
         case VK_RIGHT:    out += L"Right"; break;
+        case VK_OEM_MINUS:
+        case VK_SUBTRACT: out += L"-"; break;
+        case VK_OEM_PLUS:
+        case VK_ADD:      out += L"="; break;
         default:
             if (hk.vk >= 'A' && hk.vk <= 'Z') {
                 out.push_back((wchar_t)hk.vk);
@@ -892,6 +1021,36 @@ std::wstring PepperSnapDaemon::FormatHotkeyString(const HotkeyBinding& hk) {
             break;
     }
     return out;
+}
+
+static std::wstring FormatLabelWithShortcut(const std::wstring& label, const HotkeyBinding& hk, const std::wstring& suffix = L"") {
+    if (hk.vk == 0) return label + suffix;
+    return label + L" (" + PepperSnapDaemon::FormatHotkeyString(hk) + L")" + suffix;
+}
+
+static bool MatchesOverlayShortcut(const HotkeyBinding& hk, UINT vk, bool ctrl, bool shift, bool alt) {
+    if (hk.vk == 0) return false;
+    bool vkMatch = (vk == hk.vk) ||
+                   (hk.vk == VK_OEM_MINUS && vk == VK_SUBTRACT) ||
+                   (hk.vk == VK_OEM_PLUS  && vk == VK_ADD) ||
+                   (hk.vk == '0'          && vk == VK_NUMPAD0);
+    if (!vkMatch) return false;
+    bool reqCtrl  = (hk.modifiers & MOD_CONTROL) != 0;
+    bool reqShift = (hk.modifiers & MOD_SHIFT) != 0;
+    bool reqAlt   = (hk.modifiers & MOD_ALT) != 0;
+    return (ctrl == reqCtrl) && (shift == reqShift) && (alt == reqAlt);
+}
+
+static bool MatchesAnyPinnedShortcut(UINT vk, bool ctrl, bool shift, bool alt) {
+    if (vk == VK_ESCAPE && !ctrl && !shift && !alt) return true;
+    return MatchesOverlayShortcut(g_Daemon.hkPinZoomOut,   vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinZoomIn,    vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinZoomReset, vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinOutline,   vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinSmooth,    vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinSaveAs,    vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinSave,      vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinCopy,      vk, ctrl, shift, alt);
 }
 
 void PepperSnapDaemon::ApplyGlobalHotkeys() {
@@ -915,33 +1074,39 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
     WCHAR exePath[MAX_PATH] = {0};
     if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return;
 
-    std::wstring label = L"Edit with PepperSnap";
-    std::wstring iconVal = L"\"" + std::wstring(exePath) + L"\",0";
-    std::wstring cmdVal = L"\"" + std::wstring(exePath) + L"\" --edit \"%1\"";
+    std::wstring editLabel = L"Edit with PepperSnap";
+    std::wstring pinLabel  = L"Pin on top";
+    std::wstring iconVal   = L"\"" + std::wstring(exePath) + L"\",0";
+    std::wstring editCmd   = L"\"" + std::wstring(exePath) + L"\" --edit \"%1\"";
+    std::wstring pinCmd    = L"\"" + std::wstring(exePath) + L"\" --pin \"%1\"";
 
-    auto writeShellVerb = [&](const std::wstring& baseKeyPath) {
-        std::wstring verbKeyPath = baseKeyPath + L"\\shell\\PepperSnapEdit";
+    auto writeSingleVerb = [&](const std::wstring& verbKeyPath, const std::wstring& lbl, const std::wstring& cmd) {
         HKEY hVerbKey = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, verbKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &hVerbKey, nullptr) == ERROR_SUCCESS) {
-            RegSetValueExW(hVerbKey, nullptr, 0, REG_SZ, (const BYTE*)label.c_str(), (DWORD)((label.size() + 1) * sizeof(wchar_t)));
+            RegSetValueExW(hVerbKey, nullptr, 0, REG_SZ, (const BYTE*)lbl.c_str(), (DWORD)((lbl.size() + 1) * sizeof(wchar_t)));
             RegSetValueExW(hVerbKey, L"Icon", 0, REG_SZ, (const BYTE*)iconVal.c_str(), (DWORD)((iconVal.size() + 1) * sizeof(wchar_t)));
             RegCloseKey(hVerbKey);
         }
         std::wstring cmdKeyPath = verbKeyPath + L"\\command";
         HKEY hCmdKey = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, cmdKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &hCmdKey, nullptr) == ERROR_SUCCESS) {
-            RegSetValueExW(hCmdKey, nullptr, 0, REG_SZ, (const BYTE*)cmdVal.c_str(), (DWORD)((cmdVal.size() + 1) * sizeof(wchar_t)));
+            RegSetValueExW(hCmdKey, nullptr, 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
             RegCloseKey(hCmdKey);
         }
     };
 
+    auto writeShellVerbs = [&](const std::wstring& baseKeyPath) {
+        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapEdit", editLabel, editCmd);
+        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapPin",  pinLabel,  pinCmd);
+    };
+
     // Register ONLY for image files via SystemFileAssociations\image and common image extensions
-    writeShellVerb(L"Software\\Classes\\SystemFileAssociations\\image");
+    writeShellVerbs(L"Software\\Classes\\SystemFileAssociations\\image");
     const wchar_t* imgExts[] = {
         L".png", L".jpg", L".jpeg", L".webp", L".bmp", L".gif", L".tif", L".tiff", L".ico"
     };
     for (const wchar_t* ext : imgExts) {
-        writeShellVerb(std::wstring(L"Software\\Classes\\SystemFileAssociations\\") + ext);
+        writeShellVerbs(std::wstring(L"Software\\Classes\\SystemFileAssociations\\") + ext);
     }
 }
 
@@ -990,16 +1155,19 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             }
         }
 
-        // If the Options dialog is actively recording a custom shortcut key
-        if (g_RecordingHotkeySlot != 0 && g_Daemon.hOptionsWnd && IsWindow(g_Daemon.hOptionsWnd)) {
+        // If the Customize Keys dialog is actively recording a custom shortcut key
+        HWND hRecTarget = (g_Daemon.hCustomizeKeysWnd && IsWindow(g_Daemon.hCustomizeKeysWnd))
+            ? g_Daemon.hCustomizeKeysWnd
+            : ((g_Daemon.hOptionsWnd && IsWindow(g_Daemon.hOptionsWnd)) ? g_Daemon.hOptionsWnd : nullptr);
+        if (g_RecordingHotkeySlot != 0 && hRecTarget) {
             if (isKeyDown || (isKeyUp && vk == VK_SNAPSHOT)) {
                 if (vk == VK_ESCAPE) {
-                    PostMessageW(g_Daemon.hOptionsWnd, WM_SHORTCUT_RECORDED, 0, 0);
+                    PostMessageW(hRecTarget, WM_SHORTCUT_RECORDED, 0, VK_ESCAPE);
                     return 1;
                 }
                 if (!IsModifierVk(vk)) {
                     UINT mods = GetCurrentHardwareModifiers();
-                    PostMessageW(g_Daemon.hOptionsWnd, WM_SHORTCUT_RECORDED, (WPARAM)mods, (LPARAM)vk);
+                    PostMessageW(hRecTarget, WM_SHORTCUT_RECORDED, (WPARAM)mods, (LPARAM)vk);
                     return 1;
                 }
             }
@@ -1010,6 +1178,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
         // reach hOverlayWnd immediately even if a higher-band shell flyout (Notification Sidebar) held focus
         if (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd) &&
             (!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
+            (!g_Daemon.hCustomizeKeysWnd || !IsWindow(g_Daemon.hCustomizeKeysWnd)) &&
             (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd))) {
             if (isKeyDown && vk == VK_ESCAPE) {
                 PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, VK_ESCAPE, 0);
@@ -1017,22 +1186,36 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             }
             if (GetForegroundWindow() != g_Daemon.hOverlayWnd) {
                 if (isKeyDown && !IsModifierVk(vk)) {
-                    switch (vk) {
-                        case VK_RETURN:
-                        case VK_DELETE:
-                        case VK_BACK:
-                        case 'V': case 'P': case 'H': case 'L': case 'A': case 'N':
-                        case 'R': case 'E': case 'T': case 'X': case 'M': case 'F':
-                        case 'O': case 'C': case 'S': case 'Z': case 'Y':
-                            PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, vk, 0);
-                            return 1;
-                        default:
-                            break;
-                    }
+                    PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, vk, 0);
+                    return 1;
                 } else if (isKeyDown && vk == VK_CONTROL) {
                     PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, VK_CONTROL, 0);
                 } else if (isKeyUp && vk == VK_CONTROL) {
                     PostMessageW(g_Daemon.hOverlayWnd, WM_KEYUP, VK_CONTROL, 0);
+                }
+            }
+        } else if ((!g_Daemon.hOverlayWnd || !IsWindow(g_Daemon.hOverlayWnd)) &&
+                   (!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
+                   (!g_Daemon.hCustomizeKeysWnd || !IsWindow(g_Daemon.hCustomizeKeysWnd)) &&
+                   (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd)) &&
+                   !g_Daemon.pinnedWindows.empty() && isKeyDown && !IsModifierVk(vk)) {
+            HWND hFg = GetForegroundWindow();
+            bool fgIsPin = (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hFg) != g_Daemon.pinnedWindows.end());
+            if (!fgIsPin) {
+                POINT curPt = {0, 0};
+                if (GetCursorPos(&curPt)) {
+                    HWND hAtPt = WindowFromPoint(curPt);
+                    if (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hAtPt) != g_Daemon.pinnedWindows.end()) {
+                        UINT curMods = GetCurrentHardwareModifiers();
+                        if (kb->flags & LLKHF_ALTDOWN) curMods |= MOD_ALT;
+                        bool ctrl  = (curMods & MOD_CONTROL) != 0;
+                        bool shift = (curMods & MOD_SHIFT) != 0;
+                        bool alt   = (curMods & MOD_ALT) != 0;
+                        if (MatchesAnyPinnedShortcut(vk, ctrl, shift, alt)) {
+                            PostMessageW(hAtPt, WM_KEYDOWN, vk, 0);
+                            return 1;
+                        }
+                    }
                 }
             }
         }
@@ -3223,6 +3406,93 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
             g.DrawLine(&tPen, gcx,        gcy - 2.5f, gcx,        gcy + 3.1f);
             break;
         }
+        case DBTN_ACT_ZOOM_OUT: {
+            // Magnifying glass with '-' inside the glass circle
+            float gcx = cx - 1.8f;
+            float gcy = cy - 1.8f;
+            float gr  = 6.2f;
+            g.DrawEllipse(&whitePen, gcx - gr, gcy - gr, gr * 2.0f, gr * 2.0f);
+
+            Pen handlePen(Color(255, 248, 250, 252), 2.2f);
+            handlePen.SetStartCap(LineCapRound);
+            handlePen.SetEndCap(LineCapRound);
+            g.DrawLine(&handlePen, gcx + 4.4f, gcy + 4.4f, cx + 7.2f, cy + 7.2f);
+
+            Pen symPen(Color(255, 248, 250, 252), 1.7f);
+            symPen.SetStartCap(LineCapRound);
+            symPen.SetEndCap(LineCapRound);
+            g.DrawLine(&symPen, gcx - 2.8f, gcy, gcx + 2.8f, gcy);
+            break;
+        }
+        case DBTN_ACT_ZOOM_IN: {
+            // Magnifying glass with '+' inside the glass circle
+            float gcx = cx - 1.8f;
+            float gcy = cy - 1.8f;
+            float gr  = 6.2f;
+            g.DrawEllipse(&whitePen, gcx - gr, gcy - gr, gr * 2.0f, gr * 2.0f);
+
+            Pen handlePen(Color(255, 248, 250, 252), 2.2f);
+            handlePen.SetStartCap(LineCapRound);
+            handlePen.SetEndCap(LineCapRound);
+            g.DrawLine(&handlePen, gcx + 4.4f, gcy + 4.4f, cx + 7.2f, cy + 7.2f);
+
+            Pen symPen(Color(255, 248, 250, 252), 1.7f);
+            symPen.SetStartCap(LineCapRound);
+            symPen.SetEndCap(LineCapRound);
+            g.DrawLine(&symPen, gcx - 2.8f, gcy,        gcx + 2.8f, gcy);
+            g.DrawLine(&symPen, gcx,        gcy - 2.8f, gcx,        gcy + 2.8f);
+            break;
+        }
+        case DBTN_ACT_ZOOM_RESET: {
+            // Magnifying glass with '=' inside the glass circle (Reset to original size)
+            float gcx = cx - 1.8f;
+            float gcy = cy - 1.8f;
+            float gr  = 6.2f;
+            g.DrawEllipse(&whitePen, gcx - gr, gcy - gr, gr * 2.0f, gr * 2.0f);
+
+            Pen handlePen(Color(255, 248, 250, 252), 2.2f);
+            handlePen.SetStartCap(LineCapRound);
+            handlePen.SetEndCap(LineCapRound);
+            g.DrawLine(&handlePen, gcx + 4.4f, gcy + 4.4f, cx + 7.2f, cy + 7.2f);
+
+            Pen symPen(Color(255, 248, 250, 252), 1.6f);
+            symPen.SetStartCap(LineCapRound);
+            symPen.SetEndCap(LineCapRound);
+            g.DrawLine(&symPen, gcx - 2.6f, gcy - 1.6f, gcx + 2.6f, gcy - 1.6f);
+            g.DrawLine(&symPen, gcx - 2.6f, gcy + 1.6f, gcx + 2.6f, gcy + 1.6f);
+            break;
+        }
+        case DBTN_ACT_PIN_OUTLINE: {
+            // Dotted-line outline icon (between Zoom Reset and Unfilter)
+            Pen dotPen(Color(255, 248, 250, 252), 1.7f);
+            REAL dashVals[2] = { 1.6f, 1.8f };
+            dotPen.SetDashPattern(dashVals, 2);
+            dotPen.SetLineJoin(LineJoinMiter);
+            g.DrawRectangle(&dotPen, cx - 6.5f, cy - 5.5f, 13.0f, 11.0f);
+            break;
+        }
+        case DBTN_ACT_PIN_UNFILTER: {
+            // Water-drop blur / smooth icon (between Hide Outline and Save As)
+            Pen dropPen(Color(255, 248, 250, 252), 1.75f);
+            dropPen.SetLineJoin(LineJoinRound);
+            dropPen.SetStartCap(LineCapRound);
+            dropPen.SetEndCap(LineCapRound);
+
+            float bulbCy = cy + 1.8f;
+            float r      = 4.6f;
+            GraphicsPath dropPath;
+            dropPath.StartFigure();
+            dropPath.AddLine(PointF(cx, cy - 6.8f), PointF(cx + 3.98f, bulbCy - 2.3f));
+            dropPath.AddArc(cx - r, bulbCy - r, r * 2.0f, r * 2.0f, -30.0f, 240.0f);
+            dropPath.CloseFigure();
+            g.DrawPath(&dropPen, &dropPath);
+
+            Pen shinePen(Color(220, 248, 250, 252), 1.3f);
+            shinePen.SetStartCap(LineCapRound);
+            shinePen.SetEndCap(LineCapRound);
+            g.DrawArc(&shinePen, cx - 2.4f, bulbCy - 2.4f, 4.8f, 4.8f, 20.0f, 80.0f);
+            break;
+        }
         case DBTN_ACT_SAVE_AS: {
             // Floppy + ellipsis
             g.DrawRectangle(&whitePen, cx - 6.5f, cy - 6.5f, 11.0f, 12.0f);
@@ -3398,19 +3668,19 @@ void PepperSnapDaemon::BuildDockedHUD() {
     //   Row 3: Drag Button + Options, Saves, Copy & Close Tool Bar
     // ------------------------------------------------------------------------
 
-    struct ToolEntry { OverlayTool t; const wchar_t* lbl; const wchar_t* tip; };
+    struct ToolEntry { OverlayTool t; const wchar_t* lbl; std::wstring tip; };
     ToolEntry tools[] = {
-        { OverlayTool::SelectMove,   L"Sel", L"Select mode (V)" },
-        { OverlayTool::Pen,          L"Pen", L"Pen (P)" },
-        { OverlayTool::Highlighter,  L"Hi",  L"Stabilo highlighter (H)" },
-        { OverlayTool::Line,         L"Lin", L"Line (L)" },
-        { OverlayTool::Arrow,        L"Arr", L"Arrow (A)" },
-        { OverlayTool::NumberArrow,  L"1→",  L"Numbering arrow (N)" },
-        { OverlayTool::Rectangle,    L"Box", L"Square / rectangle (R)" },
-        { OverlayTool::Ellipse,      L"Cir", L"Circle / ellipse (E)" },
-        { OverlayTool::TextBox,      L"Txt", L"Text box (T)" },
-        { OverlayTool::MosaicSquare, L"MSq", L"Mosaic square (X) — pixelation level is affected by size selection" },
-        { OverlayTool::MosaicCircle, L"MCi", L"Mosaic circle (M) — pixelation level is affected by size selection" }
+        { OverlayTool::SelectMove,   L"Sel", FormatLabelWithShortcut(L"Select mode",         hkToolSelect) },
+        { OverlayTool::Pen,          L"Pen", FormatLabelWithShortcut(L"Pen",                 hkToolPen) },
+        { OverlayTool::Highlighter,  L"Hi",  FormatLabelWithShortcut(L"Stabilo highlighter", hkToolStabilo) },
+        { OverlayTool::Line,         L"Lin", FormatLabelWithShortcut(L"Line",                hkToolLine) },
+        { OverlayTool::Arrow,        L"Arr", FormatLabelWithShortcut(L"Arrow",               hkToolArrow) },
+        { OverlayTool::NumberArrow,  L"1→",  FormatLabelWithShortcut(L"Numbering arrow",     hkToolNumber) },
+        { OverlayTool::Rectangle,    L"Box", FormatLabelWithShortcut(L"Square / rectangle",  hkToolRect) },
+        { OverlayTool::Ellipse,      L"Cir", FormatLabelWithShortcut(L"Circle / ellipse",    hkToolEllipse) },
+        { OverlayTool::TextBox,      L"Txt", FormatLabelWithShortcut(L"Text box",            hkToolText) },
+        { OverlayTool::MosaicSquare, L"MSq", FormatLabelWithShortcut(L"Mosaic square",       hkToolMosaicSq,  L" — pixelation level is affected by size selection") },
+        { OverlayTool::MosaicCircle, L"MCi", FormatLabelWithShortcut(L"Mosaic circle",       hkToolMosaicCir, L" — pixelation level is affected by size selection") }
     };
 
     bool hasNumberArrow = false;
@@ -3440,18 +3710,18 @@ void PepperSnapDaemon::BuildDockedHUD() {
     const int row2H = toolBtnH;
 
     // Row 3 metrics (Drag Handle + Undo/Redo/Clear/Options/Pin/OCR/SaveAs/Save/Copy/Close)
-    struct ActEntry { int id; int w; const wchar_t* lbl; const wchar_t* tip; bool primary; };
+    struct ActEntry { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     ActEntry acts[] = {
         { DBTN_ACT_DRAG_HUD, toolBtnW, L"", L"Drag to move toolbar (resets when selection moves)", false },
-        { DBTN_ACT_UNDO,     toolBtnW, L"", L"Undo (Ctrl+Z)", false },
-        { DBTN_ACT_REDO,     toolBtnW, L"", L"Redo (Ctrl+Y)", false },
+        { DBTN_ACT_UNDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Undo",                  hkActUndo), false },
+        { DBTN_ACT_REDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Redo",                  hkActRedo), false },
         { DBTN_ACT_CLEAR,    toolBtnW, L"", L"Clear all annotations", false },
         { DBTN_ACT_OPTIONS,  toolBtnW, L"", L"Options", false },
-        { DBTN_ACT_PIN,      toolBtnW, L"", L"Pin on top (F)", false },
-        { DBTN_ACT_OCR,      toolBtnW, L"", L"Extract text with OCR (O)", false },
+        { DBTN_ACT_PIN,      toolBtnW, L"", FormatLabelWithShortcut(L"Pin on top",            hkActPin), false },
+        { DBTN_ACT_OCR,      toolBtnW, L"", FormatLabelWithShortcut(L"Extract text with OCR", hkActOcr), false },
         { DBTN_ACT_SAVE_AS,  toolBtnW, L"", L"Save as JPG/PNG/WEBP/BMP", false },
-        { DBTN_ACT_SAVE,     toolBtnW, L"", L"Quick save (Ctrl+S)", false },
-        { DBTN_ACT_COPY,     toolBtnW, L"", L"Copy to clipboard (Ctrl+C)", true },
+        { DBTN_ACT_SAVE,     toolBtnW, L"", FormatLabelWithShortcut(L"Quick save",            hkActSave), false },
+        { DBTN_ACT_COPY,     toolBtnW, L"", FormatLabelWithShortcut(L"Copy to clipboard",     hkActCopy), true },
         { DBTN_ACT_CLOSE,    toolBtnW, L"", L"Close overlay (Esc)", false }
     };
     const size_t actCount = sizeof(acts) / sizeof(acts[0]);
@@ -3610,59 +3880,621 @@ DragMode PepperSnapDaemon::HitTestSelectionHandles(int mx, int my) const {
 // Pinned Desktop Window & Modals (Naming Pattern, Folder, Shortcuts)
 // ----------------------------------------------------------------------------
 
-static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWindow) {
+static void GetPinnedScaledDims(const PinnedWindowData* data, int& outW, int& outH) {
+    if (!data || !data->bmp) {
+        outW = 32;
+        outH = 32;
+        return;
+    }
+    outW = std::max(4, std::min(8192, (int)std::round(data->origW * data->scale)));
+    outH = std::max(4, std::min(8192, (int)std::round(data->origH * data->scale)));
+}
+
+static void FreePinnedWindowCache(PinnedWindowData* data) {
+    if (!data) return;
+    if (data->hCacheDC) {
+        if (data->hCacheOldBmp) {
+            SelectObject(data->hCacheDC, data->hCacheOldBmp);
+            data->hCacheOldBmp = nullptr;
+        }
+        DeleteDC(data->hCacheDC);
+        data->hCacheDC = nullptr;
+    }
+    if (data->hCacheBmp) {
+        DeleteObject(data->hCacheBmp);
+        data->hCacheBmp = nullptr;
+    }
+    data->cachedImgW = 0;
+    data->cachedImgH = 0;
+    data->cachedHq = false;
+}
+
+static RECT GetPinnedMonitorWorkArea(HMONITOR hMon) {
+    RECT rcSafe = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcSafe, 0);
+    MONITORINFO mi = { sizeof(mi) };
+    if (hMon && GetMonitorInfoW(hMon, &mi)) {
+        rcSafe = mi.rcWork;
+        const wchar_t* tbClasses[2] = { L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd" };
+        for (int i = 0; i < 2; ++i) {
+            HWND hTb = nullptr;
+            while ((hTb = FindWindowExW(nullptr, hTb, tbClasses[i], nullptr)) != nullptr) {
+                if (!IsWindowVisible(hTb)) continue;
+                if (MonitorFromWindow(hTb, MONITOR_DEFAULTTONEAREST) != hMon) continue;
+                RECT rcTb = {0};
+                if (!GetWindowRect(hTb, &rcTb)) continue;
+                int tbW = rcTb.right - rcTb.left;
+                int tbH = rcTb.bottom - rcTb.top;
+                int monW = mi.rcMonitor.right - mi.rcMonitor.left;
+                int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+                if (tbW >= monW / 2 && tbH < monH / 2) {
+                    if (rcTb.top > mi.rcMonitor.top && rcTb.bottom >= mi.rcMonitor.bottom - 4) {
+                        rcSafe.bottom = std::min(rcSafe.bottom, rcTb.top);
+                    } else if (rcTb.bottom < mi.rcMonitor.bottom && rcTb.top <= mi.rcMonitor.top + 4) {
+                        rcSafe.top = std::max(rcSafe.top, rcTb.bottom);
+                    }
+                } else if (tbH >= monH / 2 && tbW < monW / 2) {
+                    if (rcTb.left > mi.rcMonitor.left && rcTb.right >= mi.rcMonitor.right - 4) {
+                        rcSafe.right = std::min(rcSafe.right, rcTb.left);
+                    } else if (rcTb.right < mi.rcMonitor.right && rcTb.left <= mi.rcMonitor.left + 4) {
+                        rcSafe.left = std::max(rcSafe.left, rcTb.right);
+                    }
+                }
+            }
+        }
+    }
+    return rcSafe;
+}
+
+static HWND g_hPinTooltipWnd = nullptr;
+
+static void HidePinnedBubbleTooltip() {
+    if (g_hPinTooltipWnd && IsWindow(g_hPinTooltipWnd)) {
+        ShowWindow(g_hPinTooltipWnd, SW_HIDE);
+    }
+}
+
+static void ShowPinnedBubbleTooltip(HWND hPinWnd, const DockButton& b) {
+    if (!hPinWnd || b.tooltip.empty()) {
+        HidePinnedBubbleTooltip();
+        return;
+    }
+    static bool s_tipReg = false;
+    if (!s_tipReg) {
+        WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = g_Daemon.hInst;
+        wc.lpszClassName = L"PepperSnapPinBubbleTipWnd";
+        RegisterClassExW(&wc);
+        s_tipReg = true;
+    }
+    if (!g_hPinTooltipWnd || !IsWindow(g_hPinTooltipWnd)) {
+        g_hPinTooltipWnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+            L"PepperSnapPinBubbleTipWnd", L"",
+            WS_POPUP, 0, 0, 1, 1,
+            nullptr, nullptr, g_Daemon.hInst, nullptr
+        );
+    }
+    if (!g_hPinTooltipWnd) return;
+
+    HDC hScreen = GetDC(nullptr);
+    if (!hScreen) return;
+
+    FontFamily ff(L"Segoe UI");
+    Font tipFont(&ff, 11.5f, FontStyleBold, UnitPixel);
+    RectF measured;
+    {
+        Graphics gMeasure(hScreen);
+        gMeasure.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+        gMeasure.MeasureString(b.tooltip.c_str(), -1, &tipFont, PointF(0, 0), &measured);
+    }
+
+    int bw = (int)std::ceil(measured.Width) + 20;
+    int bh = 26;
+    int tailH = 7;
+    int totalW = bw + 4;
+    int totalH = bh + tailH + 4;
+
+    POINT ptTopLeft = { b.rect.left, b.rect.top };
+    POINT ptBotRight = { b.rect.right, b.rect.bottom };
+    ClientToScreen(hPinWnd, &ptTopLeft);
+    ClientToScreen(hPinWnd, &ptBotRight);
+
+    int btnMidX = (ptTopLeft.x + ptBotRight.x) / 2;
+    HMONITOR hMon = MonitorFromWindow(hPinWnd, MONITOR_DEFAULTTONEAREST);
+    RECT rcScreen = GetPinnedMonitorWorkArea(hMon);
+
+    // Prefer placing pop-up bubble below the pin toolbar unless near the bottom/taskbar
+    bool placeBelow = (ptBotRight.y + totalH + 4 <= rcScreen.bottom);
+    int winX = std::max((int)rcScreen.left + 6, std::min((int)rcScreen.right - totalW - 6, btnMidX - totalW / 2));
+    int winY = placeBelow ? (ptBotRight.y + 2) : (ptTopLeft.y - totalH - 2);
+    float localMidX = (float) std::max(10, std::min(totalW - 10, btnMidX - winX));
+
+    BITMAPINFO bmi = {0};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = totalW;
+    bmi.bmiHeader.biHeight = -totalH;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* pvBits = nullptr;
+    HDC memDC = CreateCompatibleDC(hScreen);
+    HBITMAP hBmp = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    if (memDC && hBmp) {
+        HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
+        {
+            Graphics g(memDC);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+            g.Clear(Color(0, 0, 0, 0));
+
+            float rx = 2.0f;
+            float ry = placeBelow ? (float)tailH : 2.0f;
+            float rw = (float)bw;
+            float rh = (float)bh;
+
+            PointF tail[3];
+            if (placeBelow) {
+                tail[0] = PointF(localMidX, 1.0f);
+                tail[1] = PointF(localMidX - 5.5f, ry + 1.0f);
+                tail[2] = PointF(localMidX + 5.5f, ry + 1.0f);
+            } else {
+                tail[0] = PointF(localMidX, ry + rh + (float)tailH - 1.0f);
+                tail[1] = PointF(localMidX - 5.5f, ry + rh - 1.0f);
+                tail[2] = PointF(localMidX + 5.5f, ry + rh - 1.0f);
+            }
+
+            SolidBrush bubbleBg(Color(248, 15, 23, 42));
+            Pen bubbleBorder(Color(255, 239, 68, 68), 1.4f);
+            g.FillPolygon(&bubbleBg, tail, 3);
+            g.FillRectangle(&bubbleBg, rx, ry, rw, rh);
+            g.DrawRectangle(&bubbleBorder, rx, ry, rw, rh);
+
+            StringFormat sf;
+            sf.SetAlignment(StringAlignmentCenter);
+            sf.SetLineAlignment(StringAlignmentCenter);
+            SolidBrush textBr(Color(255, 248, 250, 252));
+            RectF textRc(rx, ry, rw, rh);
+            g.DrawString(b.tooltip.c_str(), -1, &tipFont, textRc, &sf, &textBr);
+        }
+
+        POINT ptSrc = { 0, 0 };
+        POINT ptDst = { winX, winY };
+        SIZE szWnd = { totalW, totalH };
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        UpdateLayeredWindow(g_hPinTooltipWnd, hScreen, &ptDst, &szWnd, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
+        SetWindowPos(g_hPinTooltipWnd, HWND_TOPMOST, winX, winY, totalW, totalH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+        SelectObject(memDC, oldBmp);
+    }
+    if (hBmp) DeleteObject(hBmp);
+    if (memDC) DeleteDC(memDC);
+    ReleaseDC(nullptr, hScreen);
+}
+
+static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, bool highQuality) {
+    if (!data || !data->bmp || imgW <= 0 || imgH <= 0) return;
+    bool hideOutline = data->hideOutline;
+    bool smooth = data->smoothImage;
+    if (data->hCacheDC && data->hCacheBmp &&
+        data->cachedImgW == imgW && data->cachedImgH == imgH &&
+        data->cachedHideOutline == hideOutline &&
+        data->cachedSmooth == smooth &&
+        (!smooth || data->cachedHq || !highQuality)) {
+        return;
+    }
+
+    if (!data->hCacheDC || !data->hCacheBmp || data->cachedImgW != imgW || data->cachedImgH != imgH) {
+        FreePinnedWindowCache(data);
+        HDC hScreen = GetDC(nullptr);
+        data->hCacheDC = CreateCompatibleDC(hScreen);
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = imgW;
+        bmi.bmiHeader.biHeight = -imgH;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        void* pvBits = nullptr;
+        data->hCacheBmp = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+        if (!data->hCacheBmp && hScreen) {
+            data->hCacheBmp = CreateCompatibleBitmap(hScreen, imgW, imgH);
+        }
+        if (hScreen) ReleaseDC(nullptr, hScreen);
+        if (!data->hCacheDC || !data->hCacheBmp) {
+            FreePinnedWindowCache(data);
+            return;
+        }
+        data->hCacheOldBmp = SelectObject(data->hCacheDC, data->hCacheBmp);
+    }
+
+    Graphics g(data->hCacheDC);
+    g.SetCompositingMode(CompositingModeSourceCopy);
+    g.SetPixelOffsetMode(PixelOffsetModeHalf);
+
+    long long totalPixels = (long long)imgW * (long long)imgH;
+    if (!smooth) {
+        // Button OFF (default): image is unfiltered so zoomed pixels stay crisp and pixelated
+        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+    } else if (!highQuality) {
+        // Button ON: smooth filter active
+        g.SetInterpolationMode(InterpolationModeBilinear);
+    } else {
+        g.SetInterpolationMode(totalPixels > (2560LL * 1440LL) ? InterpolationModeBilinear : InterpolationModeHighQualityBicubic);
+    }
+
+    ImageAttributes ia;
+    ia.SetWrapMode(WrapModeTileFlipXY);
+    g.DrawImage(
+        data->bmp,
+        Rect(0, 0, imgW, imgH),
+        0, 0, data->origW, data->origH,
+        UnitPixel,
+        &ia
+    );
+
+    if (!hideOutline) {
+        g.SetCompositingMode(CompositingModeSourceOver);
+        g.SetSmoothingMode(SmoothingModeNone);
+        g.SetPixelOffsetMode(PixelOffsetModeNone);
+        Pen border1px(Color(255, 239, 68, 68), 1.0f);
+        g.DrawRectangle(&border1px, 0, 0, imgW - 1, imgH - 1);
+        if (imgW >= 4 && imgH >= 4) {
+            g.DrawRectangle(&border1px, 1, 1, imgW - 3, imgH - 3);
+        }
+    }
+
+    data->cachedImgW = imgW;
+    data->cachedImgH = imgH;
+    data->cachedHideOutline = hideOutline;
+    data->cachedSmooth = smooth;
+    data->cachedHq = !smooth ? true : highQuality;
+}
+
+static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWindow = true) {
     if (!data || !data->bmp) return;
-    int imgW = std::max(32, (int)std::round(data->origW * data->scale));
-    int imgH = std::max(32, (int)std::round(data->origH * data->scale));
+    int imgW = 32, imgH = 32;
+    GetPinnedScaledDims(data, imgW, imgH);
 
     const int toolBtnW = 32;
     const int actBtnH  = 28;
     const int gap      = 3;
     const int hudGap   = 8; // Same 8px gap between toolbar and custom area
 
-    struct PinBtnSpec { int id; int w; const wchar_t* lbl; const wchar_t* tip; bool primary; };
-    PinBtnSpec specs[4] = {
-        { DBTN_ACT_SAVE_AS, toolBtnW,           L"",     L"Save as JPG/PNG/WEBP/BMP", false },
-        { DBTN_ACT_SAVE,    toolBtnW,           L"",     L"Quick save",               false },
-        { DBTN_ACT_COPY,    toolBtnW * 2 + gap, L"Copy", L"Copy to clipboard",        true  },
-        { DBTN_ACT_CLOSE,   toolBtnW,           L"",     L"Close pinned image",       false }
+    struct PinBtnSpec { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
+    const wchar_t* outlineLbl = data->hideOutline ? L"Show outline" : L"Hide outline";
+    PinBtnSpec specs[9] = {
+        { DBTN_ACT_ZOOM_OUT,     toolBtnW,           L"",     FormatLabelWithShortcut(L"Zoom out",                g_Daemon.hkPinZoomOut),   false },
+        { DBTN_ACT_ZOOM_IN,      toolBtnW,           L"",     FormatLabelWithShortcut(L"Zoom in",                 g_Daemon.hkPinZoomIn),    false },
+        { DBTN_ACT_ZOOM_RESET,   toolBtnW,           L"",     FormatLabelWithShortcut(L"Reset to original size",  g_Daemon.hkPinZoomReset), false },
+        { DBTN_ACT_PIN_OUTLINE,  toolBtnW,           L"",     FormatLabelWithShortcut(outlineLbl,                 g_Daemon.hkPinOutline),   false },
+        { DBTN_ACT_PIN_UNFILTER, toolBtnW,           L"",     FormatLabelWithShortcut(L"Smooth the image",        g_Daemon.hkPinSmooth),    false },
+        { DBTN_ACT_SAVE_AS,      toolBtnW,           L"",     FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",g_Daemon.hkPinSaveAs),    false },
+        { DBTN_ACT_SAVE,         toolBtnW,           L"",     FormatLabelWithShortcut(L"Quick save",              g_Daemon.hkPinSave),      false },
+        { DBTN_ACT_COPY,         toolBtnW * 2 + gap, L"Copy", FormatLabelWithShortcut(L"Copy to clipboard",       g_Daemon.hkPinCopy),      true  },
+        { DBTN_ACT_CLOSE,        toolBtnW,           L"",     L"Close pinned image (Esc)",                                                  false }
     };
 
     int stripW = 0;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 9; ++i) {
         stripW += specs[i].w + (i > 0 ? gap : 0);
     }
 
-    int winW = std::max(imgW, stripW);
-    int winH = imgH + hudGap + actBtnH;
-    int imgLeft = winW - imgW;
+    int sImgL = data->screenImgX;
+    int sImgT = data->screenImgY;
+    int sImgR = sImgL + imgW;
+    int sImgB = sImgT + imgH;
 
-    data->buttons.clear();
-    int bx = winW - stripW;
-    int by = imgH + hudGap;
-    for (int i = 0; i < 4; ++i) {
-        DockButton b;
-        b.id = specs[i].id;
-        b.rect = { bx, by, bx + specs[i].w, by + actBtnH };
-        b.label = specs[i].lbl;
-        b.tooltip = specs[i].tip;
-        b.isPrimaryAction = specs[i].primary;
-        data->buttons.push_back(b);
-        bx += specs[i].w + gap;
+    RECT rcImgScreen = { sImgL, sImgT, sImgR, sImgB };
+    HMONITOR hMon = MonitorFromRect(&rcImgScreen, MONITOR_DEFAULTTONEAREST);
+    RECT rcScreen = GetPinnedMonitorWorkArea(hMon);
+
+    int sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR));
+    int sStripT = sImgB + hudGap;
+
+    bool hasSpaceBelow = (sImgB + hudGap + actBtnH <= rcScreen.bottom - 6) && (sImgB + hudGap >= rcScreen.top + 6);
+    bool hasSpaceAbove = (sImgT - hudGap - actBtnH >= rcScreen.top + 6) && (sImgT - hudGap <= rcScreen.bottom - 6);
+
+    if (hasSpaceBelow) {
+        // 1. Default: snap below bottom-right corner of pinned image
+        sStripT = sImgB + hudGap;
+    } else if (hasSpaceAbove) {
+        // 2. No space below -> snap above top-right corner of pinned image
+        sStripT = sImgT - hudGap - actBtnH;
+    } else {
+        // 3. No space below or above -> place inside bottom-right of pinned image (clamped to screen bounds)
+        sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR - 8));
+        sStripT = std::max((int)rcScreen.top + 6, std::min((int)rcScreen.bottom - actBtnH - 6, sImgB - actBtnH - 8));
     }
+    int sStripL = sStripR - stripW;
+    int sStripB = sStripT + actBtnH;
 
-    if (resizeWindow && hWnd) {
-        SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, winW, winH, SWP_NOMOVE | SWP_NOACTIVATE);
+    int winL = data->hideToolbar ? sImgL : std::min(sImgL, sStripL);
+    int winT = data->hideToolbar ? sImgT : std::min(sImgT, sStripT);
+    int winR = data->hideToolbar ? sImgR : std::max(sImgR, sStripR);
+    int winB = data->hideToolbar ? sImgB : std::max(sImgB, sStripB);
+    int winW = std::max(1, winR - winL);
+    int winH = std::max(1, winB - winT);
+
+    data->imgRect = { sImgL - winL, sImgT - winT, sImgR - winL, sImgB - winT };
+
+    RECT curStripRect = { 0, 0, 0, 0 };
+    data->buttons.clear();
+    if (!data->hideToolbar) {
+        int bx = sStripL - winL;
+        int by = sStripT - winT;
+        curStripRect = { bx, by, bx + stripW, by + actBtnH };
+        for (int i = 0; i < 9; ++i) {
+            DockButton b;
+            b.id = specs[i].id;
+            b.rect = { bx, by, bx + specs[i].w, by + actBtnH };
+            b.label = specs[i].lbl;
+            b.tooltip = specs[i].tip;
+            b.isPrimaryAction = specs[i].primary;
+            data->buttons.push_back(b);
+            bx += specs[i].w + gap;
+        }
+    } else {
+        data->hoveredBtnId = -1;
+        HidePinnedBubbleTooltip();
     }
 
     if (hWnd) {
-        HRGN hRgn = CreateRectRgn(imgLeft, 0, imgLeft + imgW, imgH);
-        for (const auto& b : data->buttons) {
-            HRGN hBtnRgn = CreateRectRgn(b.rect.left, b.rect.top, b.rect.right, b.rect.bottom);
-            CombineRgn(hRgn, hRgn, hBtnRgn, RGN_OR);
-            DeleteObject(hBtnRgn);
+        bool rgnChanged = !data->hasAppliedRgn ||
+                          data->lastRgnHideToolbar != data->hideToolbar ||
+                          !EqualRect(&data->lastRgnImgRect, &data->imgRect) ||
+                          !EqualRect(&data->lastRgnStripRect, &curStripRect);
+        if (rgnChanged) {
+            HRGN hRgn = CreateRectRgn(data->imgRect.left, data->imgRect.top, data->imgRect.right, data->imgRect.bottom);
+            for (const auto& b : data->buttons) {
+                HRGN hBtnRgn = CreateRectRgn(b.rect.left, b.rect.top, b.rect.right, b.rect.bottom);
+                CombineRgn(hRgn, hRgn, hBtnRgn, RGN_OR);
+                DeleteObject(hBtnRgn);
+            }
+            SetWindowRgn(hWnd, hRgn, TRUE);
+            data->lastRgnImgRect = data->imgRect;
+            data->lastRgnStripRect = curStripRect;
+            data->lastRgnHideToolbar = data->hideToolbar;
+            data->hasAppliedRgn = true;
         }
-        SetWindowRgn(hWnd, hRgn, TRUE);
+
+        if (resizeWindow) {
+            UINT swpFlags = SWP_NOACTIVATE | SWP_NOZORDER | (rgnChanged ? SWP_NOCOPYBITS : SWP_NOSIZE);
+            SetWindowPos(hWnd, nullptr, winL, winT, winW, winH, swpFlags);
+            if (rgnChanged) {
+                InvalidateRect(hWnd, nullptr, FALSE);
+            }
+        }
+    }
+}
+
+static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float factor, bool resetToOriginal = false) {
+    if (!data || !data->bmp) return;
+    int oldImgW = 32, oldImgH = 32;
+    GetPinnedScaledDims(data, oldImgW, oldImgH);
+
+    int ow = std::max(1, data->origW);
+    int oh = std::max(1, data->origH);
+    float minScale = std::max(0.005f, std::min(4.0f / (float)ow, 4.0f / (float)oh));
+    float maxScale = std::max(10.0f, std::min(64.0f, std::min(8192.0f / (float)ow, 8192.0f / (float)oh)));
+    float targetScale = resetToOriginal ? 1.0f : (data->scale * factor);
+    float nextScale = std::max(minScale, std::min(maxScale, targetScale));
+    if (std::abs(nextScale - data->scale) < 1e-6f) return;
+    data->scale = nextScale;
+
+    int imgW = 32, imgH = 32;
+    GetPinnedScaledDims(data, imgW, imgH);
+
+    int oldImgLeft   = data->screenImgX;
+    int oldImgTop    = data->screenImgY;
+    int oldImgRight  = oldImgLeft + oldImgW;
+    int oldImgBottom = oldImgTop + oldImgH;
+
+    RECT rcImgScreen = { oldImgLeft, oldImgTop, oldImgRight, oldImgBottom };
+    HMONITOR hMon = MonitorFromRect(&rcImgScreen, MONITOR_DEFAULTTONEAREST);
+    RECT rcScreen = GetPinnedMonitorWorkArea(hMon);
+
+    int anchorX = oldImgRight;
+    if (anchorX > rcScreen.right) anchorX = rcScreen.right - 8;
+    if (anchorX < rcScreen.left + 32) anchorX = rcScreen.left + 32;
+
+    int anchorY = oldImgBottom;
+    if (anchorY > rcScreen.bottom) anchorY = rcScreen.bottom - 8;
+    if (anchorY < rcScreen.top + 32) anchorY = rcScreen.top + 32;
+
+    double fx = (oldImgW > 0) ? std::max(0.0, std::min(1.0, (double)(anchorX - oldImgLeft) / (double)oldImgW)) : 1.0;
+    double fy = (oldImgH > 0) ? std::max(0.0, std::min(1.0, (double)(anchorY - oldImgTop) / (double)oldImgH)) : 1.0;
+
+    data->screenImgX = (int)std::round(anchorX - fx * imgW);
+    data->screenImgY = (int)std::round(anchorY - fy * imgH);
+
+    bool fastInteractive = ((long long)imgW * (long long)imgH > 960LL * 540LL);
+    EnsurePinnedWindowCache(data, imgW, imgH, !fastInteractive);
+
+    UpdatePinnedWindowLayout(hWnd, data, true);
+    if (hWnd) {
+        if (fastInteractive) {
+            SetTimer(hWnd, 1, 110, nullptr);
+        } else {
+            KillTimer(hWnd, 1);
+        }
+        POINT cur;
+        if (GetCursorPos(&cur) && ScreenToClient(hWnd, &cur)) {
+            int newHover = -1;
+            for (const auto& b : data->buttons) {
+                if (PtInRect(&b.rect, cur)) {
+                    newHover = b.id;
+                    break;
+                }
+            }
+            data->hoveredBtnId = newHover;
+            SetCursor(LoadCursorW(nullptr, (newHover != -1) ? IDC_HAND : IDC_SIZEALL));
+            if (newHover != -1) {
+                for (const auto& b : data->buttons) {
+                    if (b.id == newHover) {
+                        ShowPinnedBubbleTooltip(hWnd, b);
+                        break;
+                    }
+                }
+            } else {
+                HidePinnedBubbleTooltip();
+            }
+        }
+        RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    }
+}
+
+static void UpdatePinnedDragPosition(HWND hWnd, PinnedWindowData* data) {
+    if (!hWnd || !data || !data->dragging) return;
+    POINT cur;
+    GetCursorPos(&cur);
+    int targetImgX = data->dragStartWnd.x + (cur.x - data->dragStartMouse.x);
+    int targetImgY = data->dragStartWnd.y + (cur.y - data->dragStartMouse.y);
+
+    bool shiftHeld = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                     ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                     ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+
+    if (!shiftHeld) {
+        int imgW = 32, imgH = 32;
+        GetPinnedScaledDims(data, imgW, imgH);
+
+        int imgLeft   = targetImgX;
+        int imgRight  = targetImgX + imgW;
+        int imgTop    = targetImgY;
+        int imgBottom = targetImgY + imgH;
+
+        HMONITOR hMon = MonitorFromPoint(cur, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        if (hMon && GetMonitorInfoW(hMon, &mi)) {
+            const int snapDist = 14;
+            int distLeft  = std::abs(imgLeft - mi.rcMonitor.left);
+            int distRight = std::abs(imgRight - mi.rcMonitor.right);
+            if (distLeft <= snapDist && distLeft <= distRight) {
+                targetImgX = mi.rcMonitor.left;
+            } else if (distRight <= snapDist) {
+                targetImgX = mi.rcMonitor.right - imgW;
+            }
+
+            int distTop    = std::abs(imgTop - mi.rcMonitor.top);
+            int distBottom = std::abs(imgBottom - mi.rcMonitor.bottom);
+            if (distTop <= snapDist && distTop <= distBottom) {
+                targetImgY = mi.rcMonitor.top;
+            } else if (distBottom <= snapDist) {
+                targetImgY = mi.rcMonitor.bottom - imgH;
+            }
+        }
+    }
+
+    data->screenImgX = targetImgX;
+    data->screenImgY = targetImgY;
+    UpdatePinnedWindowLayout(hWnd, data, true);
+}
+
+static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btnId) {
+    if (!hWnd || !data) return;
+    switch (btnId) {
+        case DBTN_ACT_ZOOM_OUT:
+            SetFocus(hWnd);
+            ApplyPinnedWindowZoom(hWnd, data, 1.0f / 1.15f, false);
+            return;
+        case DBTN_ACT_ZOOM_IN:
+            SetFocus(hWnd);
+            ApplyPinnedWindowZoom(hWnd, data, 1.15f, false);
+            return;
+        case DBTN_ACT_ZOOM_RESET:
+            SetFocus(hWnd);
+            ApplyPinnedWindowZoom(hWnd, data, 1.0f, true);
+            return;
+        case DBTN_ACT_PIN_OUTLINE: {
+            SetFocus(hWnd);
+            data->hideOutline = !data->hideOutline;
+            int imgW = 32, imgH = 32;
+            GetPinnedScaledDims(data, imgW, imgH);
+            EnsurePinnedWindowCache(data, imgW, imgH, true);
+            UpdatePinnedWindowLayout(hWnd, data, false);
+            if (data->hoveredBtnId == DBTN_ACT_PIN_OUTLINE) {
+                for (const auto& btn : data->buttons) {
+                    if (btn.id == DBTN_ACT_PIN_OUTLINE) {
+                        ShowPinnedBubbleTooltip(hWnd, btn);
+                        break;
+                    }
+                }
+            }
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return;
+        }
+        case DBTN_ACT_PIN_UNFILTER: {
+            SetFocus(hWnd);
+            data->smoothImage = !data->smoothImage;
+            int imgW = 32, imgH = 32;
+            GetPinnedScaledDims(data, imgW, imgH);
+            EnsurePinnedWindowCache(data, imgW, imgH, true);
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return;
+        }
+        case DBTN_ACT_CLOSE:
+            HidePinnedBubbleTooltip();
+            DestroyWindow(hWnd);
+            return;
+        case DBTN_ACT_COPY:
+            SetFocus(hWnd);
+            if (data->bmp) {
+                g_Daemon.CopyBitmapToClipboard(data->bmp);
+                g_Daemon.ShowTrayToast(
+                    L"Copied to clipboard (" + std::to_wstring(data->origW) + L"×" + std::to_wstring(data->origH) + L" px)",
+                    L"Ready to paste (Ctrl+V)."
+                );
+            }
+            return;
+        case DBTN_ACT_SAVE:
+            SetFocus(hWnd);
+            if (data->bmp) {
+                CreateDirectoryW(g_Daemon.saveFolder.c_str(), nullptr);
+                std::wstring fn = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
+                                  PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                std::wstring full = g_Daemon.saveFolder + L"\\" + fn;
+                if (g_Daemon.SaveBitmapToPath(data->bmp, full)) {
+                    g_Daemon.lastSavedFilePath = full;
+                    g_Daemon.ShowTrayToast(
+                        L"Capture saved",
+                        L"Saved to: " + full + L"\n(click to reveal in Explorer)"
+                    );
+                }
+            }
+            return;
+        case DBTN_ACT_SAVE_AS:
+            if (data->bmp) {
+                WCHAR szFile[MAX_PATH] = {0};
+                std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
+                                       PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                wcsncpy_s(szFile, defName.c_str(), _TRUNCATE);
+
+                OPENFILENAMEW ofn = {0};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = hWnd;
+                ofn.lpstrInitialDir = g_Daemon.saveFolder.c_str();
+                ofn.lpstrFile = szFile;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrFilter = L"JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0*.png\0WebP image (*.webp)\0*.webp\0BMP bitmap (*.bmp)\0*.bmp\0";
+                ofn.nFilterIndex = (DWORD)g_Daemon.regionFormat + 1;
+                const wchar_t* defExts[4] = { L"jpg", L"png", L"webp", L"bmp" };
+                ofn.lpstrDefExt = defExts[(int)g_Daemon.regionFormat & 3];
+                ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+
+                if (GetSaveFileNameW(&ofn)) {
+                    if (g_Daemon.SaveBitmapToPath(data->bmp, szFile)) {
+                        g_Daemon.lastSavedFilePath = szFile;
+                        g_Daemon.ShowTrayToast(
+                            L"Saved capture",
+                            std::wstring(szFile) + L"\n(click to open in Explorer)"
+                        );
+                    }
+                }
+                if (IsWindow(hWnd)) SetFocus(hWnd);
+            }
+            return;
     }
 }
 
@@ -3682,86 +4514,108 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 for (const auto& b : data->buttons) {
                     if (PtInRect(&b.rect, pt)) {
-                        switch (b.id) {
-                            case DBTN_ACT_CLOSE:
-                                DestroyWindow(hWnd);
-                                return 0;
-                            case DBTN_ACT_COPY:
-                                if (data->bmp) {
-                                    g_Daemon.CopyBitmapToClipboard(data->bmp);
-                                    g_Daemon.ShowTrayToast(
-                                        L"Copied to clipboard (" + std::to_wstring(data->origW) + L"×" + std::to_wstring(data->origH) + L" px)",
-                                        L"Ready to paste (Ctrl+V)."
-                                    );
-                                }
-                                return 0;
-                            case DBTN_ACT_SAVE:
-                                if (data->bmp) {
-                                    CreateDirectoryW(g_Daemon.saveFolder.c_str(), nullptr);
-                                    std::wstring fn = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
-                                                      PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
-                                    std::wstring full = g_Daemon.saveFolder + L"\\" + fn;
-                                    if (g_Daemon.SaveBitmapToPath(data->bmp, full)) {
-                                        g_Daemon.lastSavedFilePath = full;
-                                        g_Daemon.ShowTrayToast(
-                                            L"Capture saved",
-                                            L"Saved to: " + full + L"\n(click to reveal in Explorer)"
-                                        );
-                                    }
-                                }
-                                return 0;
-                            case DBTN_ACT_SAVE_AS:
-                                if (data->bmp) {
-                                    WCHAR szFile[MAX_PATH] = {0};
-                                    std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
-                                                           PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
-                                    wcsncpy_s(szFile, defName.c_str(), _TRUNCATE);
-
-                                    OPENFILENAMEW ofn = {0};
-                                    ofn.lStructSize = sizeof(ofn);
-                                    ofn.hwndOwner = hWnd;
-                                    ofn.lpstrInitialDir = g_Daemon.saveFolder.c_str();
-                                    ofn.lpstrFile = szFile;
-                                    ofn.nMaxFile = MAX_PATH;
-                                    ofn.lpstrFilter = L"JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0*.png\0WebP image (*.webp)\0*.webp\0BMP bitmap (*.bmp)\0*.bmp\0";
-                                    ofn.nFilterIndex = (DWORD)g_Daemon.regionFormat + 1;
-                                    const wchar_t* defExts[4] = { L"jpg", L"png", L"webp", L"bmp" };
-                                    ofn.lpstrDefExt = defExts[(int)g_Daemon.regionFormat & 3];
-                                    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-
-                                    if (GetSaveFileNameW(&ofn)) {
-                                        if (g_Daemon.SaveBitmapToPath(data->bmp, szFile)) {
-                                            g_Daemon.lastSavedFilePath = szFile;
-                                            g_Daemon.ShowTrayToast(
-                                                L"Saved capture",
-                                                std::wstring(szFile) + L"\n(click to open in Explorer)"
-                                            );
-                                        }
-                                    }
-                                }
-                                return 0;
-                        }
+                        ExecutePinnedWindowAction(hWnd, data, b.id);
+                        return 0;
                     }
                 }
+                HidePinnedBubbleTooltip();
                 data->dragging = true;
                 GetCursorPos(&data->dragStartMouse);
-                RECT rc;
-                GetWindowRect(hWnd, &rc);
-                data->dragStartWnd = { rc.left, rc.top };
+                data->dragStartWnd = { data->screenImgX, data->screenImgY };
                 SetCapture(hWnd);
+                SetFocus(hWnd);
             }
             return 0;
+        case WM_LBUTTONDBLCLK:
+            if (data) {
+                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                for (const auto& b : data->buttons) {
+                    if (PtInRect(&b.rect, pt)) {
+                        SendMessageW(hWnd, WM_LBUTTONDOWN, wParam, lParam);
+                        return 0;
+                    }
+                }
+                if (data->dragging) {
+                    data->dragging = false;
+                    ReleaseCapture();
+                }
+                HidePinnedBubbleTooltip();
+                data->hideToolbar = !data->hideToolbar;
+                UpdatePinnedWindowLayout(hWnd, data, true);
+                InvalidateRect(hWnd, nullptr, FALSE);
+            }
+            return 0;
+        case WM_KEYDOWN: {
+            if (data && data->dragging && (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
+                UpdatePinnedDragPosition(hWnd, data);
+                return 0;
+            }
+            if (data) {
+                bool ctrl  = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) || ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
+                bool shift = ((GetKeyState(VK_SHIFT)   & 0x8000) != 0) || ((GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0);
+                bool alt   = ((GetKeyState(VK_MENU)    & 0x8000) != 0) || ((GetAsyncKeyState(VK_MENU)    & 0x8000) != 0);
+                UINT vk = (UINT)wParam;
+                if (vk == VK_ESCAPE && !ctrl && !shift && !alt) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinZoomOut, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_OUT);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinZoomIn, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_IN);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinZoomReset, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_RESET);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinOutline, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_OUTLINE);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinSmooth, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_UNFILTER);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinSaveAs, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE_AS);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinSave, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinCopy, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_COPY);
+                    return 0;
+                }
+            }
+            break;
+        }
+        case WM_KEYUP:
+            if (data && data->dragging && (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
+                UpdatePinnedDragPosition(hWnd, data);
+                return 0;
+            }
+            break;
+        case WM_TIMER:
+            if (wParam == 1 && data) {
+                KillTimer(hWnd, 1);
+                int imgW = 32, imgH = 32;
+                GetPinnedScaledDims(data, imgW, imgH);
+                if (!data->cachedHq) {
+                    EnsurePinnedWindowCache(data, imgW, imgH, true);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            break;
         case WM_MOUSEMOVE:
             if (data) {
                 if (data->dragging) {
-                    POINT cur;
-                    GetCursorPos(&cur);
-                    SetWindowPos(
-                        hWnd, HWND_TOPMOST,
-                        data->dragStartWnd.x + (cur.x - data->dragStartMouse.x),
-                        data->dragStartWnd.y + (cur.y - data->dragStartMouse.y),
-                        0, 0, SWP_NOSIZE | SWP_NOACTIVATE
-                    );
+                    UpdatePinnedDragPosition(hWnd, data);
                     return 0;
                 }
                 if (!data->trackingMouseLeave) {
@@ -3780,16 +4634,45 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 if (newHover != data->hoveredBtnId) {
                     data->hoveredBtnId = newHover;
                     SetCursor(LoadCursorW(nullptr, (newHover != -1) ? IDC_HAND : IDC_SIZEALL));
-                    InvalidateRect(hWnd, nullptr, FALSE);
+                    if (newHover != -1) {
+                        for (const auto& b : data->buttons) {
+                            if (b.id == newHover) {
+                                ShowPinnedBubbleTooltip(hWnd, b);
+                                break;
+                            }
+                        }
+                    } else {
+                        HidePinnedBubbleTooltip();
+                    }
+                    if (!data->buttons.empty()) {
+                        RECT rcStrip = data->buttons.front().rect;
+                        for (const auto& b : data->buttons) {
+                            rcStrip.left   = std::min(rcStrip.left, b.rect.left);
+                            rcStrip.top    = std::min(rcStrip.top, b.rect.top);
+                            rcStrip.right  = std::max(rcStrip.right, b.rect.right);
+                            rcStrip.bottom = std::max(rcStrip.bottom, b.rect.bottom);
+                        }
+                        InvalidateRect(hWnd, &rcStrip, FALSE);
+                    }
                 }
             }
             return 0;
         case WM_MOUSELEAVE:
             if (data) {
                 data->trackingMouseLeave = false;
+                HidePinnedBubbleTooltip();
                 if (data->hoveredBtnId != -1) {
                     data->hoveredBtnId = -1;
-                    InvalidateRect(hWnd, nullptr, FALSE);
+                    if (!data->buttons.empty()) {
+                        RECT rcStrip = data->buttons.front().rect;
+                        for (const auto& b : data->buttons) {
+                            rcStrip.left   = std::min(rcStrip.left, b.rect.left);
+                            rcStrip.top    = std::min(rcStrip.top, b.rect.top);
+                            rcStrip.right  = std::max(rcStrip.right, b.rect.right);
+                            rcStrip.bottom = std::max(rcStrip.bottom, b.rect.bottom);
+                        }
+                        InvalidateRect(hWnd, &rcStrip, FALSE);
+                    }
                 }
             }
             return 0;
@@ -3802,9 +4685,11 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         case WM_MOUSEWHEEL:
             if (data) {
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-                data->scale = std::max(0.25f, std::min(3.0f, data->scale * (delta > 0 ? 1.1f : 0.9f)));
-                UpdatePinnedWindowLayout(hWnd, data, true);
-                InvalidateRect(hWnd, nullptr, FALSE);
+                if (delta != 0) {
+                    float steps = (float)delta / (float)WHEEL_DELTA;
+                    float factor = std::pow(1.15f, steps);
+                    ApplyPinnedWindowZoom(hWnd, data, factor);
+                }
             }
             return 0;
         case WM_PAINT: {
@@ -3813,55 +4698,72 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             RECT rc;
             GetClientRect(hWnd, &rc);
             int w = rc.right - rc.left, h = rc.bottom - rc.top;
-            if (w > 0 && h > 0) {
-                HDC memDC = CreateCompatibleDC(hdc);
-                HBITMAP memBmp = CreateCompatibleBitmap(hdc, w, h);
-                HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
-                {
-                    Graphics g(memDC);
-                    g.SetSmoothingMode(SmoothingModeAntiAlias);
-                    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-                    SolidBrush clearBg(Color(255, 15, 23, 42));
-                    g.FillRectangle(&clearBg, 0, 0, w, h);
+            if (w > 0 && h > 0 && data && data->bmp) {
+                int imgW = 32, imgH = 32;
+                GetPinnedScaledDims(data, imgW, imgH);
+                int imgLeft = data->imgRect.left;
+                int imgTop  = data->imgRect.top;
 
-                    if (data && data->bmp) {
-                        int imgW = std::max(32, (int)std::round(data->origW * data->scale));
-                        int imgH = std::max(32, (int)std::round(data->origH * data->scale));
-                        int imgLeft = w - imgW;
+                EnsurePinnedWindowCache(data, imgW, imgH, data->cachedHq || ((long long)imgW * (long long)imgH <= 960LL * 540LL));
 
-                        GraphicsState st = g.Save();
-                        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-                        g.DrawImage(data->bmp, imgLeft, 0, imgW, imgH);
-                        g.Restore(st);
-
-                        GraphicsState stBorder = g.Save();
-                        g.SetSmoothingMode(SmoothingModeNone);
-                        g.SetPixelOffsetMode(PixelOffsetModeNone);
-                        Pen border1px(Color(255, 239, 68, 68), 1.0f);
-                        g.DrawRectangle(&border1px, imgLeft, 0, imgW - 1, imgH - 1);
-                        if (imgW >= 4 && imgH >= 4) {
-                            g.DrawRectangle(&border1px, imgLeft + 1, 1, imgW - 3, imgH - 3);
-                        }
-                        g.Restore(stBorder);
+                if (!data->hideToolbar && !data->buttons.empty()) {
+                    RECT rcStrip = data->buttons.front().rect;
+                    for (const auto& b : data->buttons) {
+                        rcStrip.left   = std::min(rcStrip.left, b.rect.left);
+                        rcStrip.top    = std::min(rcStrip.top, b.rect.top);
+                        rcStrip.right  = std::max(rcStrip.right, b.rect.right);
+                        rcStrip.bottom = std::max(rcStrip.bottom, b.rect.bottom);
+                    }
+                    if (data->hCacheDC && data->hCacheBmp) {
+                        int savedDC = SaveDC(hdc);
+                        ExcludeClipRect(hdc, rcStrip.left, rcStrip.top, rcStrip.right, rcStrip.bottom);
+                        BitBlt(hdc, imgLeft, imgTop, imgW, imgH, data->hCacheDC, 0, 0, SRCCOPY);
+                        RestoreDC(hdc, savedDC);
+                    }
+                    int sw = std::max(1, (int)(rcStrip.right - rcStrip.left));
+                    int sh = std::max(1, (int)(rcStrip.bottom - rcStrip.top));
+                    HDC memDC = CreateCompatibleDC(hdc);
+                    HBITMAP memBmp = CreateCompatibleBitmap(hdc, sw, sh);
+                    HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
+                    {
+                        Graphics g(memDC);
+                        g.SetSmoothingMode(SmoothingModeAntiAlias);
+                        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+                        SolidBrush clearBg(Color(255, 15, 23, 42));
+                        g.FillRectangle(&clearBg, 0, 0, sw, sh);
+                    }
+                    if (data->hCacheDC && data->hCacheBmp) {
+                        BitBlt(memDC, imgLeft - rcStrip.left, imgTop - rcStrip.top, imgW, imgH, data->hCacheDC, 0, 0, SRCCOPY);
+                    }
+                    {
+                        Graphics g(memDC);
+                        g.SetSmoothingMode(SmoothingModeAntiAlias);
+                        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
 
                         for (const auto& b : data->buttons) {
+                            int bx = (int)(b.rect.left - rcStrip.left);
+                            int by = (int)(b.rect.top - rcStrip.top);
                             int bw = (int)(b.rect.right - b.rect.left);
                             int bh = (int)(b.rect.bottom - b.rect.top);
-                            RectF rf((float)b.rect.left, (float)b.rect.top, (float)bw, (float)bh);
+                            RectF rf((float)bx, (float)by, (float)bw, (float)bh);
                             bool hovered = (b.id == data->hoveredBtnId);
+                            bool activeToggleBtn = (b.id == DBTN_ACT_PIN_OUTLINE && !data->hideOutline) ||
+                                                   (b.id == DBTN_ACT_PIN_UNFILTER && data->smoothImage);
                             Color bgCol = Color(240, 15, 23, 42);
                             if (b.isPrimaryAction) {
                                 bgCol = hovered ? Color(255, 220, 38, 38) : Color(255, 239, 68, 68);
+                            } else if (activeToggleBtn) {
+                                bgCol = hovered ? Color(255, 51, 65, 85) : Color(255, 30, 41, 59);
                             } else if (hovered) {
                                 bgCol = Color(255, 51, 65, 85);
                             }
                             SolidBrush btnBg(bgCol);
-                            Pen btnBorder(Color(220, 51, 65, 85), 1.0f);
+                            Pen btnBorder(activeToggleBtn ? Color(255, 239, 68, 68) : Color(220, 51, 65, 85), 1.0f);
 
                             GraphicsState stBtn = g.Save();
                             g.SetSmoothingMode(SmoothingModeNone);
                             g.SetPixelOffsetMode(PixelOffsetModeNone);
-                            g.FillRectangle(&btnBg, (INT)b.rect.left, (INT)b.rect.top, (INT)bw, (INT)bh);
+                            g.FillRectangle(&btnBg, bx, by, bw, bh);
                             g.Restore(stBtn);
 
                             PepperSnapDaemon::DrawDockButtonIcon(g, b, rf);
@@ -3869,25 +4771,30 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                             GraphicsState stOutline = g.Save();
                             g.SetSmoothingMode(SmoothingModeNone);
                             g.SetPixelOffsetMode(PixelOffsetModeNone);
-                            g.DrawRectangle(&btnBorder, (INT)b.rect.left, (INT)b.rect.top, (INT)(bw - 1), (INT)(bh - 1));
+                            g.DrawRectangle(&btnBorder, bx, by, bw - 1, bh - 1);
                             g.Restore(stOutline);
                         }
                     }
+                    BitBlt(hdc, rcStrip.left, rcStrip.top, sw, sh, memDC, 0, 0, SRCCOPY);
+                    SelectObject(memDC, oldBmp);
+                    DeleteObject(memBmp);
+                    DeleteDC(memDC);
+                } else if (data->hCacheDC && data->hCacheBmp) {
+                    BitBlt(hdc, imgLeft, imgTop, imgW, imgH, data->hCacheDC, 0, 0, SRCCOPY);
                 }
-                BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
-                SelectObject(memDC, oldBmp);
-                DeleteObject(memBmp);
-                DeleteDC(memDC);
             }
             EndPaint(hWnd, &ps);
             return 0;
         }
         case WM_DESTROY:
+            KillTimer(hWnd, 1);
+            HidePinnedBubbleTooltip();
             g_Daemon.pinnedWindows.erase(
                 std::remove(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hWnd),
                 g_Daemon.pinnedWindows.end()
             );
             if (data) {
+                FreePinnedWindowCache(data);
                 delete data->bmp;
                 delete data;
             }
@@ -3906,23 +4813,27 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
     data->origW = sw;
     data->origH = sh;
     data->scale = initialScale;
-    UpdatePinnedWindowLayout(nullptr, data, false);
+    data->screenImgX = x;
+    data->screenImgY = y;
+    data->hideOutline = false;
+    data->smoothImage = false;
 
-    int imgW = std::max(32, (int)std::round(data->origW * data->scale));
-    int imgH = std::max(32, (int)std::round(data->origH * data->scale));
-    const int stripW = 32 + 3 + 32 + 3 + 67 + 3 + 32;
-    int winW = std::max(imgW, stripW);
-    int winH = imgH + 8 + 28;
-    int winX = x - (winW - imgW);
+    int imgW = 32, imgH = 32;
+    GetPinnedScaledDims(data, imgW, imgH);
+    EnsurePinnedWindowCache(data, imgW, imgH, true);
 
     HWND hPin = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         L"PepperSnapPinWnd", L"PepperSnap Pin",
-        WS_POPUP | WS_VISIBLE, winX, y, winW, winH,
+        WS_POPUP, x, y, imgW, imgH,
         nullptr, nullptr, hInst, nullptr
     );
     SetWindowLongPtrW(hPin, GWLP_USERDATA, (LONG_PTR)data);
-    UpdatePinnedWindowLayout(hPin, data, false);
+    UpdatePinnedWindowLayout(hPin, data, true);
+    ShowWindow(hPin, SW_SHOW);
+    BringWindowToTop(hPin);
+    SetForegroundWindow(hPin);
+    SetFocus(hPin);
     InvalidateRect(hPin, nullptr, FALSE);
     pinnedWindows.push_back(hPin);
     return hPin;
@@ -3970,8 +4881,40 @@ struct OptionsDlgState {
     HotkeyBinding hkRegion{ MOD_CONTROL, VK_SNAPSHOT };
     HotkeyBinding hkFull{ MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkPrev{ MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
+    HotkeyBinding hkToolSelect{ 0, 'V' };
+    HotkeyBinding hkToolPen{ 0, 'P' };
+    HotkeyBinding hkToolStabilo{ 0, 'H' };
+    HotkeyBinding hkToolLine{ 0, 'L' };
+    HotkeyBinding hkToolArrow{ 0, 'A' };
+    HotkeyBinding hkToolNumber{ 0, 'N' };
+    HotkeyBinding hkToolRect{ 0, 'R' };
+    HotkeyBinding hkToolEllipse{ 0, 'E' };
+    HotkeyBinding hkToolText{ 0, 'T' };
+    HotkeyBinding hkToolMosaicSq{ 0, 'X' };
+    HotkeyBinding hkToolMosaicCir{ 0, 'M' };
+    HotkeyBinding hkActUndo{ MOD_CONTROL, 'Z' };
+    HotkeyBinding hkActRedo{ MOD_CONTROL, 'Y' };
+    HotkeyBinding hkActPin{ 0, 'F' };
+    HotkeyBinding hkActOcr{ 0, 'O' };
+    HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
+    HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkPinZoomOut{ 0, VK_OEM_MINUS };
+    HotkeyBinding hkPinZoomIn{ 0, VK_OEM_PLUS };
+    HotkeyBinding hkPinZoomReset{ 0, '0' };
+    HotkeyBinding hkPinOutline{ 0, 'O' };
+    HotkeyBinding hkPinSmooth{ 0, 'S' };
+    HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
+    HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
+    HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
     bool confirmed = false;
     bool openedAppData = false;
+    bool restoredAllDefaults = false;
+    int scrollY = 0;
+    int scrollContentHeight = 660;
+    int footerHeight = 56;
+    int fixedWinWidth = 580;
+    int fullWinHeight = 716;
+    int savedWinHeight = 716;
 
     HWND hFolderEdit = nullptr;
     HWND hComboRegion = nullptr;
@@ -3992,11 +4935,12 @@ struct OptionsDlgState {
     HWND hAutoUpdateChk = nullptr;
     HWND hComboUpdateInterval = nullptr;
     HWND hCheckUpdateNowBtn = nullptr;
-    HWND hHkRegionBtn = nullptr;
-    HWND hHkFullBtn = nullptr;
-    HWND hHkPrevBtn = nullptr;
-    HWND hHkRestoreBtn = nullptr;
+    HWND hCustomizeKeysBtn = nullptr;
+    HWND hRestoreAllBtn = nullptr;
+    HWND hFooterBg = nullptr;
     HWND hAppDataInfo = nullptr;
+    HWND hOkBtn = nullptr;
+    HWND hCancelBtn = nullptr;
 };
 
 #define IDC_OPT_FOLDER_EDIT      1001
@@ -4017,32 +4961,800 @@ struct OptionsDlgState {
 #define IDC_OPT_AUTOUPDATE_CHK   1016
 #define IDC_OPT_UPDATE_INTERVAL  1017
 #define IDC_OPT_CHECK_UPDATE_NOW 1018
-#define IDC_OPT_HK_REGION_BTN    1019
-#define IDC_OPT_HK_FULL_BTN      1020
-#define IDC_OPT_HK_PREV_BTN      1021
-#define IDC_OPT_HK_RESTORE_BTN   1022
+#define IDC_OPT_CUSTOMIZE_KEYS   1019
 #define IDC_OPT_SAVE_PIN_CHK     1023
 #define IDC_OPT_SAVE_OCR_CHK     1024
+#define IDC_OPT_RESTORE_ALL_DEF  1025
 
-static void RefreshHotkeyButtonLabels(OptionsDlgState* st) {
-    if (!st) return;
-    if (st->hHkRegionBtn) {
-        std::wstring s = (g_RecordingHotkeySlot == 1)
-            ? L"Press shortcut keys... (Esc to cancel)"
-            : PepperSnapDaemon::FormatHotkeyString(st->hkRegion);
-        SetWindowTextW(st->hHkRegionBtn, s.c_str());
+#define IDC_CK_BTN_BASE          2100
+#define IDC_CK_RESTORE_DEFAULTS  2201
+
+struct CustomizeKeyRow {
+    int slot = 0; // 1..20, or 0 for section separator
+    bool isSeparator = false;
+    bool hasIcon = false;
+    DockButton iconBtn;
+    std::wstring label;
+    HotkeyBinding* bindingPtr = nullptr;
+    HotkeyBinding defaultBinding{ 0, 0 };
+    int y = 0;
+    int h = 32;
+    HWND hBtn = nullptr;
+};
+
+struct CustomizeKeysDlgState {
+    HotkeyBinding hkRegion;
+    HotkeyBinding hkFull;
+    HotkeyBinding hkPrev;
+    HotkeyBinding hkToolSelect;
+    HotkeyBinding hkToolPen;
+    HotkeyBinding hkToolStabilo;
+    HotkeyBinding hkToolLine;
+    HotkeyBinding hkToolArrow;
+    HotkeyBinding hkToolNumber;
+    HotkeyBinding hkToolRect;
+    HotkeyBinding hkToolEllipse;
+    HotkeyBinding hkToolText;
+    HotkeyBinding hkToolMosaicSq;
+    HotkeyBinding hkToolMosaicCir;
+    HotkeyBinding hkActUndo;
+    HotkeyBinding hkActRedo;
+    HotkeyBinding hkActPin;
+    HotkeyBinding hkActOcr;
+    HotkeyBinding hkActSave;
+    HotkeyBinding hkActCopy;
+    HotkeyBinding hkPinZoomOut;
+    HotkeyBinding hkPinZoomIn;
+    HotkeyBinding hkPinZoomReset;
+    HotkeyBinding hkPinOutline;
+    HotkeyBinding hkPinSmooth;
+    HotkeyBinding hkPinSaveAs;
+    HotkeyBinding hkPinSave;
+    HotkeyBinding hkPinCopy;
+
+    std::vector<CustomizeKeyRow> rows;
+    bool confirmed = false;
+    int scrollY = 0;
+    int scrollContentHeight = 680;
+    int footerHeight = 50;
+    int fixedWinWidth = 460;
+    int fullWinHeight = 730;
+    int savedWinHeight = 560;
+
+    HWND hFooterBg = nullptr;
+    HWND hRestoreBtn = nullptr;
+    HWND hSaveBtn = nullptr;
+    HWND hCancelBtn = nullptr;
+};
+
+static void UpdateCustomizeKeysRecordingTooltip(HWND hWnd, CustomizeKeysDlgState* ck) {
+    if (!hWnd || !ck || g_RecordingHotkeySlot <= 0) {
+        HidePinnedBubbleTooltip();
+        return;
     }
-    if (st->hHkFullBtn) {
-        std::wstring s = (g_RecordingHotkeySlot == 2)
-            ? L"Press shortcut keys... (Esc to cancel)"
-            : PepperSnapDaemon::FormatHotkeyString(st->hkFull);
-        SetWindowTextW(st->hHkFullBtn, s.c_str());
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    int footerTop = std::max(0, (int)(rcClient.bottom - rcClient.top) - ck->footerHeight);
+    for (const auto& r : ck->rows) {
+        if (!r.isSeparator && r.slot == g_RecordingHotkeySlot && r.hBtn && IsWindow(r.hBtn)) {
+            RECT rcBtnClient;
+            GetWindowRect(r.hBtn, &rcBtnClient);
+            MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcBtnClient, 2);
+            if (rcBtnClient.bottom <= 0 || rcBtnClient.top >= footerTop) {
+                HidePinnedBubbleTooltip();
+                return;
+            }
+            DockButton tipBtn;
+            tipBtn.rect = rcBtnClient;
+            tipBtn.tooltip = L"Esc to cancel, and Delete to leave it empty";
+            ShowPinnedBubbleTooltip(hWnd, tipBtn);
+            return;
+        }
     }
-    if (st->hHkPrevBtn) {
-        std::wstring s = (g_RecordingHotkeySlot == 3)
-            ? L"Press shortcut keys... (Esc to cancel)"
-            : PepperSnapDaemon::FormatHotkeyString(st->hkPrev);
-        SetWindowTextW(st->hHkPrevBtn, s.c_str());
+    HidePinnedBubbleTooltip();
+}
+
+static void RefreshCustomizeKeysButtonLabels(HWND hWnd, CustomizeKeysDlgState* ck) {
+    if (!ck) return;
+    for (const auto& r : ck->rows) {
+        if (r.isSeparator || !r.hBtn || !r.bindingPtr) continue;
+        std::wstring txt = (g_RecordingHotkeySlot == r.slot)
+            ? L"Press key... "
+            : PepperSnapDaemon::FormatHotkeyString(*r.bindingPtr);
+        SetWindowTextW(r.hBtn, txt.c_str());
+    }
+    UpdateCustomizeKeysRecordingTooltip(hWnd, ck);
+}
+
+static void LayoutCustomizeKeysFooter(HWND hWnd, CustomizeKeysDlgState* ck) {
+    if (!hWnd || !ck) return;
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+    int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+    int footerTop = std::max(0, clientH - ck->footerHeight);
+    if (ck->hFooterBg) {
+        SetWindowPos(ck->hFooterBg, HWND_TOP, 0, footerTop, clientW, ck->footerHeight, SWP_NOACTIVATE);
+    }
+    if (ck->hRestoreBtn) {
+        SetWindowPos(ck->hRestoreBtn, HWND_TOP, 16, footerTop + 9, 128, 32, SWP_NOACTIVATE);
+    }
+    if (ck->hSaveBtn) {
+        SetWindowPos(ck->hSaveBtn, HWND_TOP, clientW - 16 - 88 - 8 - 88, footerTop + 9, 88, 32, SWP_NOACTIVATE);
+    }
+    if (ck->hCancelBtn) {
+        SetWindowPos(ck->hCancelBtn, HWND_TOP, clientW - 16 - 88, footerTop + 9, 88, 32, SWP_NOACTIVATE);
+    }
+}
+
+static void UpdateCustomizeKeysScroll(HWND hWnd, CustomizeKeysDlgState* ck, int newScrollY) {
+    if (!hWnd || !ck) return;
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+    int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+    int viewportH = std::max(1, clientH - ck->footerHeight);
+    int maxScroll = std::max(0, ck->scrollContentHeight - viewportH);
+    int clamped = std::max(0, std::min(newScrollY, maxScroll));
+    int dy = ck->scrollY - clamped;
+    ck->scrollY = clamped;
+    if (dy != 0) {
+        for (const auto& r : ck->rows) {
+            if (!r.isSeparator && r.hBtn) {
+                int btnY = r.y + (r.h - 26) / 2 - ck->scrollY;
+                SetWindowPos(r.hBtn, nullptr, 256, btnY, 156, 26, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
+    }
+    LayoutCustomizeKeysFooter(hWnd, ck);
+    SCROLLINFO si = { sizeof(SCROLLINFO) };
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+    si.nMin = 0;
+    si.nMax = ck->scrollContentHeight - 1;
+    si.nPage = (UINT)viewportH;
+    si.nPos = ck->scrollY;
+    SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
+    UpdateCustomizeKeysRecordingTooltip(hWnd, ck);
+    if (dy != 0) {
+        RECT rcInval = { 0, 0, clientW, clientH };
+        RedrawWindow(hWnd, &rcInval, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+}
+
+static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    CustomizeKeysDlgState* ck = (CustomizeKeysDlgState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+    switch (msg) {
+        case WM_CREATE: {
+            CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
+            ck = (CustomizeKeysDlgState*)cs->lpCreateParams;
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)ck);
+
+            HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            HFONT hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+
+            if (ck) {
+                for (auto& r : ck->rows) {
+                    if (r.isSeparator) continue;
+                    int btnY = r.y + (r.h - 26) / 2;
+                    r.hBtn = CreateWindowExW(0, L"BUTTON", L"",
+                        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+                        256, btnY, 156, 26, hWnd, (HMENU)(INT_PTR)(IDC_CK_BTN_BASE + r.slot), nullptr, nullptr);
+                    SendMessageW(r.hBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+                }
+
+                ck->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 500, 428, ck->footerHeight, hWnd, nullptr, nullptr, nullptr);
+
+                ck->hRestoreBtn = CreateWindowExW(0, L"BUTTON", L"Restore defaults",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 16, 509, 128, 32, hWnd, (HMENU)IDC_CK_RESTORE_DEFAULTS, nullptr, nullptr);
+                SendMessageW(ck->hRestoreBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+                ck->hSaveBtn = CreateWindowExW(0, L"BUTTON", L"Save",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 228, 509, 88, 32, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                SendMessageW(ck->hSaveBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+
+                ck->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 324, 509, 88, 32, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                SendMessageW(ck->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+                RefreshCustomizeKeysButtonLabels(hWnd, ck);
+                LayoutCustomizeKeysFooter(hWnd, ck);
+                UpdateCustomizeKeysScroll(hWnd, ck, 0);
+            }
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT rcClient;
+            GetClientRect(hWnd, &rcClient);
+            int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+            int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+            if (ck) {
+                HDC memDC = CreateCompatibleDC(hdc);
+                HBITMAP memBmp = CreateCompatibleBitmap(hdc, clientW, clientH);
+                HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
+
+                RECT rcAll = { 0, 0, clientW, clientH };
+                FillRect(memDC, &rcAll, GetSysColorBrush(COLOR_BTNFACE));
+
+                int footerTop = std::max(0, clientH - ck->footerHeight);
+                int savedDC = SaveDC(memDC);
+                IntersectClipRect(memDC, 0, 0, clientW, footerTop);
+
+                SetBkMode(memDC, TRANSPARENT);
+                HFONT hRowFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                HGDIOBJ hOldF = SelectObject(memDC, hRowFont);
+
+                HPEN hSepShadow = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                HPEN hSepHilight = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
+                HPEN hRowSep = CreatePen(PS_SOLID, 1, RGB(218, 222, 228));
+                HGDIOBJ hOldP = SelectObject(memDC, hSepShadow);
+
+                int sy = ck->scrollY;
+                int padX = 16;
+                int rightEdge = clientW - padX;
+
+                for (size_t i = 0; i < ck->rows.size(); ++i) {
+                    const auto& r = ck->rows[i];
+                    int drawY = r.y - sy;
+                    if (drawY + r.h < 0 || drawY > footerTop) continue;
+
+                    if (r.isSeparator) {
+                        int lineY = drawY + r.h / 2;
+                        SelectObject(memDC, hSepShadow);
+                        MoveToEx(memDC, padX, lineY, nullptr);
+                        LineTo(memDC, rightEdge, lineY);
+                        SelectObject(memDC, hSepHilight);
+                        MoveToEx(memDC, padX, lineY + 1, nullptr);
+                        LineTo(memDC, rightEdge, lineY + 1);
+                    } else {
+                        if (i > 0 && !ck->rows[i - 1].isSeparator) {
+                            SelectObject(memDC, hRowSep);
+                            MoveToEx(memDC, padX, drawY, nullptr);
+                            LineTo(memDC, rightEdge, drawY);
+                        }
+
+                        int textLeft = padX;
+                        if (r.hasIcon) {
+                            Graphics gIcon(memDC);
+                            gIcon.SetSmoothingMode(SmoothingModeAntiAlias);
+                            gIcon.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+                            const int iconW = 26;
+                            const int iconH = 22;
+                            int iconX = padX;
+                            int iconY = drawY + (r.h - iconH) / 2;
+                            RectF rfIcon((float)iconX, (float)iconY, (float)iconW, (float)iconH);
+                            Color bgCol = r.iconBtn.isPrimaryAction ? Color(255, 239, 68, 68) : Color(245, 15, 23, 42);
+                            SolidBrush btnBg(bgCol);
+                            Pen btnBorder(r.iconBtn.isPrimaryAction ? Color(255, 252, 165, 165) : Color(220, 51, 65, 85), 1.0f);
+                            GraphicsState stB = gIcon.Save();
+                            gIcon.SetSmoothingMode(SmoothingModeNone);
+                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
+                            gIcon.FillRectangle(&btnBg, iconX, iconY, iconW, iconH);
+                            gIcon.Restore(stB);
+                            PepperSnapDaemon::DrawDockButtonIcon(gIcon, r.iconBtn, rfIcon);
+                            GraphicsState stO = gIcon.Save();
+                            gIcon.SetSmoothingMode(SmoothingModeNone);
+                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
+                            gIcon.DrawRectangle(&btnBorder, iconX, iconY, iconW - 1, iconH - 1);
+                            gIcon.Restore(stO);
+                            textLeft += iconW + 8;
+                        }
+
+                        SelectObject(memDC, hRowFont);
+                        SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
+                        RECT rcLbl = { textLeft, drawY, 250, drawY + r.h };
+                        DrawTextW(memDC, r.label.c_str(), -1, &rcLbl, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                    }
+                }
+
+                SelectObject(memDC, hOldP);
+                SelectObject(memDC, hOldF);
+                DeleteObject(hRowSep);
+                DeleteObject(hSepHilight);
+                DeleteObject(hSepShadow);
+                DeleteObject(hRowFont);
+
+                RestoreDC(memDC, savedDC);
+
+                RECT rcFooter = { 0, footerTop, clientW, clientH };
+                FillRect(memDC, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
+                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                HGDIOBJ hOldFooterPen = SelectObject(memDC, hLinePen);
+                MoveToEx(memDC, 0, footerTop, nullptr);
+                LineTo(memDC, clientW, footerTop);
+                SelectObject(memDC, hOldFooterPen);
+                DeleteObject(hLinePen);
+
+                BitBlt(hdc, 0, 0, clientW, clientH, memDC, 0, 0, SRCCOPY);
+                SelectObject(memDC, oldBmp);
+                DeleteObject(memBmp);
+                DeleteDC(memDC);
+            }
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+        case WM_CTLCOLORSTATIC: {
+            if (ck && ck->hFooterBg && (HWND)lParam == ck->hFooterBg) {
+                HDC hdcStatic = (HDC)wParam;
+                RECT rcF;
+                GetClientRect(ck->hFooterBg, &rcF);
+                FillRect(hdcStatic, &rcF, GetSysColorBrush(COLOR_BTNFACE));
+                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                HGDIOBJ hOldPen = SelectObject(hdcStatic, hLinePen);
+                MoveToEx(hdcStatic, 0, 0, nullptr);
+                LineTo(hdcStatic, rcF.right, 0);
+                SelectObject(hdcStatic, hOldPen);
+                DeleteObject(hLinePen);
+                return (LRESULT)GetStockObject(NULL_BRUSH);
+            }
+            break;
+        }
+        case WM_GETMINMAXINFO: {
+            MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+            if (ck && ck->fixedWinWidth > 0) {
+                mmi->ptMinTrackSize.x = ck->fixedWinWidth;
+                mmi->ptMaxTrackSize.x = ck->fixedWinWidth;
+                mmi->ptMinTrackSize.y = 280;
+                int maxH = std::min(ck->fullWinHeight, std::max(320, GetSystemMetrics(SM_CYSCREEN) - 24));
+                mmi->ptMaxTrackSize.y = std::max(280, maxH);
+            }
+            return 0;
+        }
+        case WM_NCHITTEST: {
+            LRESULT hit = DefWindowProcW(hWnd, msg, wParam, lParam);
+            if (hit == HTLEFT || hit == HTRIGHT) return HTBORDER;
+            if (hit == HTTOPLEFT || hit == HTTOPRIGHT) return HTTOP;
+            if (hit == HTBOTTOMLEFT || hit == HTBOTTOMRIGHT) return HTBOTTOM;
+            return hit;
+        }
+        case WM_SIZE: {
+            if (ck && wParam != SIZE_MINIMIZED) {
+                LayoutCustomizeKeysFooter(hWnd, ck);
+                UpdateCustomizeKeysScroll(hWnd, ck, ck->scrollY);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                RECT rcW;
+                if (GetWindowRect(hWnd, &rcW)) {
+                    ck->savedWinHeight = rcW.bottom - rcW.top;
+                }
+            }
+            return 0;
+        }
+        case WM_MOVE: {
+            if (ck && g_RecordingHotkeySlot > 0) {
+                UpdateCustomizeKeysRecordingTooltip(hWnd, ck);
+            }
+            return 0;
+        }
+        case WM_VSCROLL: {
+            if (ck && lParam == 0) {
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int viewportH = std::max(60, (int)(rcC.bottom - rcC.top) - ck->footerHeight);
+                int pageH = std::max(40, viewportH - 32);
+                int target = ck->scrollY;
+                switch (LOWORD(wParam)) {
+                    case SB_LINEUP:        target -= 32; break;
+                    case SB_LINEDOWN:      target += 32; break;
+                    case SB_PAGEUP:        target -= pageH; break;
+                    case SB_PAGEDOWN:      target += pageH; break;
+                    case SB_TOP:           target = 0; break;
+                    case SB_BOTTOM:        target = ck->scrollContentHeight; break;
+                    case SB_THUMBTRACK:
+                    case SB_THUMBPOSITION: {
+                        SCROLLINFO si = { sizeof(SCROLLINFO), SIF_TRACKPOS };
+                        if (GetScrollInfo(hWnd, SB_VERT, &si)) {
+                            target = si.nTrackPos;
+                        } else {
+                            target = HIWORD(wParam);
+                        }
+                        break;
+                    }
+                    default: break;
+                }
+                UpdateCustomizeKeysScroll(hWnd, ck, target);
+                return 0;
+            }
+            break;
+        }
+        case WM_MOUSEWHEEL: {
+            if (ck) {
+                int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                if (delta != 0) {
+                    int step = -(delta * 48) / WHEEL_DELTA;
+                    UpdateCustomizeKeysScroll(hWnd, ck, ck->scrollY + step);
+                }
+                return 0;
+            }
+            break;
+        }
+        case WM_SHORTCUT_RECORDED: {
+            if (!ck) return 0;
+            UINT mods = (UINT)wParam;
+            UINT vk = (UINT)lParam;
+            int slot = g_RecordingHotkeySlot;
+            g_RecordingHotkeySlot = 0;
+            HidePinnedBubbleTooltip();
+            if (slot > 0 && vk != 0 && vk != VK_ESCAPE) {
+                for (auto& r : ck->rows) {
+                    if (!r.isSeparator && r.slot == slot && r.bindingPtr) {
+                        if (vk == VK_DELETE && mods == 0) {
+                            *r.bindingPtr = { 0, 0 };
+                        } else {
+                            *r.bindingPtr = { mods, vk };
+                        }
+                        break;
+                    }
+                }
+            }
+            RefreshCustomizeKeysButtonLabels(hWnd, ck);
+            return 0;
+        }
+        case WM_COMMAND: {
+            if (!ck) break;
+            WORD id = LOWORD(wParam);
+            if (id >= IDC_CK_BTN_BASE + 1 && id <= IDC_CK_BTN_BASE + 50) {
+                int clickedSlot = (int)(id - IDC_CK_BTN_BASE);
+                g_RecordingHotkeySlot = (g_RecordingHotkeySlot == clickedSlot) ? 0 : clickedSlot;
+                RefreshCustomizeKeysButtonLabels(hWnd, ck);
+                SetFocus(hWnd);
+                return 0;
+            }
+            if (id == IDC_CK_RESTORE_DEFAULTS) {
+                g_RecordingHotkeySlot = 0;
+                HidePinnedBubbleTooltip();
+                for (auto& r : ck->rows) {
+                    if (!r.isSeparator && r.bindingPtr) {
+                        *r.bindingPtr = r.defaultBinding;
+                    }
+                }
+                RefreshCustomizeKeysButtonLabels(hWnd, ck);
+                SetFocus(hWnd);
+                return 0;
+            }
+            if (id == IDOK) {
+                g_RecordingHotkeySlot = 0;
+                HidePinnedBubbleTooltip();
+                ck->confirmed = true;
+                DestroyWindow(hWnd);
+                return 0;
+            }
+            if (id == IDCANCEL) {
+                g_RecordingHotkeySlot = 0;
+                HidePinnedBubbleTooltip();
+                DestroyWindow(hWnd);
+                return 0;
+            }
+            break;
+        }
+        case WM_CLOSE:
+            g_RecordingHotkeySlot = 0;
+            HidePinnedBubbleTooltip();
+            DestroyWindow(hWnd);
+            return 0;
+        case WM_DESTROY:
+            g_RecordingHotkeySlot = 0;
+            HidePinnedBubbleTooltip();
+            break;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
+    if (!optSt) return;
+    if (g_Daemon.hCustomizeKeysWnd && IsWindow(g_Daemon.hCustomizeKeysWnd)) {
+        BringWindowToTop(g_Daemon.hCustomizeKeysWnd);
+        SetForegroundWindow(g_Daemon.hCustomizeKeysWnd);
+        return;
+    }
+
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
+        wc.lpfnWndProc = CustomizeKeysDlgWndProc;
+        wc.hInstance = g_Daemon.hInst;
+        wc.hIcon = LoadIconW(g_Daemon.hInst, MAKEINTRESOURCEW(IDI_APPICON));
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"PepperSnapCustomizeKeysModal";
+        RegisterClassExW(&wc);
+        reg = true;
+    }
+
+    g_RecordingHotkeySlot = 0;
+    HidePinnedBubbleTooltip();
+
+    CustomizeKeysDlgState ck;
+    ck.hkRegion        = optSt->hkRegion;
+    ck.hkFull          = optSt->hkFull;
+    ck.hkPrev          = optSt->hkPrev;
+    ck.hkToolSelect    = optSt->hkToolSelect;
+    ck.hkToolPen       = optSt->hkToolPen;
+    ck.hkToolStabilo   = optSt->hkToolStabilo;
+    ck.hkToolLine      = optSt->hkToolLine;
+    ck.hkToolArrow     = optSt->hkToolArrow;
+    ck.hkToolNumber    = optSt->hkToolNumber;
+    ck.hkToolRect      = optSt->hkToolRect;
+    ck.hkToolEllipse   = optSt->hkToolEllipse;
+    ck.hkToolText      = optSt->hkToolText;
+    ck.hkToolMosaicSq  = optSt->hkToolMosaicSq;
+    ck.hkToolMosaicCir = optSt->hkToolMosaicCir;
+    ck.hkActUndo       = optSt->hkActUndo;
+    ck.hkActRedo       = optSt->hkActRedo;
+    ck.hkActPin        = optSt->hkActPin;
+    ck.hkActOcr        = optSt->hkActOcr;
+    ck.hkActSave       = optSt->hkActSave;
+    ck.hkActCopy       = optSt->hkActCopy;
+    ck.hkPinZoomOut    = optSt->hkPinZoomOut;
+    ck.hkPinZoomIn     = optSt->hkPinZoomIn;
+    ck.hkPinZoomReset  = optSt->hkPinZoomReset;
+    ck.hkPinOutline    = optSt->hkPinOutline;
+    ck.hkPinSmooth     = optSt->hkPinSmooth;
+    ck.hkPinSaveAs     = optSt->hkPinSaveAs;
+    ck.hkPinSave       = optSt->hkPinSave;
+    ck.hkPinCopy       = optSt->hkPinCopy;
+
+    int nextSlot = 1;
+    auto addGlobalRow = [&](const std::wstring& lbl, HotkeyBinding* ptr, HotkeyBinding defHk) {
+        CustomizeKeyRow r;
+        r.slot = nextSlot++;
+        r.label = lbl;
+        r.bindingPtr = ptr;
+        r.defaultBinding = defHk;
+        ck.rows.push_back(r);
+    };
+    auto addSep = [&]() {
+        CustomizeKeyRow r;
+        r.isSeparator = true;
+        ck.rows.push_back(r);
+    };
+    auto addToolRow = [&](OverlayTool tool, const std::wstring& lbl, HotkeyBinding* ptr, HotkeyBinding defHk) {
+        CustomizeKeyRow r;
+        r.slot = nextSlot++;
+        r.hasIcon = true;
+        r.iconBtn.isTool = true;
+        r.iconBtn.tool = tool;
+        r.label = lbl;
+        r.bindingPtr = ptr;
+        r.defaultBinding = defHk;
+        ck.rows.push_back(r);
+    };
+    auto addActRow = [&](int btnId, bool primary, const std::wstring& lbl, HotkeyBinding* ptr, HotkeyBinding defHk) {
+        CustomizeKeyRow r;
+        r.slot = nextSlot++;
+        r.hasIcon = true;
+        r.iconBtn.isTool = false;
+        r.iconBtn.id = btnId;
+        r.iconBtn.isPrimaryAction = primary;
+        r.label = lbl;
+        r.bindingPtr = ptr;
+        r.defaultBinding = defHk;
+        ck.rows.push_back(r);
+    };
+
+    // First 3: Global capture shortcuts
+    addGlobalRow(L"Custom area",                       &ck.hkRegion, { MOD_CONTROL, VK_SNAPSHOT });
+    addGlobalRow(L"Instant fullscreen",                &ck.hkFull,   { MOD_SHIFT, VK_SNAPSHOT });
+    addGlobalRow(L"Instant save previous custom area", &ck.hkPrev,   { MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT });
+
+    addSep();
+
+    // Custom area annotation tools
+    addToolRow(OverlayTool::SelectMove,   L"Select mode",         &ck.hkToolSelect,    { 0, 'V' });
+    addToolRow(OverlayTool::Pen,          L"Pen",                 &ck.hkToolPen,       { 0, 'P' });
+    addToolRow(OverlayTool::Highlighter,  L"Stabilo highlighter", &ck.hkToolStabilo,   { 0, 'H' });
+    addToolRow(OverlayTool::Line,         L"Line",                &ck.hkToolLine,      { 0, 'L' });
+    addToolRow(OverlayTool::Arrow,        L"Arrow",               &ck.hkToolArrow,     { 0, 'A' });
+    addToolRow(OverlayTool::NumberArrow,  L"Numbering arrow",     &ck.hkToolNumber,    { 0, 'N' });
+    addToolRow(OverlayTool::Rectangle,    L"Square / rectangle",  &ck.hkToolRect,      { 0, 'R' });
+    addToolRow(OverlayTool::Ellipse,      L"Circle / ellipse",    &ck.hkToolEllipse,   { 0, 'E' });
+    addToolRow(OverlayTool::TextBox,      L"Text box",            &ck.hkToolText,      { 0, 'T' });
+    addToolRow(OverlayTool::MosaicSquare, L"Mosaic square",       &ck.hkToolMosaicSq,  { 0, 'X' });
+    addToolRow(OverlayTool::MosaicCircle, L"Mosaic circle",       &ck.hkToolMosaicCir, { 0, 'M' });
+
+    addSep();
+
+    // Custom area toolbar actions & export
+    addActRow(DBTN_ACT_UNDO, false, L"Undo",                  &ck.hkActUndo, { MOD_CONTROL, 'Z' });
+    addActRow(DBTN_ACT_REDO, false, L"Redo",                  &ck.hkActRedo, { MOD_CONTROL, 'Y' });
+    addActRow(DBTN_ACT_PIN,  false, L"Pin on top",            &ck.hkActPin,  { 0, 'F' });
+    addActRow(DBTN_ACT_OCR,  false, L"Extract text with OCR", &ck.hkActOcr,  { 0, 'O' });
+    addActRow(DBTN_ACT_SAVE, false, L"Quick save",            &ck.hkActSave, { MOD_CONTROL, 'S' });
+    addActRow(DBTN_ACT_COPY, true,  L"Copy to clipboard",     &ck.hkActCopy, { MOD_CONTROL, 'C' });
+
+    addSep();
+
+    // Pinned image toolbar actions & export
+    addActRow(DBTN_ACT_ZOOM_OUT,     false, L"Zoom out",                 &ck.hkPinZoomOut,   { 0, VK_OEM_MINUS });
+    addActRow(DBTN_ACT_ZOOM_IN,      false, L"Zoom in",                  &ck.hkPinZoomIn,    { 0, VK_OEM_PLUS });
+    addActRow(DBTN_ACT_ZOOM_RESET,   false, L"Reset to original size",   &ck.hkPinZoomReset, { 0, '0' });
+    addActRow(DBTN_ACT_PIN_OUTLINE,  false, L"Show / Hide outline",      &ck.hkPinOutline,   { 0, 'O' });
+    addActRow(DBTN_ACT_PIN_UNFILTER, false, L"Smooth the image",         &ck.hkPinSmooth,    { 0, 'S' });
+    addActRow(DBTN_ACT_SAVE_AS,      false, L"Save as JPG/PNG/WEBP/BMP", &ck.hkPinSaveAs,    { MOD_CONTROL | MOD_SHIFT, 'S' });
+    addActRow(DBTN_ACT_SAVE,         false, L"Quick save",               &ck.hkPinSave,      { MOD_CONTROL, 'S' });
+    addActRow(DBTN_ACT_COPY,         true,  L"Copy to clipboard",        &ck.hkPinCopy,      { MOD_CONTROL, 'C' });
+
+    int curY = 8;
+    for (auto& r : ck.rows) {
+        r.y = curY;
+        r.h = r.isSeparator ? 14 : 32;
+        curY += r.h;
+    }
+    ck.scrollContentHeight = curY + 8;
+    ck.footerHeight = 50;
+
+    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    DWORD dwStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
+    DWORD dwExStyle = WS_EX_TOPMOST;
+    const int totalClientW = 428;
+    const int totalClientH = ck.scrollContentHeight + ck.footerHeight;
+    RECT rcWin = { 0, 0, totalClientW, totalClientH };
+    AdjustWindowRectEx(&rcWin, dwStyle, FALSE, dwExStyle);
+    int fixedW = (rcWin.right - rcWin.left) + GetSystemMetrics(SM_CXVSCROLL);
+    int fullWinH = rcWin.bottom - rcWin.top;
+    int maxAllowedH = std::min(fullWinH, std::max(320, sh - 24));
+    int initH = std::max(280, std::min(maxAllowedH, g_Daemon.customizeKeysWindowHeight));
+    ck.fixedWinWidth = fixedW;
+    ck.fullWinHeight = fullWinH;
+    ck.savedWinHeight = initH;
+
+    if (hParentOptWnd && IsWindow(hParentOptWnd)) {
+        EnableWindow(hParentOptWnd, FALSE);
+    }
+
+    HWND hDlg = CreateWindowExW(
+        dwExStyle, L"PepperSnapCustomizeKeysModal",
+        L"PepperSnap — customize keys",
+        dwStyle,
+        (sw - fixedW) / 2, std::max(10, (sh - initH) / 2), fixedW, initH,
+        hParentOptWnd, nullptr, g_Daemon.hInst, &ck
+    );
+    g_Daemon.hCustomizeKeysWnd = hDlg;
+    BringWindowToTop(hDlg);
+    SetForegroundWindow(hDlg);
+
+    MSG msg;
+    while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (g_RecordingHotkeySlot != 0 && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
+            DWORD vk = (DWORD)msg.wParam;
+            if (vk == VK_ESCAPE) {
+                SendMessageW(hDlg, WM_SHORTCUT_RECORDED, 0, VK_ESCAPE);
+                continue;
+            }
+            if (!IsModifierVk(vk)) {
+                UINT mods = 0;
+                if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) mods |= MOD_CONTROL;
+                if ((GetKeyState(VK_SHIFT)   & 0x8000) != 0) mods |= MOD_SHIFT;
+                if ((GetKeyState(VK_MENU)    & 0x8000) != 0) mods |= MOD_ALT;
+                if ((GetKeyState(VK_LWIN)    & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0) mods |= MOD_WIN;
+                SendMessageW(hDlg, WM_SHORTCUT_RECORDED, (WPARAM)mods, (LPARAM)vk);
+                continue;
+            }
+            continue;
+        }
+        if (msg.message == WM_MOUSEWHEEL && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
+            SendMessageW(hDlg, WM_MOUSEWHEEL, msg.wParam, msg.lParam);
+            continue;
+        }
+        if (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)) {
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) { SendMessageW(hDlg, WM_COMMAND, IDOK, 0); continue; }
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { SendMessageW(hDlg, WM_COMMAND, IDCANCEL, 0); continue; }
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    g_RecordingHotkeySlot = 0;
+    HidePinnedBubbleTooltip();
+    g_Daemon.hCustomizeKeysWnd = nullptr;
+
+    if (hParentOptWnd && IsWindow(hParentOptWnd)) {
+        EnableWindow(hParentOptWnd, TRUE);
+        BringWindowToTop(hParentOptWnd);
+        SetForegroundWindow(hParentOptWnd);
+        SetActiveWindow(hParentOptWnd);
+    }
+
+    if (ck.savedWinHeight >= 280 && ck.savedWinHeight != g_Daemon.customizeKeysWindowHeight) {
+        g_Daemon.customizeKeysWindowHeight = ck.savedWinHeight;
+        g_Daemon.SaveSettings();
+    }
+
+    if (ck.confirmed) {
+        optSt->hkRegion        = ck.hkRegion;
+        optSt->hkFull          = ck.hkFull;
+        optSt->hkPrev          = ck.hkPrev;
+        optSt->hkToolSelect    = ck.hkToolSelect;
+        optSt->hkToolPen       = ck.hkToolPen;
+        optSt->hkToolStabilo   = ck.hkToolStabilo;
+        optSt->hkToolLine      = ck.hkToolLine;
+        optSt->hkToolArrow     = ck.hkToolArrow;
+        optSt->hkToolNumber    = ck.hkToolNumber;
+        optSt->hkToolRect      = ck.hkToolRect;
+        optSt->hkToolEllipse   = ck.hkToolEllipse;
+        optSt->hkToolText      = ck.hkToolText;
+        optSt->hkToolMosaicSq  = ck.hkToolMosaicSq;
+        optSt->hkToolMosaicCir = ck.hkToolMosaicCir;
+        optSt->hkActUndo       = ck.hkActUndo;
+        optSt->hkActRedo       = ck.hkActRedo;
+        optSt->hkActPin        = ck.hkActPin;
+        optSt->hkActOcr        = ck.hkActOcr;
+        optSt->hkActSave       = ck.hkActSave;
+        optSt->hkActCopy       = ck.hkActCopy;
+        optSt->hkPinZoomOut    = ck.hkPinZoomOut;
+        optSt->hkPinZoomIn     = ck.hkPinZoomIn;
+        optSt->hkPinZoomReset  = ck.hkPinZoomReset;
+        optSt->hkPinOutline    = ck.hkPinOutline;
+        optSt->hkPinSmooth     = ck.hkPinSmooth;
+        optSt->hkPinSaveAs     = ck.hkPinSaveAs;
+        optSt->hkPinSave       = ck.hkPinSave;
+        optSt->hkPinCopy       = ck.hkPinCopy;
+    }
+}
+
+static void LayoutOptionsFooter(HWND hWnd, OptionsDlgState* st) {
+    if (!hWnd || !st) return;
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+    int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+    int footerTop = std::max(0, clientH - st->footerHeight);
+    if (st->hFooterBg) {
+        SetWindowPos(st->hFooterBg, HWND_TOP, 0, footerTop, clientW, st->footerHeight, SWP_NOACTIVATE);
+    }
+    if (st->hAppDataInfo) {
+        SetWindowPos(st->hAppDataInfo, HWND_TOP, 18, footerTop + 18, 296, 24, SWP_NOACTIVATE);
+    }
+    if (st->hOkBtn) {
+        SetWindowPos(st->hOkBtn, HWND_TOP, 318, footerTop + 11, 108, 34, SWP_NOACTIVATE);
+    }
+    if (st->hCancelBtn) {
+        SetWindowPos(st->hCancelBtn, HWND_TOP, 434, footerTop + 11, 100, 34, SWP_NOACTIVATE);
+    }
+}
+
+static void UpdateOptionsScroll(HWND hWnd, OptionsDlgState* st, int newScrollY) {
+    if (!hWnd || !st) return;
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+    int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+    int viewportH = std::max(1, clientH - st->footerHeight);
+    int maxScroll = std::max(0, st->scrollContentHeight - viewportH);
+    int clamped = std::max(0, std::min(newScrollY, maxScroll));
+    int dy = st->scrollY - clamped;
+    st->scrollY = clamped;
+    if (dy != 0) {
+        for (HWND hChild = GetWindow(hWnd, GW_CHILD); hChild != nullptr; hChild = GetWindow(hChild, GW_HWNDNEXT)) {
+            if (hChild == st->hFooterBg || hChild == st->hAppDataInfo || hChild == st->hOkBtn || hChild == st->hCancelBtn) continue;
+            RECT rcCh;
+            if (GetWindowRect(hChild, &rcCh)) {
+                MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcCh, 2);
+                SetWindowPos(hChild, nullptr, rcCh.left, rcCh.top + dy, 0, 0,
+                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
+    }
+    LayoutOptionsFooter(hWnd, st);
+    SCROLLINFO si = { sizeof(SCROLLINFO) };
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+    si.nMin = 0;
+    si.nMax = st->scrollContentHeight - 1;
+    si.nPage = (UINT)viewportH;
+    si.nPos = st->scrollY;
+    SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
+    if (dy != 0) {
+        RECT rcInval = { 0, 0, clientW, clientH };
+        RedrawWindow(hWnd, &rcInval, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
     }
 }
 
@@ -4154,7 +5866,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             // Timestamp Naming Pattern + Restore Default Button
             HWND hLblNaming = CreateWindowExW(0, L"STATIC",
-                L"Naming pattern",
+                L"Naming pattern:",
                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 244, 516, 22, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(hLblNaming, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
@@ -4170,52 +5882,26 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 302, 516, 22, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(st->hPreviewLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            // Shortcut keys
+            // Shortcut keys: [Customize keys] button
             HWND hLblShortcuts = CreateWindowExW(0, L"STATIC",
-                L"Shortcut keys",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 336, 380, 24, hWnd, nullptr, nullptr, nullptr);
+                L"Shortcut keys:",
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 338, 108, 24, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(hLblShortcuts, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
-            st->hHkRestoreBtn = CreateWindowExW(0, L"BUTTON", L"Restore default",
-                WS_CHILD | WS_VISIBLE, 412, 332, 122, 28, hWnd, (HMENU)IDC_OPT_HK_RESTORE_BTN, nullptr, nullptr);
-            SendMessageW(st->hHkRestoreBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+            st->hCustomizeKeysBtn = CreateWindowExW(0, L"BUTTON", L"Customize keys",
+                WS_CHILD | WS_VISIBLE, 130, 334, 136, 28, hWnd, (HMENU)IDC_OPT_CUSTOMIZE_KEYS, nullptr, nullptr);
+            SendMessageW(st->hCustomizeKeysBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            HWND hLblHkReg = CreateWindowExW(0, L"STATIC", L"Custom area:",
-                WS_CHILD | WS_VISIBLE, 18, 370, 276, 24, hWnd, nullptr, nullptr, nullptr);
-            SendMessageW(hLblHkReg, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            st->hHkRegionBtn = CreateWindowExW(0, L"BUTTON", L"",
-                WS_CHILD | WS_VISIBLE, 300, 366, 234, 28, hWnd, (HMENU)IDC_OPT_HK_REGION_BTN, nullptr, nullptr);
-            SendMessageW(st->hHkRegionBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            HWND hLblHkFull = CreateWindowExW(0, L"STATIC", L"Instant fullscreen:",
-                WS_CHILD | WS_VISIBLE, 18, 404, 276, 24, hWnd, nullptr, nullptr, nullptr);
-            SendMessageW(hLblHkFull, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            st->hHkFullBtn = CreateWindowExW(0, L"BUTTON", L"",
-                WS_CHILD | WS_VISIBLE, 300, 400, 234, 28, hWnd, (HMENU)IDC_OPT_HK_FULL_BTN, nullptr, nullptr);
-            SendMessageW(st->hHkFullBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            HWND hLblHkPrev = CreateWindowExW(0, L"STATIC", L"Instant save previous custom area:",
-                WS_CHILD | WS_VISIBLE, 18, 438, 276, 24, hWnd, nullptr, nullptr, nullptr);
-            SendMessageW(hLblHkPrev, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            st->hHkPrevBtn = CreateWindowExW(0, L"BUTTON", L"",
-                WS_CHILD | WS_VISIBLE, 300, 434, 234, 28, hWnd, (HMENU)IDC_OPT_HK_PREV_BTN, nullptr, nullptr);
-            SendMessageW(st->hHkPrevBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            RefreshHotkeyButtonLabels(st);
-
-            // Toggles at Bottom of Option Window (below Shortcut keys section):
+            // Toggles at Bottom of Option Window (below Shortcut keys row):
             // 1. Check for updates (GitHub Releases)
             st->hAutoUpdateChk = CreateWindowExW(0, L"BUTTON",
                 L"Automatically check for updates (GitHub releases):",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 476, 310, 24, hWnd, (HMENU)IDC_OPT_AUTOUPDATE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 376, 310, 24, hWnd, (HMENU)IDC_OPT_AUTOUPDATE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoUpdateChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoUpdateChk, BM_SETCHECK, st->autoUpdateEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             st->hComboUpdateInterval = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 332, 474, 98, 160, hWnd, (HMENU)IDC_OPT_UPDATE_INTERVAL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 332, 374, 98, 160, hWnd, (HMENU)IDC_OPT_UPDATE_INTERVAL, nullptr, nullptr);
             SendMessageW(st->hComboUpdateInterval, WM_SETFONT, (WPARAM)hFont, TRUE);
             const wchar_t* intervalItems[5] = {
                 L"Every day",
@@ -4231,96 +5917,192 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             EnableWindow(st->hComboUpdateInterval, st->autoUpdateEnabled ? TRUE : FALSE);
 
             st->hCheckUpdateNowBtn = CreateWindowExW(0, L"BUTTON", L"Check now",
-                WS_CHILD | WS_VISIBLE, 436, 473, 98, 28, hWnd, (HMENU)IDC_OPT_CHECK_UPDATE_NOW, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 436, 373, 98, 28, hWnd, (HMENU)IDC_OPT_CHECK_UPDATE_NOW, nullptr, nullptr);
             SendMessageW(st->hCheckUpdateNowBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // 2. Non-Stacking Highlighter
             st->hNonStackingChk = CreateWindowExW(0, L"BUTTON",
                 L"Non-stacking highlighter (prevent overlapping highlighter strokes from darkening)",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 508, 516, 24, hWnd, (HMENU)IDC_OPT_NONSTACK_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 408, 516, 24, hWnd, (HMENU)IDC_OPT_NONSTACK_CHK, nullptr, nullptr);
             SendMessageW(st->hNonStackingChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hNonStackingChk, BM_SETCHECK, st->nonStackingHi ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 3. Also save screenshot when copying selected area
             st->hAutoSaveChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save screenshot when copying selected area",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 536, 516, 24, hWnd, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 436, 516, 24, hWnd, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoSaveChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoSaveChk, BM_SETCHECK, st->autoSaveCopy ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 4. Also copy instant fullscreen
             st->hCopyFullChk = CreateWindowExW(0, L"BUTTON",
                 L"Also copy instant fullscreen",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 564, 516, 24, hWnd, (HMENU)IDC_OPT_NOCOPY_SAVE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 464, 516, 24, hWnd, (HMENU)IDC_OPT_NOCOPY_SAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hCopyFullChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hCopyFullChk, BM_SETCHECK, st->alsoCopyFull ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 5. Also save pinned screenshot
             st->hSavePinChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save pinned screenshot",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 592, 516, 24, hWnd, (HMENU)IDC_OPT_SAVE_PIN_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 492, 516, 24, hWnd, (HMENU)IDC_OPT_SAVE_PIN_CHK, nullptr, nullptr);
             SendMessageW(st->hSavePinChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hSavePinChk, BM_SETCHECK, st->alsoSavePin ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 6. Also save copied text
             st->hSaveOcrChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save copied text",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 620, 516, 24, hWnd, (HMENU)IDC_OPT_SAVE_OCR_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 520, 516, 24, hWnd, (HMENU)IDC_OPT_SAVE_OCR_CHK, nullptr, nullptr);
             SendMessageW(st->hSaveOcrChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hSaveOcrChk, BM_SETCHECK, st->alsoSaveOcr ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 7. Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 648, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 548, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 680, 224, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 580, 224, 22, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 676, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 576, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
-            // Save & Cancel Buttons + clickable %appdata%\PepperSnap persistence link on bottom
+            // 8. Restore everything to default button (below smoothing strength, NOT in row with Save options)
+            st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
+                WS_CHILD | WS_VISIBLE, 18, 616, 218, 30, hWnd, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+            SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            // Permanent pinned footer bar: clickable %appdata%\PepperSnap persistence link + Save options + Cancel
+            st->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 660, 552, 56, hWnd, nullptr, nullptr, nullptr);
+
             HFONT hLinkFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 727, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 678, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
 
-            HWND hOk = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 318, 720, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
-            SendMessageW(hOk, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+            st->hOkBtn = CreateWindowExW(0, L"BUTTON", L"Save options",
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 671, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+            SendMessageW(st->hOkBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
-            HWND hCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE, 434, 720, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
-            SendMessageW(hCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
+            st->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 671, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+            SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
+            for (HWND hCh = GetWindow(hWnd, GW_CHILD); hCh != nullptr; hCh = GetWindow(hCh, GW_HWNDNEXT)) {
+                LONG stBits = GetWindowLongW(hCh, GWL_STYLE);
+                SetWindowLongW(hCh, GWL_STYLE, stBits | WS_CLIPSIBLINGS);
+            }
+
+            st->scrollContentHeight = 660;
+            st->footerHeight = 56;
             UpdateOptionsPreviewLabel(st);
+            LayoutOptionsFooter(hWnd, st);
+            UpdateOptionsScroll(hWnd, st, 0);
             return 0;
         }
-        case WM_SHORTCUT_RECORDED: {
-            if (!st) return 0;
-            UINT mods = (UINT)wParam;
-            UINT vk = (UINT)lParam;
-            int slot = g_RecordingHotkeySlot;
-            g_RecordingHotkeySlot = 0;
-            if (vk != 0 && vk != VK_ESCAPE) {
-                if (slot == 1) st->hkRegion = { mods, vk };
-                else if (slot == 2) st->hkFull = { mods, vk };
-                else if (slot == 3) st->hkPrev = { mods, vk };
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            if (st) {
+                RECT rcClient;
+                GetClientRect(hWnd, &rcClient);
+                int clientW = rcClient.right - rcClient.left;
+                int clientH = rcClient.bottom - rcClient.top;
+                int footerTop = std::max(0, clientH - st->footerHeight);
+                RECT rcFooter = { 0, footerTop, clientW, clientH };
+                FillRect(hdc, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
+                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                HGDIOBJ hOldPen = SelectObject(hdc, hLinePen);
+                MoveToEx(hdc, 0, footerTop, nullptr);
+                LineTo(hdc, clientW, footerTop);
+                SelectObject(hdc, hOldPen);
+                DeleteObject(hLinePen);
             }
-            RefreshHotkeyButtonLabels(st);
+            EndPaint(hWnd, &ps);
             return 0;
+        }
+        case WM_GETMINMAXINFO: {
+            MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+            if (st && st->fixedWinWidth > 0) {
+                mmi->ptMinTrackSize.x = st->fixedWinWidth;
+                mmi->ptMaxTrackSize.x = st->fixedWinWidth;
+                mmi->ptMinTrackSize.y = 320;
+                int maxH = std::min(st->fullWinHeight, std::max(360, GetSystemMetrics(SM_CYSCREEN) - 24));
+                mmi->ptMaxTrackSize.y = std::max(320, maxH);
+            }
+            return 0;
+        }
+        case WM_NCHITTEST: {
+            LRESULT hit = DefWindowProcW(hWnd, msg, wParam, lParam);
+            if (hit == HTLEFT || hit == HTRIGHT) return HTBORDER;
+            if (hit == HTTOPLEFT || hit == HTTOPRIGHT) return HTTOP;
+            if (hit == HTBOTTOMLEFT || hit == HTBOTTOMRIGHT) return HTBOTTOM;
+            return hit;
+        }
+        case WM_SIZE: {
+            if (st && wParam != SIZE_MINIMIZED) {
+                LayoutOptionsFooter(hWnd, st);
+                UpdateOptionsScroll(hWnd, st, st->scrollY);
+                InvalidateRect(hWnd, nullptr, TRUE);
+                RECT rcW;
+                if (GetWindowRect(hWnd, &rcW)) {
+                    st->savedWinHeight = rcW.bottom - rcW.top;
+                }
+            }
+            return 0;
+        }
+        case WM_VSCROLL: {
+            if (st && lParam == 0) {
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int viewportH = std::max(60, (int)(rcC.bottom - rcC.top) - st->footerHeight);
+                int pageH = std::max(40, viewportH - 36);
+                int target = st->scrollY;
+                switch (LOWORD(wParam)) {
+                    case SB_LINEUP:        target -= 36; break;
+                    case SB_LINEDOWN:      target += 36; break;
+                    case SB_PAGEUP:        target -= pageH; break;
+                    case SB_PAGEDOWN:      target += pageH; break;
+                    case SB_TOP:           target = 0; break;
+                    case SB_BOTTOM:        target = st->scrollContentHeight; break;
+                    case SB_THUMBTRACK:
+                    case SB_THUMBPOSITION: {
+                        SCROLLINFO si = { sizeof(SCROLLINFO), SIF_TRACKPOS };
+                        if (GetScrollInfo(hWnd, SB_VERT, &si)) {
+                            target = si.nTrackPos;
+                        } else {
+                            target = HIWORD(wParam);
+                        }
+                        break;
+                    }
+                    default: break;
+                }
+                UpdateOptionsScroll(hWnd, st, target);
+                return 0;
+            }
+            break;
+        }
+        case WM_MOUSEWHEEL: {
+            if (st) {
+                int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                if (delta != 0) {
+                    int step = -(delta * 48) / WHEEL_DELTA;
+                    UpdateOptionsScroll(hWnd, st, st->scrollY + step);
+                }
+                return 0;
+            }
+            break;
         }
         case WM_SETCURSOR: {
             if (st && st->hAppDataInfo && (HWND)wParam == st->hAppDataInfo) {
@@ -4335,6 +6117,19 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 SetTextColor(hdcStatic, RGB(0, 102, 204));
                 SetBkMode(hdcStatic, TRANSPARENT);
                 return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+            }
+            if (st && st->hFooterBg && (HWND)lParam == st->hFooterBg) {
+                HDC hdcStatic = (HDC)wParam;
+                RECT rcF;
+                GetClientRect(st->hFooterBg, &rcF);
+                FillRect(hdcStatic, &rcF, GetSysColorBrush(COLOR_BTNFACE));
+                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                HGDIOBJ hOldPen = SelectObject(hdcStatic, hLinePen);
+                MoveToEx(hdcStatic, 0, 0, nullptr);
+                LineTo(hdcStatic, rcF.right, 0);
+                SelectObject(hdcStatic, hOldPen);
+                DeleteObject(hLinePen);
+                return (LRESULT)GetStockObject(NULL_BRUSH);
             }
             break;
         }
@@ -4376,30 +6171,92 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 g_Daemon.CheckForUpdatesAsync(true);
                 return 0;
             }
-            if (id == IDC_OPT_HK_REGION_BTN) {
-                g_RecordingHotkeySlot = (g_RecordingHotkeySlot == 1) ? 0 : 1;
-                RefreshHotkeyButtonLabels(st);
-                SetFocus(hWnd);
+            if (id == IDC_OPT_CUSTOMIZE_KEYS) {
+                ShowCustomizeKeysModal(hWnd, st);
                 return 0;
             }
-            if (id == IDC_OPT_HK_FULL_BTN) {
-                g_RecordingHotkeySlot = (g_RecordingHotkeySlot == 2) ? 0 : 2;
-                RefreshHotkeyButtonLabels(st);
-                SetFocus(hWnd);
-                return 0;
-            }
-            if (id == IDC_OPT_HK_PREV_BTN) {
-                g_RecordingHotkeySlot = (g_RecordingHotkeySlot == 3) ? 0 : 3;
-                RefreshHotkeyButtonLabels(st);
-                SetFocus(hWnd);
-                return 0;
-            }
-            if (id == IDC_OPT_HK_RESTORE_BTN) {
-                g_RecordingHotkeySlot = 0;
-                st->hkRegion = { MOD_CONTROL, VK_SNAPSHOT };
-                st->hkFull   = { MOD_SHIFT, VK_SNAPSHOT };
-                st->hkPrev   = { MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
-                RefreshHotkeyButtonLabels(st);
+            if (id == IDC_OPT_RESTORE_ALL_DEF) {
+                int ans = MessageBoxW(
+                    hWnd,
+                    L"Are you sure you want to restore all options and shortcut keys to default?",
+                    L"PepperSnap — restore everything to default",
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND
+                );
+                if (ans != IDYES) {
+                    return 0;
+                }
+                st->restoredAllDefaults = true;
+                st->folder = PepperSnapDaemon::GetDefaultDesktopFolder();
+                SetWindowTextW(st->hFolderEdit, st->folder.c_str());
+
+                st->regionFmt = ImageFormat::JPEG;
+                st->fullFmt   = ImageFormat::JPEG;
+                st->copyFmt   = ImageFormat::JPEG;
+                SendMessageW(st->hComboRegion, CB_SETCURSEL, (WPARAM)st->regionFmt, 0);
+                SendMessageW(st->hComboFull,   CB_SETCURSEL, (WPARAM)st->fullFmt, 0);
+                SendMessageW(st->hComboCopy,   CB_SETCURSEL, (WPARAM)st->copyFmt, 0);
+
+                st->jpgQuality = 90;
+                SendMessageW(st->hQualitySlider, TBM_SETPOS, TRUE, st->jpgQuality);
+                SetWindowTextW(st->hQualityValLbl, L"JPEG quality: 90%");
+
+                st->naming = PepperSnapDaemon::DEFAULT_NAMING_PATTERN;
+                SetWindowTextW(st->hNamingEdit, st->naming.c_str());
+                UpdateOptionsPreviewLabel(st);
+
+                st->hkRegion        = { MOD_CONTROL, VK_SNAPSHOT };
+                st->hkFull          = { MOD_SHIFT, VK_SNAPSHOT };
+                st->hkPrev          = { MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
+                st->hkToolSelect    = { 0, 'V' };
+                st->hkToolPen       = { 0, 'P' };
+                st->hkToolStabilo   = { 0, 'H' };
+                st->hkToolLine      = { 0, 'L' };
+                st->hkToolArrow     = { 0, 'A' };
+                st->hkToolNumber    = { 0, 'N' };
+                st->hkToolRect      = { 0, 'R' };
+                st->hkToolEllipse   = { 0, 'E' };
+                st->hkToolText      = { 0, 'T' };
+                st->hkToolMosaicSq  = { 0, 'X' };
+                st->hkToolMosaicCir = { 0, 'M' };
+                st->hkActUndo       = { MOD_CONTROL, 'Z' };
+                st->hkActRedo       = { MOD_CONTROL, 'Y' };
+                st->hkActPin        = { 0, 'F' };
+                st->hkActOcr        = { 0, 'O' };
+                st->hkActSave       = { MOD_CONTROL, 'S' };
+                st->hkActCopy       = { MOD_CONTROL, 'C' };
+                st->hkPinZoomOut    = { 0, VK_OEM_MINUS };
+                st->hkPinZoomIn     = { 0, VK_OEM_PLUS };
+                st->hkPinZoomReset  = { 0, '0' };
+                st->hkPinOutline    = { 0, 'O' };
+                st->hkPinSmooth     = { 0, 'S' };
+                st->hkPinSaveAs     = { MOD_CONTROL | MOD_SHIFT, 'S' };
+                st->hkPinSave       = { MOD_CONTROL, 'S' };
+                st->hkPinCopy       = { MOD_CONTROL, 'C' };
+
+                st->autoUpdateEnabled = true;
+                st->updateInterval = UpdateCheckInterval::EveryDay;
+                SendMessageW(st->hAutoUpdateChk, BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hComboUpdateInterval, CB_SETCURSEL, (WPARAM)st->updateInterval, 0);
+                EnableWindow(st->hComboUpdateInterval, TRUE);
+
+                st->nonStackingHi = true;
+                st->autoSaveCopy  = true;
+                st->alsoCopyFull  = true;
+                st->alsoSavePin   = true;
+                st->alsoSaveOcr   = true;
+                SendMessageW(st->hNonStackingChk, BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hAutoSaveChk,    BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hCopyFullChk,    BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hSavePinChk,     BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hSaveOcrChk,     BM_SETCHECK, BST_CHECKED, 0);
+
+                st->penSmoothEnabled = true;
+                st->penSmoothStrength = 15;
+                SendMessageW(st->hPenSmoothChk, BM_SETCHECK, BST_CHECKED, 0);
+                EnableWindow(st->hPenSmoothSlider, TRUE);
+                SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
+                std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
+                SetWindowTextW(st->hPenSmoothValLbl, psText.c_str());
                 return 0;
             }
 
@@ -4529,18 +6386,56 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.penSmoothStrength = penSmoothingStrength;
     st.autoUpdateEnabled = autoCheckUpdates;
     st.updateInterval = updateInterval;
-    st.hkRegion = hkRegionSnip;
-    st.hkFull = hkFullSnap;
-    st.hkPrev = hkPrevRegion;
+    st.hkRegion        = hkRegionSnip;
+    st.hkFull          = hkFullSnap;
+    st.hkPrev          = hkPrevRegion;
+    st.hkToolSelect    = hkToolSelect;
+    st.hkToolPen       = hkToolPen;
+    st.hkToolStabilo   = hkToolStabilo;
+    st.hkToolLine      = hkToolLine;
+    st.hkToolArrow     = hkToolArrow;
+    st.hkToolNumber    = hkToolNumber;
+    st.hkToolRect      = hkToolRect;
+    st.hkToolEllipse   = hkToolEllipse;
+    st.hkToolText      = hkToolText;
+    st.hkToolMosaicSq  = hkToolMosaicSq;
+    st.hkToolMosaicCir = hkToolMosaicCir;
+    st.hkActUndo       = hkActUndo;
+    st.hkActRedo       = hkActRedo;
+    st.hkActPin        = hkActPin;
+    st.hkActOcr        = hkActOcr;
+    st.hkActSave       = hkActSave;
+    st.hkActCopy       = hkActCopy;
+    st.hkPinZoomOut    = hkPinZoomOut;
+    st.hkPinZoomIn     = hkPinZoomIn;
+    st.hkPinZoomReset  = hkPinZoomReset;
+    st.hkPinOutline    = hkPinOutline;
+    st.hkPinSmooth     = hkPinSmooth;
+    st.hkPinSaveAs     = hkPinSaveAs;
+    st.hkPinSave       = hkPinSave;
+    st.hkPinCopy       = hkPinCopy;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
+    DWORD dwOptExStyle = WS_EX_TOPMOST;
+    const int totalOptClientH = 660 + 56;
+    RECT rcOptFull = { 0, 0, 552, totalOptClientH };
+    AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
+    int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
+    int fullWinH = rcOptFull.bottom - rcOptFull.top;
+    int maxAllowedH = std::min(fullWinH, std::max(360, sh - 24));
+    int initH = std::max(320, std::min(maxAllowedH, optionsWindowHeight));
+    st.fixedWinWidth = fixedW;
+    st.fullWinHeight = fullWinH;
+    st.savedWinHeight = initH;
+
     HWND hParent = hTrayWnd;
     std::wstring optTitle = L"PepperSnap v" + std::wstring(APP_VERSION) + L" — options";
     HWND hDlg = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"PepperSnapOptionsModal",
+        dwOptExStyle, L"PepperSnapOptionsModal",
         optTitle.c_str(),
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        (sw - 564) / 2, (sh - 818) / 2, 564, 818, hParent, nullptr, hInst, &st
+        dwOptStyle,
+        (sw - fixedW) / 2, std::max(10, (sh - initH) / 2), fixedW, initH, hParent, nullptr, hInst, &st
     );
     hOptionsWnd = hDlg;
     BringWindowToTop(hDlg);
@@ -4564,6 +6459,17 @@ void PepperSnapDaemon::ShowOptionsModal() {
             }
             continue;
         }
+        if (msg.message == WM_MOUSEWHEEL && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
+            bool comboDropped = (
+                (msg.hwnd == st.hComboRegion || msg.hwnd == st.hComboFull ||
+                 msg.hwnd == st.hComboCopy   || msg.hwnd == st.hComboUpdateInterval) &&
+                SendMessageW(msg.hwnd, CB_GETDROPPEDSTATE, 0, 0) != 0
+            );
+            if (!comboDropped) {
+                SendMessageW(hDlg, WM_MOUSEWHEEL, msg.wParam, msg.lParam);
+                continue;
+            }
+        }
         if (!hOverlayWnd && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
             if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) { SendMessageW(hDlg, WM_COMMAND, IDOK, 0); continue; }
             if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { SendMessageW(hDlg, WM_COMMAND, IDCANCEL, 0); continue; }
@@ -4573,6 +6479,10 @@ void PepperSnapDaemon::ShowOptionsModal() {
     }
     g_RecordingHotkeySlot = 0;
     hOptionsWnd = nullptr;
+    if (st.savedWinHeight >= 320 && st.savedWinHeight != optionsWindowHeight) {
+        optionsWindowHeight = st.savedWinHeight;
+        SaveSettings();
+    }
     if (st.openedAppData) {
         CloseRegionSnipOverlay();
         std::wstring appDataDir = PepperSnapDaemon::GetAppDataSettingsDir();
@@ -4596,14 +6506,59 @@ void PepperSnapDaemon::ShowOptionsModal() {
         penSmoothingStrength = st.penSmoothStrength;
         autoCheckUpdates = st.autoUpdateEnabled;
         updateInterval = st.updateInterval;
-        hkRegionSnip = st.hkRegion;
-        hkFullSnap = st.hkFull;
-        hkPrevRegion = st.hkPrev;
+        hkRegionSnip    = st.hkRegion;
+        hkFullSnap      = st.hkFull;
+        hkPrevRegion    = st.hkPrev;
+        hkToolSelect    = st.hkToolSelect;
+        hkToolPen       = st.hkToolPen;
+        hkToolStabilo   = st.hkToolStabilo;
+        hkToolLine      = st.hkToolLine;
+        hkToolArrow     = st.hkToolArrow;
+        hkToolNumber    = st.hkToolNumber;
+        hkToolRect      = st.hkToolRect;
+        hkToolEllipse   = st.hkToolEllipse;
+        hkToolText      = st.hkToolText;
+        hkToolMosaicSq  = st.hkToolMosaicSq;
+        hkToolMosaicCir = st.hkToolMosaicCir;
+        hkActUndo       = st.hkActUndo;
+        hkActRedo       = st.hkActRedo;
+        hkActPin        = st.hkActPin;
+        hkActOcr        = st.hkActOcr;
+        hkActSave       = st.hkActSave;
+        hkActCopy       = st.hkActCopy;
+        hkPinZoomOut    = st.hkPinZoomOut;
+        hkPinZoomIn     = st.hkPinZoomIn;
+        hkPinZoomReset  = st.hkPinZoomReset;
+        hkPinOutline    = st.hkPinOutline;
+        hkPinSmooth     = st.hkPinSmooth;
+        hkPinSaveAs     = st.hkPinSaveAs;
+        hkPinSave       = st.hkPinSave;
+        hkPinCopy       = st.hkPinCopy;
+        if (st.restoredAllDefaults) {
+            hidePinnedOutline = false;
+            smoothPinnedImage = false;
+            activeColor = Color(255, 239, 68, 68);
+            activeStroke = 4.0f;
+        }
         ApplyGlobalHotkeys();
         CreateDirectoryW(saveFolder.c_str(), nullptr);
         SaveSettings();
         if (hOverlayWnd) {
+            BuildDockedHUD();
             InvalidateRect(hOverlayWnd, nullptr, FALSE);
+        }
+        for (HWND hPin : pinnedWindows) {
+            if (hPin && IsWindow(hPin)) {
+                PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                if (pData) {
+                    UpdatePinnedWindowLayout(hPin, pData, false);
+                    InvalidateRect(hPin, nullptr, FALSE);
+                }
+            }
+        }
+        if (hShortcutsWnd && IsWindow(hShortcutsWnd)) {
+            DestroyWindow(hShortcutsWnd);
+            hShortcutsWnd = nullptr;
         }
         std::wstring appDataDir = PepperSnapDaemon::GetAppDataSettingsDir();
         ShowTrayToast(
@@ -4614,34 +6569,318 @@ void PepperSnapDaemon::ShowOptionsModal() {
     }
 }
 
-struct ShortcutsDlgParams {
-    const wchar_t* text = nullptr;
-    int textW = 460;
-    int textH = 420;
+struct ShortcutEntry {
+    bool isSectionHeader = false;
+    bool hasIcon = false;
+    DockButton iconBtn;
+    std::wstring keyCol;
+    std::wstring descCol;
+    int y = 0;
+    int h = 26;
 };
 
+struct ShortcutsDlgParams {
+    std::wstring mainTitle;
+    std::vector<ShortcutEntry> entries;
+    int leftColX = 24;
+    int leftColW = 216;
+    int rightColX = 248;
+    int rightColW = 340;
+    int scrollY = 0;
+    int scrollContentHeight = 580;
+    int footerHeight = 52;
+    int fixedWinWidth = 620;
+    int fullWinHeight = 680;
+    int savedWinHeight = 580;
+    HWND hFooterBg = nullptr;
+    HWND hOkBtn = nullptr;
+};
+
+static void LayoutShortcutsFooter(HWND hWnd, ShortcutsDlgParams* p) {
+    if (!hWnd || !p) return;
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+    int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+    int footerTop = std::max(0, clientH - p->footerHeight);
+    if (p->hOkBtn) {
+        int btnX = std::max(16, clientW - 18 - 92);
+        SetWindowPos(p->hOkBtn, HWND_TOP, btnX, footerTop + 11, 92, 30, SWP_NOACTIVATE);
+    }
+}
+
+static void UpdateShortcutsScroll(HWND hWnd, ShortcutsDlgParams* p, int newScrollY) {
+    if (!hWnd || !p) return;
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+    int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+    int viewportH = std::max(1, clientH - p->footerHeight);
+    int maxScroll = std::max(0, p->scrollContentHeight - viewportH);
+    int clamped = std::max(0, std::min(newScrollY, maxScroll));
+    int dy = p->scrollY - clamped;
+    p->scrollY = clamped;
+    LayoutShortcutsFooter(hWnd, p);
+    SCROLLINFO si = { sizeof(SCROLLINFO) };
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+    si.nMin = 0;
+    si.nMax = p->scrollContentHeight - 1;
+    si.nPage = (UINT)viewportH;
+    si.nPos = p->scrollY;
+    SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
+    if (dy != 0) {
+        RECT rcInval = { 0, 0, clientW, clientH };
+        RedrawWindow(hWnd, &rcInval, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    }
+}
+
 static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    ShortcutsDlgParams* p = (ShortcutsDlgParams*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
     switch (msg) {
         case WM_CREATE: {
             CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
-            const ShortcutsDlgParams* p = (const ShortcutsDlgParams*)cs->lpCreateParams;
-            HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            p = (ShortcutsDlgParams*)cs->lpCreateParams;
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)p);
+
             HFONT hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
 
-            int tw = p ? p->textW : 460;
-            int th = p ? p->textH : 420;
-            HWND hBody = CreateWindowExW(0, L"STATIC", (p && p->text) ? p->text : L"",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX | SS_LEFTNOWORDWRAP, 16, 14, tw, th, hWnd, nullptr, nullptr, nullptr);
-            SendMessageW(hBody, WM_SETFONT, (WPARAM)hFont, TRUE);
-
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"OK",
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 16 + tw - 92, 14 + th + 12, 92, 30, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 400, 500, 92, 30, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(hOk, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+
+            if (p) {
+                p->hOkBtn = hOk;
+                LayoutShortcutsFooter(hWnd, p);
+                UpdateShortcutsScroll(hWnd, p, 0);
+            }
             return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT rcClient;
+            GetClientRect(hWnd, &rcClient);
+            int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
+            int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+            if (p) {
+                HDC memDC = CreateCompatibleDC(hdc);
+                HBITMAP memBmp = CreateCompatibleBitmap(hdc, clientW, clientH);
+                HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
+
+                RECT rcAll = { 0, 0, clientW, clientH };
+                FillRect(memDC, &rcAll, GetSysColorBrush(COLOR_BTNFACE));
+
+                int footerTop = std::max(0, clientH - p->footerHeight);
+                int savedDC = SaveDC(memDC);
+                IntersectClipRect(memDC, 0, 0, clientW, footerTop);
+
+                SetBkMode(memDC, TRANSPARENT);
+                HFONT hTitleFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                HFONT hSectionFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                HFONT hKeyFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                HFONT hDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+
+                HPEN hSepShadow = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                HPEN hSepHilight = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
+                HPEN hRowSep = CreatePen(PS_SOLID, 1, RGB(218, 222, 228));
+
+                int sy = p->scrollY;
+                int padX = 18;
+                int rightEdge = clientW - padX;
+
+                // Main header title + horizontal separator line
+                HGDIOBJ hOldF = SelectObject(memDC, hTitleFont);
+                SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
+                RECT rcTitle = { padX, 14 - sy, rightEdge, 38 - sy };
+                DrawTextW(memDC, p->mainTitle.c_str(), -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                HGDIOBJ hOldP = SelectObject(memDC, hSepShadow);
+                MoveToEx(memDC, padX, 42 - sy, nullptr);
+                LineTo(memDC, rightEdge, 42 - sy);
+                SelectObject(memDC, hSepHilight);
+                MoveToEx(memDC, padX, 43 - sy, nullptr);
+                LineTo(memDC, rightEdge, 43 - sy);
+
+                for (size_t i = 0; i < p->entries.size(); ++i) {
+                    const auto& e = p->entries[i];
+                    int drawY = e.y - sy;
+                    if (drawY + e.h < 0 || drawY > footerTop) continue;
+
+                    if (e.isSectionHeader) {
+                        if (i > 0) {
+                            int lineY = drawY + 6;
+                            SelectObject(memDC, hSepShadow);
+                            MoveToEx(memDC, padX, lineY, nullptr);
+                            LineTo(memDC, rightEdge, lineY);
+                            SelectObject(memDC, hSepHilight);
+                            MoveToEx(memDC, padX, lineY + 1, nullptr);
+                            LineTo(memDC, rightEdge, lineY + 1);
+                        }
+                        SelectObject(memDC, hSectionFont);
+                        SetTextColor(memDC, RGB(15, 23, 42));
+                        int hdrTop = (i > 0) ? (drawY + 14) : (drawY + 4);
+                        RECT rcHdr = { padX, hdrTop, rightEdge, drawY + e.h };
+                        DrawTextW(memDC, e.keyCol.c_str(), -1, &rcHdr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+                    } else {
+                        // Subtle row separator between items inside the same section
+                        if (i > 0 && !p->entries[i - 1].isSectionHeader) {
+                            SelectObject(memDC, hRowSep);
+                            MoveToEx(memDC, p->leftColX, drawY, nullptr);
+                            LineTo(memDC, rightEdge, drawY);
+                        }
+
+                        int keyTextLeft = p->leftColX;
+                        if (e.hasIcon) {
+                            Graphics gIcon(memDC);
+                            gIcon.SetSmoothingMode(SmoothingModeAntiAlias);
+                            gIcon.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+                            const int iconW = 26;
+                            const int iconH = 22;
+                            int iconX = p->leftColX;
+                            int iconY = drawY + (e.h - iconH) / 2;
+                            RectF rfIcon((float)iconX, (float)iconY, (float)iconW, (float)iconH);
+                            Color bgCol = e.iconBtn.isPrimaryAction ? Color(255, 239, 68, 68) : Color(245, 15, 23, 42);
+                            SolidBrush btnBg(bgCol);
+                            Pen btnBorder(e.iconBtn.isPrimaryAction ? Color(255, 252, 165, 165) : Color(220, 51, 65, 85), 1.0f);
+                            GraphicsState stB = gIcon.Save();
+                            gIcon.SetSmoothingMode(SmoothingModeNone);
+                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
+                            gIcon.FillRectangle(&btnBg, iconX, iconY, iconW, iconH);
+                            gIcon.Restore(stB);
+                            PepperSnapDaemon::DrawDockButtonIcon(gIcon, e.iconBtn, rfIcon);
+                            GraphicsState stO = gIcon.Save();
+                            gIcon.SetSmoothingMode(SmoothingModeNone);
+                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
+                            gIcon.DrawRectangle(&btnBorder, iconX, iconY, iconW - 1, iconH - 1);
+                            gIcon.Restore(stO);
+                            keyTextLeft += iconW + 8;
+                        }
+
+                        SelectObject(memDC, hKeyFont);
+                        SetTextColor(memDC, RGB(30, 41, 59));
+                        RECT rcKey = { keyTextLeft, drawY, p->leftColX + p->leftColW, drawY + e.h };
+                        DrawTextW(memDC, e.keyCol.c_str(), -1, &rcKey, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                        SelectObject(memDC, hDescFont);
+                        SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
+                        RECT rcDesc = { p->rightColX, drawY, rightEdge, drawY + e.h };
+                        DrawTextW(memDC, e.descCol.c_str(), -1, &rcDesc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                    }
+                }
+
+                SelectObject(memDC, hOldP);
+                SelectObject(memDC, hOldF);
+                DeleteObject(hRowSep);
+                DeleteObject(hSepHilight);
+                DeleteObject(hSepShadow);
+                DeleteObject(hDescFont);
+                DeleteObject(hKeyFont);
+                DeleteObject(hSectionFont);
+                DeleteObject(hTitleFont);
+
+                RestoreDC(memDC, savedDC);
+
+                // Permanent bottom footer bar + separating line
+                RECT rcFooter = { 0, footerTop, clientW, clientH };
+                FillRect(memDC, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
+                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                HGDIOBJ hOldFooterPen = SelectObject(memDC, hLinePen);
+                MoveToEx(memDC, 0, footerTop, nullptr);
+                LineTo(memDC, clientW, footerTop);
+                SelectObject(memDC, hOldFooterPen);
+                DeleteObject(hLinePen);
+
+                BitBlt(hdc, 0, 0, clientW, clientH, memDC, 0, 0, SRCCOPY);
+                SelectObject(memDC, oldBmp);
+                DeleteObject(memBmp);
+                DeleteDC(memDC);
+            }
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+        case WM_GETMINMAXINFO: {
+            MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+            if (p && p->fixedWinWidth > 0) {
+                mmi->ptMinTrackSize.x = p->fixedWinWidth;
+                mmi->ptMaxTrackSize.x = p->fixedWinWidth;
+                mmi->ptMinTrackSize.y = 280;
+                int maxH = std::min(p->fullWinHeight, std::max(320, GetSystemMetrics(SM_CYSCREEN) - 24));
+                mmi->ptMaxTrackSize.y = std::max(280, maxH);
+            }
+            return 0;
+        }
+        case WM_NCHITTEST: {
+            LRESULT hit = DefWindowProcW(hWnd, msg, wParam, lParam);
+            if (hit == HTLEFT || hit == HTRIGHT) return HTBORDER;
+            if (hit == HTTOPLEFT || hit == HTTOPRIGHT) return HTTOP;
+            if (hit == HTBOTTOMLEFT || hit == HTBOTTOMRIGHT) return HTBOTTOM;
+            return hit;
+        }
+        case WM_SIZE: {
+            if (p && wParam != SIZE_MINIMIZED) {
+                LayoutShortcutsFooter(hWnd, p);
+                UpdateShortcutsScroll(hWnd, p, p->scrollY);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                RECT rcW;
+                if (GetWindowRect(hWnd, &rcW)) {
+                    p->savedWinHeight = rcW.bottom - rcW.top;
+                }
+            }
+            return 0;
+        }
+        case WM_VSCROLL: {
+            if (p && lParam == 0) {
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int viewportH = std::max(60, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                int pageH = std::max(40, viewportH - 36);
+                int target = p->scrollY;
+                switch (LOWORD(wParam)) {
+                    case SB_LINEUP:        target -= 36; break;
+                    case SB_LINEDOWN:      target += 36; break;
+                    case SB_PAGEUP:        target -= pageH; break;
+                    case SB_PAGEDOWN:      target += pageH; break;
+                    case SB_TOP:           target = 0; break;
+                    case SB_BOTTOM:        target = p->scrollContentHeight; break;
+                    case SB_THUMBTRACK:
+                    case SB_THUMBPOSITION: {
+                        SCROLLINFO si = { sizeof(SCROLLINFO), SIF_TRACKPOS };
+                        if (GetScrollInfo(hWnd, SB_VERT, &si)) {
+                            target = si.nTrackPos;
+                        } else {
+                            target = HIWORD(wParam);
+                        }
+                        break;
+                    }
+                    default: break;
+                }
+                UpdateShortcutsScroll(hWnd, p, target);
+                return 0;
+            }
+            break;
+        }
+        case WM_MOUSEWHEEL: {
+            if (p) {
+                int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                if (delta != 0) {
+                    int step = -(delta * 48) / WHEEL_DELTA;
+                    UpdateShortcutsScroll(hWnd, p, p->scrollY + step);
+                }
+                return 0;
+            }
+            break;
         }
         case WM_COMMAND:
             if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
@@ -4681,62 +6920,176 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         reg = true;
     }
 
-    std::wstring text =
-        L"PepperSnap v" + std::wstring(APP_VERSION) + L" — complete hotkeys reference\n"
-        L"───────────────────────────────────────────────────\n\n"
-        L"Global capture hotkeys (customizable in Options):\n"
-        L"  • " + FormatHotkeyString(hkRegionSnip) + L"   Custom area snip & annotate\n"
-        L"  • " + FormatHotkeyString(hkFullSnap) + L"   Instant fullscreen capture\n"
-        L"  • " + FormatHotkeyString(hkPrevRegion) + L"   Instant save previous custom area\n\n"
-        L"In-place annotation tools & cursors:\n"
-        L"  • V   Select mode (arrow cursor) — move / resize / recolor\n"
-        L"  • P   Freehand pen tool (pen cursor)\n"
-        L"  • H   Stabilo highlighter tool (Stabilo cursor)\n"
-        L"  • L   Line tool (+ crosshair cursor)\n"
-        L"  • A   Arrow tool (+ crosshair cursor, no shadow)\n"
-        L"  • N   Numbering arrow tool 1→, 2→ (+ crosshair cursor)\n"
-        L"  • R   Square / rectangle tool (+ crosshair cursor)\n"
-        L"  • E   Circle / ellipse tool (+ crosshair cursor)\n"
-        L"  • T   In-place text box tool (arrow cursor)\n"
-        L"  • X   Mosaic square tool (+ crosshair + live dashed guide)\n"
-        L"  • M   Mosaic circle tool (+ crosshair + live dashed guide)\n"
-        L"  • F   Pin on top\n"
-        L"  • O   Extract text with OCR to clipboard\n\n"
-        L"Size input & Escape behavior:\n"
-        L"  • Click size indicator to type custom size, then press enter\n"
-        L"  • Esc (when using any drawing tool) -> switches to select mode\n"
-        L"  • Esc (when in select mode)         -> exits capture overlay";
+    ShortcutsDlgParams params;
+    params.mainTitle = L"PepperSnap v" + std::wstring(APP_VERSION) + L" — complete hotkeys & mechanisms reference";
 
-    // Measure exact non-wrapping pixel bounds of text so the dialog fits snugly
-    int measuredW = 450, measuredH = 416;
+    auto addSection = [&](const std::wstring& title) {
+        ShortcutEntry e;
+        e.isSectionHeader = true;
+        e.keyCol = title;
+        params.entries.push_back(e);
+    };
+    auto addRow = [&](const std::wstring& key, const std::wstring& desc) {
+        ShortcutEntry e;
+        e.isSectionHeader = false;
+        e.hasIcon = false;
+        e.keyCol = L"•  " + key;
+        e.descCol = desc;
+        params.entries.push_back(e);
+    };
+    auto addToolRow = [&](OverlayTool tool, const std::wstring& key, const std::wstring& desc) {
+        ShortcutEntry e;
+        e.isSectionHeader = false;
+        e.hasIcon = true;
+        e.iconBtn.isTool = true;
+        e.iconBtn.tool = tool;
+        e.keyCol = key;
+        e.descCol = desc;
+        params.entries.push_back(e);
+    };
+    auto addActionRow = [&](int btnId, bool primary, const std::wstring& key, const std::wstring& desc) {
+        ShortcutEntry e;
+        e.isSectionHeader = false;
+        e.hasIcon = true;
+        e.iconBtn.isTool = false;
+        e.iconBtn.id = btnId;
+        e.iconBtn.isPrimaryAction = primary;
+        e.keyCol = key;
+        e.descCol = desc;
+        params.entries.push_back(e);
+    };
+
+    addSection(L"Global capture hotkeys & system integration");
+    addRow(FormatLabelWithShortcut(L"Custom area", hkRegionSnip),                       L"Start custom area snip & annotate (customizable in Customize keys)");
+    addRow(FormatLabelWithShortcut(L"Instant fullscreen", hkFullSnap),                  L"Capture & save all monitors immediately (customizable in Customize keys)");
+    addRow(FormatLabelWithShortcut(L"Instant save previous custom area", hkPrevRegion), L"Capture & save previous custom area (customizable in Customize keys)");
+    addRow(L"Options \x2192 Customize keys",            L"Customize any shortcut key (Esc to cancel, and Delete to leave it empty)");
+    addRow(L"Options \x2192 Restore everything to default", L"Reset all Options settings and shortcut keys back to factory defaults (with confirmation)");
+    addRow(L"Left-click system tray icon",   L"Start custom area capture");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin, Close all pinned image, Options, etc.)");
+    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" or \"Pin on top\"");
+
+    addSection(L"Custom area — window selection, aiming & size input");
+    addRow(L"Hold Ctrl (before selecting)",  L"Auto-detect & highlight any window, notification pop-up, or sidebar");
+    addRow(L"Hold Shift + drag selection",   L"Constrain selection or resize to a 1:1 square");
+    addRow(L"Ctrl + C (before selecting)",   L"Copy pixel RGB hex code (#RRGGBB) under 5× magnifier & close");
+    addRow(L"Click W × H px indicator",      L"Type custom width×height, then press Enter (Esc cancels)");
+
+    addSection(L"Custom area — Row 1: annotation tools");
+    addToolRow(OverlayTool::SelectMove,     FormatLabelWithShortcut(L"Select mode",         hkToolSelect),    L"Select, move, resize, or recolor annotations, or move selection");
+    addToolRow(OverlayTool::Pen,            FormatLabelWithShortcut(L"Pen",                 hkToolPen),       L"Freehand pen (hold Shift while drawing for 15° straight lines)");
+    addToolRow(OverlayTool::Highlighter,    FormatLabelWithShortcut(L"Stabilo highlighter", hkToolStabilo),   L"Chisel-tip marker (hold Shift while drawing for 15° straight lines)");
+    addToolRow(OverlayTool::Line,           FormatLabelWithShortcut(L"Line",                hkToolLine),      L"Straight line (hold Shift for 15° angle snapping)");
+    addToolRow(OverlayTool::Arrow,          FormatLabelWithShortcut(L"Arrow",               hkToolArrow),     L"Arrow pointer (hold Shift for 15° angle snapping)");
+    addToolRow(OverlayTool::NumberArrow,    FormatLabelWithShortcut(L"Numbering arrow",     hkToolNumber),    L"Auto-incrementing step badge + arrow (hold Shift for 15° angles)");
+    addActionRow(DBTN_ACT_RESET_NUM, false, L"Reset counter to 1",                                            L"Appears beside Numbering arrow to reset next step number to 1");
+    addToolRow(OverlayTool::Rectangle,      FormatLabelWithShortcut(L"Square / rectangle",  hkToolRect),      L"Rectangle outline (hold Shift for 1:1 square)");
+    addToolRow(OverlayTool::Ellipse,        FormatLabelWithShortcut(L"Circle / ellipse",    hkToolEllipse),   L"Ellipse outline (hold Shift for 1:1 circle)");
+    addToolRow(OverlayTool::TextBox,        FormatLabelWithShortcut(L"Text box",            hkToolText),      L"In-place text (Enter commits, Shift + Enter new line, Esc exits)");
+    addToolRow(OverlayTool::MosaicSquare,   FormatLabelWithShortcut(L"Mosaic square",       hkToolMosaicSq),  L"Pixelate rectangular area (hold Shift for 1:1 square)");
+    addToolRow(OverlayTool::MosaicCircle,   FormatLabelWithShortcut(L"Mosaic circle",       hkToolMosaicCir), L"Pixelate elliptical area (hold Shift for 1:1 circle)");
+
+    addSection(L"Custom area — Row 2: colors & stroke sizes");
+    addRow(L"5 color swatches",              L"Set active tool color or recolor selected annotation");
+    addRow(L"S / M / L / XL buttons",        L"Preset stroke / text / mosaic sizes (2px, 4px, 8px, 14px)");
+    addRow(L"Click custom size box (px)",    L"Type exact size (1–120 px) right of XL, then press Enter");
+    addRow(L"Mouse scroll wheel",            L"Adjust active or selected annotation stroke size (1–120 px)");
+    addRow(L"Delete / Backspace",            L"Delete currently selected annotation (in Select mode)");
+
+    addSection(L"Custom area — Row 3: toolbar actions & export shortcuts");
+    addActionRow(DBTN_ACT_DRAG_HUD, false,  L"Drag toolbar handle",                                           L"Drag 4-way arrow button to move toolbar (resets when selection moves)");
+    addActionRow(DBTN_ACT_UNDO,     false,  FormatLabelWithShortcut(L"Undo",                  hkActUndo),     L"Undo last annotation action");
+    addActionRow(DBTN_ACT_REDO,     false,  FormatLabelWithShortcut(L"Redo",                  hkActRedo),     L"Redo undone annotation action");
+    addActionRow(DBTN_ACT_CLEAR,    false,  L"Clear all annotations",                                         L"Remove all annotations from current selection");
+    addActionRow(DBTN_ACT_OPTIONS,  false,  L"Options",                                                       L"Open PepperSnap Options window");
+    addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",            hkActPin),      L"Pin selected capture as a floating topmost desktop window");
+    addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR", hkActOcr),      L"Recognize text in selection via Windows OCR & copy to clipboard");
+    addActionRow(DBTN_ACT_SAVE_AS,  false,  L"Save as JPG/PNG/WEBP/BMP",                                      L"Open Save As dialog for selected region");
+    addActionRow(DBTN_ACT_SAVE,     false,  FormatLabelWithShortcut(L"Quick save",            hkActSave),     L"Save capture directly to default folder & close");
+    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",     hkActCopy),     L"Copy capture to clipboard & close");
+    addActionRow(DBTN_ACT_CLOSE,    false,  L"Close / Select mode (Esc)",                                     L"Switch active drawing tool to Select mode, or exit custom area");
+
+    addSection(L"Pin on top — floating window toolbar & mechanisms");
+    addRow(L"Drag pinned image",             L"Move floating window (snaps to screen edges; image can overflow screen)");
+    addRow(L"Hold Shift + drag",             L"Temporarily disable screen-edge snapping while moving");
+    addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar");
+    addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
+    addRow(L"Scroll / Ctrl + Scroll",        L"Zoom in or out (anchored to bottom-right corner or visible screen edge)");
+    addActionRow(DBTN_ACT_ZOOM_OUT,     false, FormatLabelWithShortcut(L"Zoom out",                 hkPinZoomOut),   L"Scale pinned image down (anchored to bottom-right corner)");
+    addActionRow(DBTN_ACT_ZOOM_IN,      false, FormatLabelWithShortcut(L"Zoom in",                  hkPinZoomIn),    L"Scale pinned image up (anchored to bottom-right corner)");
+    addActionRow(DBTN_ACT_ZOOM_RESET,   false, FormatLabelWithShortcut(L"Reset to original size",   hkPinZoomReset), L"Restore 100% original pixel size (anchored to bottom-right corner)");
+    addActionRow(DBTN_ACT_PIN_OUTLINE,  false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),   L"Toggle red border outline around pinned image (default: on)");
+    addActionRow(DBTN_ACT_PIN_UNFILTER, false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),    L"Smooth image with filter when on; unfiltered (pixelated) when off (default: off)");
+    addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image");
+    addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder");
+    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),      L"Copy pinned image to clipboard");
+    addActionRow(DBTN_ACT_CLOSE,        false, L"Close pinned image (Esc)",                                          L"Close pinned image (or click \"Close all pinned image\" in tray menu)");
+
+    int maxKeyW = 220;
+    int maxDescW = 360;
     HDC hdcScreen = GetDC(nullptr);
     if (hdcScreen) {
-        HFONT hMeasureFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-        HGDIOBJ hOldF = SelectObject(hdcScreen, hMeasureFont);
-        RECT rcCalc = { 0, 0, 0, 0 };
-        DrawTextW(hdcScreen, text.c_str(), -1, &rcCalc, DT_CALCRECT | DT_NOPREFIX);
-        measuredW = (rcCalc.right - rcCalc.left) + 6;
-        measuredH = (rcCalc.bottom - rcCalc.top) + 4;
+        HFONT hKeyFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                     CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        HFONT hDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        HGDIOBJ hOldF = SelectObject(hdcScreen, hKeyFont);
+        for (const auto& e : params.entries) {
+            if (!e.isSectionHeader) {
+                RECT rcK = { 0, 0, 0, 0 };
+                SelectObject(hdcScreen, hKeyFont);
+                DrawTextW(hdcScreen, e.keyCol.c_str(), -1, &rcK, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+                int iconExtra = e.hasIcon ? 34 : 0;
+                maxKeyW = std::max(maxKeyW, (int)(rcK.right - rcK.left) + iconExtra + 12);
+
+                RECT rcD = { 0, 0, 0, 0 };
+                SelectObject(hdcScreen, hDescFont);
+                DrawTextW(hdcScreen, e.descCol.c_str(), -1, &rcD, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+                maxDescW = std::max(maxDescW, (int)(rcD.right - rcD.left) + 8);
+            }
+        }
         SelectObject(hdcScreen, hOldF);
-        DeleteObject(hMeasureFont);
+        DeleteObject(hDescFont);
+        DeleteObject(hKeyFont);
         ReleaseDC(nullptr, hdcScreen);
     }
 
-    ShortcutsDlgParams params;
-    params.text = text.c_str();
-    params.textW = measuredW;
-    params.textH = measuredH;
+    params.leftColX = 22;
+    params.leftColW = maxKeyW;
+    params.rightColX = params.leftColX + params.leftColW + 14;
+    params.rightColW = maxDescW;
 
-    DWORD dwStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
-    DWORD dwExStyle = WS_EX_DLGMODALFRAME | WS_EX_TOPMOST;
-    RECT rcWin = { 0, 0, 16 + measuredW + 16, 14 + measuredH + 12 + 30 + 14 };
-    AdjustWindowRectEx(&rcWin, dwStyle, FALSE, dwExStyle);
-    int winW = rcWin.right - rcWin.left;
-    int winH = rcWin.bottom - rcWin.top;
+    int curY = 48;
+    for (size_t i = 0; i < params.entries.size(); ++i) {
+        auto& e = params.entries[i];
+        e.y = curY;
+        if (e.isSectionHeader) {
+            e.h = (i == 0) ? 28 : 38;
+        } else {
+            e.h = 28;
+        }
+        curY += e.h;
+    }
+    params.scrollContentHeight = curY + 12;
+    params.footerHeight = 52;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    DWORD dwStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
+    DWORD dwExStyle = WS_EX_TOPMOST;
+    int totalClientW = params.rightColX + params.rightColW + 20;
+    int totalClientH = params.scrollContentHeight + params.footerHeight;
+    RECT rcWin = { 0, 0, totalClientW, totalClientH };
+    AdjustWindowRectEx(&rcWin, dwStyle, FALSE, dwExStyle);
+    int fixedW = (rcWin.right - rcWin.left) + GetSystemMetrics(SM_CXVSCROLL);
+    int fullWinH = rcWin.bottom - rcWin.top;
+    int maxAllowedH = std::min(fullWinH, std::max(320, sh - 24));
+    int initH = std::max(280, std::min(maxAllowedH, shortcutsWindowHeight));
+    params.fixedWinWidth = fixedW;
+    params.fullWinHeight = fullWinH;
+    params.savedWinHeight = initH;
+
     HWND hOwner = (hOptionsWnd && IsWindow(hOptionsWnd))
         ? hOptionsWnd
         : hTrayWnd;
@@ -4745,13 +7098,17 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         dwExStyle, L"PepperSnapShortcutsModal",
         L"PepperSnap — keyboard shortcuts and info",
         dwStyle,
-        (sw - winW) / 2, (sh - winH) / 2, winW, winH, hOwner, nullptr, hInst, &params
+        (sw - fixedW) / 2, std::max(10, (sh - initH) / 2), fixedW, initH, hOwner, nullptr, hInst, &params
     );
     hShortcutsWnd = hDlg;
     BringWindowToTop(hDlg);
     SetForegroundWindow(hDlg);
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (msg.message == WM_MOUSEWHEEL && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
+            SendMessageW(hDlg, WM_MOUSEWHEEL, msg.wParam, msg.lParam);
+            continue;
+        }
         if (!hOverlayWnd && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)) &&
             msg.message == WM_KEYDOWN && (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE)) {
             DestroyWindow(hDlg);
@@ -4761,6 +7118,10 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         DispatchMessageW(&msg);
     }
     hShortcutsWnd = nullptr;
+    if (params.savedWinHeight >= 280 && params.savedWinHeight != shortcutsWindowHeight) {
+        shortcutsWindowHeight = params.savedWinHeight;
+        SaveSettings();
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -5787,13 +8148,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
+        case WM_RBUTTONDOWN:
         case WM_RBUTTONUP:
-            if (g_Daemon.isEditingText) {
-                g_Daemon.CommitActiveTextBox();
-                InvalidateRect(hWnd, nullptr, FALSE);
-            } else {
-                g_Daemon.CloseRegionSnipOverlay();
-            }
             return 0;
 
         case WM_MOUSEWHEEL: {
@@ -6687,37 +9043,60 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 return 0;
             }
-            if (ctrl) {
-                if (wParam == 'C') {
-                    if (!g_Daemon.hasSelection ||
-                        g_Daemon.dragMode == DragMode::CreatingSelection ||
-                        g_Daemon.dragMode == DragMode::PendingOutsideSelection) {
-                        g_Daemon.ActionCopyPixelColorAndClose();
-                    } else {
-                        g_Daemon.ActionCopyAndClose();
-                    }
-                    return 0;
+            bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0 || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            UINT vk = (UINT)wParam;
+
+            if (ctrl && !shift && !alt && vk == 'C' &&
+                (!g_Daemon.hasSelection ||
+                 g_Daemon.dragMode == DragMode::CreatingSelection ||
+                 g_Daemon.dragMode == DragMode::PendingOutsideSelection)) {
+                g_Daemon.ActionCopyPixelColorAndClose();
+                return 0;
+            }
+
+            if (MatchesOverlayShortcut(g_Daemon.hkActCopy, vk, ctrl, shift, alt)) {
+                if (!g_Daemon.hasSelection ||
+                    g_Daemon.dragMode == DragMode::CreatingSelection ||
+                    g_Daemon.dragMode == DragMode::PendingOutsideSelection) {
+                    g_Daemon.ActionCopyPixelColorAndClose();
+                } else {
+                    g_Daemon.ActionCopyAndClose();
                 }
-                if (wParam == 'S') { g_Daemon.ActionQuickSaveAndClose(); return 0; }
-                if (wParam == 'Z') { g_Daemon.Undo(); return 0; }
-                if (wParam == 'Y') { g_Daemon.Redo(); return 0; }
+                return 0;
             }
-            switch (wParam) {
-                case 'V': g_Daemon.activeTool = OverlayTool::SelectMove; break;
-                case 'P': g_Daemon.activeTool = OverlayTool::Pen; break;
-                case 'H': g_Daemon.activeTool = OverlayTool::Highlighter; break;
-                case 'L': g_Daemon.activeTool = OverlayTool::Line; break;
-                case 'A': g_Daemon.activeTool = OverlayTool::Arrow; break;
-                case 'N': g_Daemon.activeTool = OverlayTool::NumberArrow; break;
-                case 'R': g_Daemon.activeTool = OverlayTool::Rectangle; break;
-                case 'E': g_Daemon.activeTool = OverlayTool::Ellipse; break;
-                case 'T': g_Daemon.activeTool = OverlayTool::TextBox; break;
-                case 'X': g_Daemon.activeTool = OverlayTool::MosaicSquare; break;
-                case 'M': g_Daemon.activeTool = OverlayTool::MosaicCircle; break;
-                case 'F': g_Daemon.ActionPinToDesktop(); return 0;
-                case 'O': g_Daemon.ActionOcrAndClose(); return 0;
-                default: break;
+            if (MatchesOverlayShortcut(g_Daemon.hkActSave, vk, ctrl, shift, alt)) {
+                g_Daemon.ActionQuickSaveAndClose();
+                return 0;
             }
+            if (MatchesOverlayShortcut(g_Daemon.hkActUndo, vk, ctrl, shift, alt)) {
+                g_Daemon.Undo();
+                return 0;
+            }
+            if (MatchesOverlayShortcut(g_Daemon.hkActRedo, vk, ctrl, shift, alt)) {
+                g_Daemon.Redo();
+                return 0;
+            }
+            if (MatchesOverlayShortcut(g_Daemon.hkActPin, vk, ctrl, shift, alt)) {
+                g_Daemon.ActionPinToDesktop();
+                return 0;
+            }
+            if (MatchesOverlayShortcut(g_Daemon.hkActOcr, vk, ctrl, shift, alt)) {
+                g_Daemon.ActionOcrAndClose();
+                return 0;
+            }
+
+            if (MatchesOverlayShortcut(g_Daemon.hkToolSelect, vk, ctrl, shift, alt))         g_Daemon.activeTool = OverlayTool::SelectMove;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolPen, vk, ctrl, shift, alt))       g_Daemon.activeTool = OverlayTool::Pen;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolStabilo, vk, ctrl, shift, alt))   g_Daemon.activeTool = OverlayTool::Highlighter;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolLine, vk, ctrl, shift, alt))      g_Daemon.activeTool = OverlayTool::Line;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolArrow, vk, ctrl, shift, alt))     g_Daemon.activeTool = OverlayTool::Arrow;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolNumber, vk, ctrl, shift, alt))    g_Daemon.activeTool = OverlayTool::NumberArrow;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolRect, vk, ctrl, shift, alt))      g_Daemon.activeTool = OverlayTool::Rectangle;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolEllipse, vk, ctrl, shift, alt))   g_Daemon.activeTool = OverlayTool::Ellipse;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolText, vk, ctrl, shift, alt))      g_Daemon.activeTool = OverlayTool::TextBox;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolMosaicSq, vk, ctrl, shift, alt))  g_Daemon.activeTool = OverlayTool::MosaicSquare;
+            else if (MatchesOverlayShortcut(g_Daemon.hkToolMosaicCir, vk, ctrl, shift, alt)) g_Daemon.activeTool = OverlayTool::MosaicCircle;
+
             g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
             InvalidateRect(hWnd, nullptr, FALSE);
             return 0;
@@ -7383,6 +9762,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
 
 void PepperSnapDaemon::CloseRegionSnipOverlay() {
     RecordLastCustomSelection();
+    SaveSettings();
     hasCustomHudPos = false;
     activeTool = OverlayTool::SelectMove;
     isEditingText = false;
@@ -7440,9 +9820,12 @@ void PepperSnapDaemon::OpenImageFileIntoOverlay(const std::wstring& filePath) {
     Bitmap* canvasBmp = new Bitmap(sw, sh, PixelFormat32bppARGB);
     Graphics g(canvasBmp);
     g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+    g.SetPixelOffsetMode(PixelOffsetModeHalf);
     SolidBrush bg(Color(255, 15, 23, 42));
     g.FillRectangle(&bg, 0, 0, sw, sh);
-    g.DrawImage(&loaded, imgX, imgY, drawW, drawH);
+    ImageAttributes ia;
+    ia.SetWrapMode(WrapModeTileFlipXY);
+    g.DrawImage(&loaded, Rect(imgX, imgY, drawW, drawH), 0, 0, imgW, imgH, UnitPixel, &ia);
 
     RECT centeredSel = { imgX, imgY, imgX + drawW, imgY + drawH };
     StartRegionSnipOverlay(canvasBmp, &centeredSel);
@@ -7476,8 +9859,12 @@ void PepperSnapDaemon::OpenImageFileToPinOnTop(const std::wstring& filePath) {
     Bitmap* memBmp = new Bitmap(imgW, imgH, PixelFormat32bppARGB);
     {
         Graphics g(memBmp);
-        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-        g.DrawImage(&loaded, 0, 0, imgW, imgH);
+        g.SetCompositingMode(CompositingModeSourceCopy);
+        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        ImageAttributes ia;
+        ia.SetWrapMode(WrapModeTileFlipXY);
+        g.DrawImage(&loaded, Rect(0, 0, imgW, imgH), 0, 0, imgW, imgH, UnitPixel, &ia);
     }
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
@@ -7720,14 +10107,12 @@ static void ShowTrayContextMenu(HWND hWnd) {
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,    prevMenu.c_str());
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,     L"Open image to edit with PepperSnap...");
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE, L"Open image to pin on top...");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CLOSE_PINS,     L"Close all pinned image");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_FOLDER,   L"Open save folder...");
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPTIONS,       L"Options...");
     AppendMenuW(hMenu, MF_STRING | (g_Daemon.IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED),
                 IDM_TRAY_STARTUP_RUN, L"Launch PepperSnap at Windows startup");
-    if (!g_Daemon.pinnedWindows.empty()) {
-        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CLOSE_PINS, L"Close all pinned captures");
-    }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CHECK_UPDATE,  L"Check for updates (GitHub releases)...");
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHORTCUTS,     L"Keyboard shortcuts and info...");
@@ -7799,12 +10184,17 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         }
         case WM_COPYDATA: {
             COPYDATASTRUCT* cds = (COPYDATASTRUCT*)lParam;
-            if (cds && cds->dwData == COPYDATA_OPEN_IMAGE && cds->lpData && cds->cbData >= sizeof(wchar_t)) {
+            if (cds && (cds->dwData == COPYDATA_OPEN_IMAGE || cds->dwData == COPYDATA_PIN_IMAGE) &&
+                cds->lpData && cds->cbData >= sizeof(wchar_t)) {
                 const wchar_t* wpath = (const wchar_t*)cds->lpData;
                 size_t maxChars = cds->cbData / sizeof(wchar_t);
                 std::wstring path(wpath, wcsnlen(wpath, maxChars));
                 if (!path.empty()) {
-                    g_Daemon.OpenImageFileIntoOverlay(path);
+                    if (cds->dwData == COPYDATA_PIN_IMAGE) {
+                        g_Daemon.OpenImageFileToPinOnTop(path);
+                    } else {
+                        g_Daemon.OpenImageFileIntoOverlay(path);
+                    }
                 }
                 return TRUE;
             }
@@ -7898,6 +10288,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     for (wchar_t& c : cmdArgs) c = (wchar_t)towlower(c);
 
     std::wstring cliEditFilePath;
+    std::wstring cliPinFilePath;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv) {
@@ -7905,7 +10296,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
             std::wstring arg = argv[i];
             std::wstring low = arg;
             for (wchar_t& c : low) c = (wchar_t)towlower(c);
-            if ((low == L"--edit" || low == L"/edit" || low == L"--open" || low == L"/open") && i + 1 < argc) {
+            if ((low == L"--pin" || low == L"/pin") && i + 1 < argc) {
+                cliPinFilePath = argv[i + 1];
+                break;
+            } else if ((low == L"--edit" || low == L"/edit" || low == L"--open" || low == L"/open") && i + 1 < argc) {
                 cliEditFilePath = argv[i + 1];
                 break;
             } else if (!arg.empty() && arg[0] != L'-' && arg[0] != L'/' && GetFileAttributesW(arg.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -7948,7 +10342,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     };
 
     auto forwardToRunningDaemon = [&](HWND hExisting) {
-        if (!cliEditFilePath.empty()) {
+        if (!cliPinFilePath.empty()) {
+            COPYDATASTRUCT cds = {0};
+            cds.dwData = COPYDATA_PIN_IMAGE;
+            cds.cbData = (DWORD)((cliPinFilePath.size() + 1) * sizeof(wchar_t));
+            cds.lpData = (PVOID)cliPinFilePath.c_str();
+            SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 3000, nullptr);
+        } else if (!cliEditFilePath.empty()) {
             COPYDATASTRUCT cds = {0};
             cds.dwData = COPYDATA_OPEN_IMAGE;
             cds.cbData = (DWORD)((cliEditFilePath.size() + 1) * sizeof(wchar_t));
@@ -8059,7 +10459,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     RegisterClassExW(&wcOv);
 
     WNDCLASSEXW wcPin = { sizeof(WNDCLASSEXW) };
-    wcPin.style = CS_HREDRAW | CS_VREDRAW;
+    wcPin.style = CS_DBLCLKS;
     wcPin.lpfnWndProc = PinWndProc;
     wcPin.hInstance = hInstance;
     wcPin.hIcon = hAppIcon;
@@ -8088,7 +10488,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     SetTimer(g_Daemon.hTrayWnd, TIMER_AUTO_UPDATE_CHECK, 30 * 60 * 1000, nullptr);
     g_Daemon.MaybeRunScheduledUpdateCheck();
 
-    if (!cliEditFilePath.empty()) {
+    if (!cliPinFilePath.empty()) {
+        g_Daemon.OpenImageFileToPinOnTop(cliPinFilePath);
+    } else if (!cliEditFilePath.empty()) {
         g_Daemon.OpenImageFileIntoOverlay(cliEditFilePath);
     } else if (cliMsg != 0) {
         PostMessageW(g_Daemon.hTrayWnd, cliMsg, cliWParam, 0);
