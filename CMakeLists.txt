@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PepperSnap VERSION 3.5.8 LANGUAGES CXX RC)
+project(PepperSnap VERSION 3.6.1 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,6 +32,7 @@ target_link_libraries(PepperSnap PRIVATE
     user32
     shell32
     ole32
+    uuid
     comdlg32
     comctl32
     dwmapi

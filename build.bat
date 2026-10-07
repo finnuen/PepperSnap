@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================================
-echo  PepperSnap v3.5.8 — Pure Standalone Win32 / GDI+ C++17 Build Script
+echo  PepperSnap v3.6.1 — Pure Standalone Win32 / GDI+ C++17 Build Script
 echo ============================================================================
 
 where cl.exe >nul 2>nul
@@ -16,7 +16,7 @@ if %ERRORLEVEL% EQU 0 (
         PepperSnap.cpp peppersnap.res ^
         /Fe:PepperSnap.exe ^
         /link /SUBSYSTEM:WINDOWS ^
-        gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib comdlg32.lib comctl32.lib dwmapi.lib shlwapi.lib advapi32.lib wininet.lib
+        gdiplus.lib gdi32.lib user32.lib shell32.lib ole32.lib uuid.lib comdlg32.lib comctl32.lib dwmapi.lib shlwapi.lib advapi32.lib wininet.lib
     if %ERRORLEVEL% EQU 0 (
         echo [OK] Successfully built standalone PepperSnap.exe ^(MSVC Static CRT^)
         exit /b 0
@@ -32,7 +32,7 @@ if %ERRORLEVEL% EQU 0 (
     )
     g++.exe -std=c++17 -O2 -s -municode -mwindows -Wl,--subsystem,windows -static ^
         PepperSnap.cpp peppersnap.res -o PepperSnap.exe ^
-        -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -lcomdlg32 -lcomctl32 -ldwmapi -lshlwapi -ladvapi32 -lwininet
+        -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -luuid -lcomdlg32 -lcomctl32 -ldwmapi -lshlwapi -ladvapi32 -lwininet
     if %ERRORLEVEL% EQU 0 (
         echo [OK] Successfully built standalone PepperSnap.exe ^(MinGW-w64 Static^)
         exit /b 0
@@ -45,7 +45,7 @@ if %ERRORLEVEL% EQU 0 (
     clang++.exe -std=c++17 -O2 -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX ^
         PepperSnap.cpp peppersnap.res -o PepperSnap.exe ^
         -Wl,/SUBSYSTEM:WINDOWS ^
-        -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -lcomdlg32 -lcomctl32 -ldwmapi -lshlwapi -ladvapi32 -lwininet
+        -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -luuid -lcomdlg32 -lcomctl32 -ldwmapi -lshlwapi -ladvapi32 -lwininet
     if %ERRORLEVEL% EQU 0 (
         echo [OK] Successfully built standalone PepperSnap.exe ^(Clang++^)
         exit /b 0

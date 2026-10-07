@@ -15,6 +15,7 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <shlwapi.h>
 #include <dwmapi.h>
 #include <objidl.h>
@@ -28,6 +29,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -202,6 +204,7 @@ struct PinnedWindowData {
     POINT dragStartMouse{0, 0};
     POINT dragStartWnd{0, 0};
     int hoveredBtnId = -1;
+    int pressedBtnId = -1;
     bool trackingMouseLeave = false;
     std::vector<DockButton> buttons;
     HDC hCacheDC = nullptr;
