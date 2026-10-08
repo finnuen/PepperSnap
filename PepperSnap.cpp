@@ -17,7 +17,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.6.3";
+    static constexpr const wchar_t* APP_VERSION = L"3.6.4";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -38,9 +38,10 @@ public:
     bool alsoCopyFullscreen = true;
     bool alsoSavePinned = true;
     bool alsoSaveOcrText = true;
+    bool keepCursorOnScreenshot = false;
     bool hidePinnedOutline = false;
     bool smoothPinnedImage = false;
-    int optionsWindowHeight = 716;
+    int optionsWindowHeight = 744;
     int customizeKeysWindowHeight = 560;
     int shortcutsWindowHeight = 560;
     bool autoCheckUpdates = true;
@@ -345,6 +346,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoCopyFullscreen", alsoCopyFullscreen ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoSavePinned", alsoSavePinned ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoSaveOcrText", alsoSaveOcrText ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"KeepCursorOnScreenshot", keepCursorOnScreenshot ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"HidePinnedOutline", hidePinnedOutline ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"SmoothPinnedImage", smoothPinnedImage ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
@@ -430,9 +432,11 @@ void PepperSnapDaemon::LoadSettings() {
     alsoCopyFullscreen = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoCopyFullscreen", 1, iniPath.c_str()) != 0);
     alsoSavePinned = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSavePinned", 1, iniPath.c_str()) != 0);
     alsoSaveOcrText = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSaveOcrText", 1, iniPath.c_str()) != 0);
+    keepCursorOnScreenshot = (GetPrivateProfileIntW(L"PepperSnap", L"KeepCursorOnScreenshot", 0, iniPath.c_str()) != 0);
     hidePinnedOutline = false;
     smoothPinnedImage = false;
-    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 716, iniPath.c_str());
+    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 744, iniPath.c_str());
+    if (optWinH == 716) optWinH = 744;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
     int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 560, iniPath.c_str());
     customizeKeysWindowHeight = std::max(280, std::min(2160, ckWinH));
@@ -1516,6 +1520,25 @@ Bitmap* PepperSnapDaemon::CaptureVirtualDesktop() {
                     DeleteDC(hFgMem);
                 }
             }
+        }
+    }
+
+    if (keepCursorOnScreenshot) {
+        CURSORINFO ci = { sizeof(CURSORINFO) };
+        if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) != 0 && ci.hCursor) {
+            HICON hIconCopy = CopyIcon(ci.hCursor);
+            HICON hDrawCur = hIconCopy ? hIconCopy : (HICON)ci.hCursor;
+            int drawX = (int)ci.ptScreenPos.x - vScreenX;
+            int drawY = (int)ci.ptScreenPos.y - vScreenY;
+            ICONINFO ii = {0};
+            if (GetIconInfo(hDrawCur, &ii)) {
+                drawX -= (int)ii.xHotspot;
+                drawY -= (int)ii.yHotspot;
+                if (ii.hbmMask) DeleteObject(ii.hbmMask);
+                if (ii.hbmColor) DeleteObject(ii.hbmColor);
+            }
+            DrawIconEx(hMem, drawX, drawY, hDrawCur, 0, 0, 0, nullptr, DI_NORMAL);
+            if (hIconCopy) DestroyIcon(hIconCopy);
         }
     }
 
@@ -5007,6 +5030,7 @@ struct OptionsDlgState {
     bool alsoCopyFull = true;
     bool alsoSavePin = true;
     bool alsoSaveOcr = true;
+    bool keepCursor = false;
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 15;
@@ -5045,11 +5069,11 @@ struct OptionsDlgState {
     bool openedAppData = false;
     bool restoredAllDefaults = false;
     int scrollY = 0;
-    int scrollContentHeight = 660;
+    int scrollContentHeight = 688;
     int footerHeight = 56;
     int fixedWinWidth = 580;
-    int fullWinHeight = 716;
-    int savedWinHeight = 716;
+    int fullWinHeight = 744;
+    int savedWinHeight = 744;
 
     HWND hFolderEdit = nullptr;
     HWND hComboRegion = nullptr;
@@ -5063,6 +5087,7 @@ struct OptionsDlgState {
     HWND hCopyFullChk = nullptr;
     HWND hSavePinChk = nullptr;
     HWND hSaveOcrChk = nullptr;
+    HWND hKeepCursorChk = nullptr;
     HWND hNonStackingChk = nullptr;
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
@@ -5101,6 +5126,7 @@ struct OptionsDlgState {
 #define IDC_OPT_SAVE_OCR_CHK     1024
 #define IDC_OPT_RESTORE_ALL_DEF  1025
 #define IDC_OPT_NAMING_SYNTAX    1026
+#define IDC_OPT_KEEP_CURSOR_CHK  1027
 
 #define IDC_CK_BTN_BASE          2100
 #define IDC_CK_RESTORE_DEFAULTS  2201
@@ -6598,50 +6624,57 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hSaveOcrChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hSaveOcrChk, BM_SETCHECK, st->alsoSaveOcr ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            // 7. Enable pen and highlighter smoothing.
+            // 7. Keep cursor on screenshot
+            st->hKeepCursorChk = CreateWindowExW(0, L"BUTTON",
+                L"Keep cursor on screenshot",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 548, 516, 24, hWnd, (HMENU)IDC_OPT_KEEP_CURSOR_CHK, nullptr, nullptr);
+            SendMessageW(st->hKeepCursorChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hKeepCursorChk, BM_SETCHECK, st->keepCursor ? BST_CHECKED : BST_UNCHECKED, 0);
+
+            // 8. Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 548, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 576, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 580, 224, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 608, 224, 22, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 576, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 604, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
-            // 8. Restore everything to default button (below smoothing strength, NOT in row with Save options)
+            // 9. Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 616, 218, 30, hWnd, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 644, 218, 30, hWnd, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Permanent pinned footer bar: clickable %appdata%\PepperSnap persistence link + Save options + Cancel
             st->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 660, 552, 56, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 688, 552, 56, hWnd, nullptr, nullptr, nullptr);
 
             HFONT hLinkFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 678, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 706, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
             WNDPROC origStaticProc = (WNDPROC)SetWindowLongPtrW(st->hAppDataInfo, GWLP_WNDPROC, (LONG_PTR)AppDataLinkStaticWndProc);
             SetPropW(st->hAppDataInfo, L"PepperSnapOrigStaticProc", (HANDLE)origStaticProc);
 
             st->hOkBtn = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 671, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 699, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(st->hOkBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 671, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 699, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             for (HWND hCh = GetWindow(hWnd, GW_CHILD); hCh != nullptr; hCh = GetWindow(hCh, GW_HWNDNEXT)) {
@@ -6649,7 +6682,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 SetWindowLongW(hCh, GWL_STYLE, stBits | WS_CLIPSIBLINGS);
             }
 
-            st->scrollContentHeight = 660;
+            st->scrollContentHeight = 688;
             st->footerHeight = 56;
             UpdateOptionsPreviewLabel(st);
             LayoutOptionsFooter(hWnd, st);
@@ -6890,11 +6923,13 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->alsoCopyFull  = true;
                 st->alsoSavePin   = true;
                 st->alsoSaveOcr   = true;
+                st->keepCursor    = false;
                 SendMessageW(st->hNonStackingChk, BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hAutoSaveChk,    BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hCopyFullChk,    BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hSavePinChk,     BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hSaveOcrChk,     BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hKeepCursorChk,  BM_SETCHECK, BST_UNCHECKED, 0);
 
                 st->penSmoothEnabled = true;
                 st->penSmoothStrength = 15;
@@ -7016,6 +7051,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->alsoCopyFull  = (SendMessageW(st->hCopyFullChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->alsoSavePin   = (SendMessageW(st->hSavePinChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->alsoSaveOcr   = (SendMessageW(st->hSaveOcrChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->keepCursor    = (SendMessageW(st->hKeepCursorChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 int uSel = (int)SendMessageW(st->hComboUpdateInterval, CB_GETCURSEL, 0, 0);
                 if (uSel >= 0 && uSel <= 4) st->updateInterval = (UpdateCheckInterval)uSel;
@@ -7074,6 +7110,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.alsoCopyFull = alsoCopyFullscreen;
     st.alsoSavePin  = alsoSavePinned;
     st.alsoSaveOcr  = alsoSaveOcrText;
+    st.keepCursor   = keepCursorOnScreenshot;
     st.nonStackingHi = nonStackingHighlighter;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
@@ -7112,7 +7149,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = WS_EX_TOPMOST;
-    const int totalOptClientH = 660 + 56;
+    const int totalOptClientH = 688 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
@@ -7195,6 +7232,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         alsoCopyFullscreen = st.alsoCopyFull;
         alsoSavePinned = st.alsoSavePin;
         alsoSaveOcrText = st.alsoSaveOcr;
+        keepCursorOnScreenshot = st.keepCursor;
         nonStackingHighlighter = st.nonStackingHi;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
