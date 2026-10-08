@@ -98,6 +98,8 @@ enum TrayMenuID {
     IDM_TRAY_OPEN_FOLDER,
     IDM_TRAY_OPTIONS,
     IDM_TRAY_STARTUP_RUN,
+    IDM_TRAY_SMOOTH_PINS,
+    IDM_TRAY_SHOW_OUTLINE_PINS,
     IDM_TRAY_CLOSE_PINS,
     IDM_TRAY_CHECK_UPDATE,
     IDM_TRAY_SHORTCUTS,
@@ -208,7 +210,9 @@ struct PinnedWindowData {
     POINT dragStartWnd{0, 0};
     int hoveredBtnId = -1;
     int pressedBtnId = -1;
+    POINT lastHoverMouse{-10000, -10000};
     bool pendingRightDblClickClose = false;
+    bool showingImgHoverTip = false;
     bool trackingMouseLeave = false;
     std::vector<DockButton> buttons;
     HDC hCacheDC = nullptr;

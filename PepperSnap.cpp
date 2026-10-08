@@ -17,7 +17,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.6.4";
+    static constexpr const wchar_t* APP_VERSION = L"3.6.5";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -44,6 +44,7 @@ public:
     int optionsWindowHeight = 744;
     int customizeKeysWindowHeight = 560;
     int shortcutsWindowHeight = 560;
+    int namingSyntaxWindowHeight = 706;
     bool autoCheckUpdates = true;
     UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
     long long lastUpdateCheckTime = 0;
@@ -352,6 +353,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowHeight", std::to_wstring(shortcutsWindowHeight).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"NamingSyntaxWindowHeight", std::to_wstring(namingSyntaxWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ActiveColorARGB", std::to_wstring(activeColor.GetValue()).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ActiveStrokeWidth", std::to_wstring((int)std::round(activeStroke)).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CaptureCounter", std::to_wstring(captureCounter).c_str(), iniPath.c_str());
@@ -433,8 +435,8 @@ void PepperSnapDaemon::LoadSettings() {
     alsoSavePinned = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSavePinned", 1, iniPath.c_str()) != 0);
     alsoSaveOcrText = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSaveOcrText", 1, iniPath.c_str()) != 0);
     keepCursorOnScreenshot = (GetPrivateProfileIntW(L"PepperSnap", L"KeepCursorOnScreenshot", 0, iniPath.c_str()) != 0);
-    hidePinnedOutline = false;
-    smoothPinnedImage = false;
+    hidePinnedOutline = (GetPrivateProfileIntW(L"PepperSnap", L"HidePinnedOutline", 0, iniPath.c_str()) != 0);
+    smoothPinnedImage = (GetPrivateProfileIntW(L"PepperSnap", L"SmoothPinnedImage", 0, iniPath.c_str()) != 0);
     int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 744, iniPath.c_str());
     if (optWinH == 716) optWinH = 744;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
@@ -442,6 +444,8 @@ void PepperSnapDaemon::LoadSettings() {
     customizeKeysWindowHeight = std::max(280, std::min(2160, ckWinH));
     int scWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowHeight", 560, iniPath.c_str());
     shortcutsWindowHeight = std::max(260, std::min(2160, scWinH));
+    int nsWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"NamingSyntaxWindowHeight", 706, iniPath.c_str());
+    namingSyntaxWindowHeight = std::max(260, std::min(2160, nsWinH));
 
     WCHAR colBuf[64] = {0};
     GetPrivateProfileStringW(L"PepperSnap", L"ActiveColorARGB", L"", colBuf, 63, iniPath.c_str());
@@ -2062,6 +2066,7 @@ void PepperSnapDaemon::InstantFullscreenCapture() {
 
     CreateDirectoryW(saveFolder.c_str(), nullptr);
     int seq = captureCounter++;
+    SaveSettings();
     std::wstring fileName = FormatFilename(seq) + GetFormatExtension(fullscreenFormat);
     std::wstring fullPath = saveFolder + L"\\" + fileName;
 
@@ -2124,6 +2129,7 @@ void PepperSnapDaemon::InstantPreviousRegionCapture() {
 
     CreateDirectoryW(saveFolder.c_str(), nullptr);
     int seq = captureCounter++;
+    SaveSettings();
     std::wstring fileName = FormatFilename(seq) + GetFormatExtension(regionFormat);
     std::wstring fullPath = saveFolder + L"\\" + fileName;
 
@@ -2924,6 +2930,7 @@ void PepperSnapDaemon::ApplyTextBoxKeyDown(WPARAM wParam, bool ctrl, bool shift,
 void PepperSnapDaemon::ApplyStrokeToSelectedAnnotation(float newStroke, bool recordUndo) {
     newStroke = std::max(1.0f, std::min(120.0f, newStroke));
     activeStroke = newStroke;
+    SaveSettings();
     if (isEditingText) {
         editingTextAnn.strokeWidth = newStroke;
     }
@@ -4144,6 +4151,123 @@ static void ShowPinnedBubbleTooltip(HWND hPinWnd, const DockButton& b) {
     ReleaseDC(nullptr, hScreen);
 }
 
+static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* data, POINT ptCursorScreen) {
+    if (!hPinWnd || !data) {
+        HidePinnedBubbleTooltip();
+        return;
+    }
+    const wchar_t* line1Text = data->hideToolbar ? L"Double-click to show toolbar" : L"Double-click to hide toolbar";
+    const wchar_t* line2Text = L"Double right-click to close";
+    static bool s_tipReg = false;
+    if (!s_tipReg) {
+        WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = g_Daemon.hInst;
+        wc.lpszClassName = L"PepperSnapPinBubbleTipWnd";
+        RegisterClassExW(&wc);
+        s_tipReg = true;
+    }
+    if (!g_hPinTooltipWnd || !IsWindow(g_hPinTooltipWnd)) {
+        g_hPinTooltipWnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+            L"PepperSnapPinBubbleTipWnd", L"",
+            WS_POPUP, 0, 0, 1, 1,
+            nullptr, nullptr, g_Daemon.hInst, nullptr
+        );
+    }
+    if (!g_hPinTooltipWnd) return;
+
+    HDC hScreen = GetDC(nullptr);
+    if (!hScreen) return;
+
+    FontFamily ff(L"Segoe UI");
+    Font tipFont(&ff, 11.5f, FontStyleBold, UnitPixel);
+    RectF measured1, measured2;
+    {
+        Graphics gMeasure(hScreen);
+        gMeasure.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+        gMeasure.MeasureString(line1Text, -1, &tipFont, PointF(0, 0), &measured1);
+        gMeasure.MeasureString(line2Text, -1, &tipFont, PointF(0, 0), &measured2);
+    }
+
+    int bw = (int)std::ceil(std::max(measured1.Width, measured2.Width)) + 20;
+    int bh = 44;
+    int tailH = 7;
+    int totalW = bw + 4;
+    int totalH = bh + tailH + 4;
+
+    HMONITOR hMon = MonitorFromPoint(ptCursorScreen, MONITOR_DEFAULTTONEAREST);
+    RECT rcScreen = GetPinnedMonitorWorkArea(hMon);
+
+    bool placeBelow = (ptCursorScreen.y + 18 + totalH <= rcScreen.bottom);
+    int winX = std::max((int)rcScreen.left + 6, std::min((int)rcScreen.right - totalW - 6, (int)ptCursorScreen.x - totalW / 2));
+    int winY = placeBelow ? (ptCursorScreen.y + 18) : (ptCursorScreen.y - totalH - 8);
+    float localMidX = (float)std::max(10, std::min(totalW - 10, (int)ptCursorScreen.x - winX));
+
+    BITMAPINFO bmi = {0};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = totalW;
+    bmi.bmiHeader.biHeight = -totalH;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* pvBits = nullptr;
+    HDC memDC = CreateCompatibleDC(hScreen);
+    HBITMAP hBmp = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    if (memDC && hBmp) {
+        HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
+        {
+            Graphics g(memDC);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+            g.Clear(Color(0, 0, 0, 0));
+
+            float rx = 2.0f;
+            float ry = placeBelow ? (float)tailH : 2.0f;
+            float rw = (float)bw;
+            float rh = (float)bh;
+
+            PointF tail[3];
+            if (placeBelow) {
+                tail[0] = PointF(localMidX, 1.0f);
+                tail[1] = PointF(localMidX - 5.5f, ry + 1.0f);
+                tail[2] = PointF(localMidX + 5.5f, ry + 1.0f);
+            } else {
+                tail[0] = PointF(localMidX, ry + rh + (float)tailH - 1.0f);
+                tail[1] = PointF(localMidX - 5.5f, ry + rh - 1.0f);
+                tail[2] = PointF(localMidX + 5.5f, ry + rh - 1.0f);
+            }
+
+            SolidBrush bubbleBg(Color(248, 15, 23, 42));
+            Pen bubbleBorder(Color(255, 239, 68, 68), 1.4f);
+            g.FillPolygon(&bubbleBg, tail, 3);
+            g.FillRectangle(&bubbleBg, rx, ry, rw, rh);
+            g.DrawRectangle(&bubbleBorder, rx, ry, rw, rh);
+
+            StringFormat sf;
+            sf.SetAlignment(StringAlignmentCenter);
+            sf.SetLineAlignment(StringAlignmentCenter);
+            SolidBrush textBr(Color(255, 248, 250, 252));
+            RectF line1Rc(rx, ry + 4.0f, rw, 18.0f);
+            RectF line2Rc(rx, ry + 22.0f, rw, 18.0f);
+            g.DrawString(line1Text, -1, &tipFont, line1Rc, &sf, &textBr);
+            g.DrawString(line2Text, -1, &tipFont, line2Rc, &sf, &textBr);
+        }
+
+        POINT ptSrc = { 0, 0 };
+        POINT ptDst = { winX, winY };
+        SIZE szWnd = { totalW, totalH };
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        UpdateLayeredWindow(g_hPinTooltipWnd, hScreen, &ptDst, &szWnd, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
+        SetWindowPos(g_hPinTooltipWnd, HWND_TOPMOST, winX, winY, totalW, totalH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+        SelectObject(memDC, oldBmp);
+    }
+    if (hBmp) DeleteObject(hBmp);
+    if (memDC) DeleteDC(memDC);
+    ReleaseDC(nullptr, hScreen);
+}
+
 static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, bool highQuality) {
     if (!data || !data->bmp || imgW <= 0 || imgH <= 0) return;
     bool hideOutline = data->hideOutline;
@@ -4482,6 +4606,8 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
         case DBTN_ACT_PIN_OUTLINE: {
             SetFocus(hWnd);
             data->hideOutline = !data->hideOutline;
+            g_Daemon.hidePinnedOutline = data->hideOutline;
+            g_Daemon.SaveSettings();
             int imgW = 32, imgH = 32;
             GetPinnedScaledDims(data, imgW, imgH);
             EnsurePinnedWindowCache(data, imgW, imgH, true);
@@ -4500,6 +4626,8 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
         case DBTN_ACT_PIN_UNFILTER: {
             SetFocus(hWnd);
             data->smoothImage = !data->smoothImage;
+            g_Daemon.smoothPinnedImage = data->smoothImage;
+            g_Daemon.SaveSettings();
             int imgW = 32, imgH = 32;
             GetPinnedScaledDims(data, imgW, imgH);
             EnsurePinnedWindowCache(data, imgW, imgH, true);
@@ -4526,6 +4654,7 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 CreateDirectoryW(g_Daemon.saveFolder.c_str(), nullptr);
                 std::wstring fn = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
                                   PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                g_Daemon.SaveSettings();
                 std::wstring full = g_Daemon.saveFolder + L"\\" + fn;
                 if (g_Daemon.SaveBitmapToPath(data->bmp, full)) {
                     g_Daemon.lastSavedFilePath = full;
@@ -4541,6 +4670,7 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 WCHAR szFile[MAX_PATH] = {0};
                 std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
                                        PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                g_Daemon.SaveSettings();
                 wcsncpy_s(szFile, defName.c_str(), _TRUNCATE);
 
                 OPENFILENAMEW ofn = {0};
@@ -4583,6 +4713,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             break;
         case WM_LBUTTONDOWN:
             if (data) {
+                KillTimer(hWnd, 2);
+                data->showingImgHoverTip = false;
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 for (const auto& b : data->buttons) {
                     if (PtInRect(&b.rect, pt)) {
@@ -4605,6 +4737,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         case WM_LBUTTONDBLCLK:
             if (data) {
+                KillTimer(hWnd, 2);
+                data->showingImgHoverTip = false;
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 for (const auto& b : data->buttons) {
                     if (PtInRect(&b.rect, pt)) {
@@ -4624,10 +4758,18 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 data->hideToolbar = !data->hideToolbar;
                 UpdatePinnedWindowLayout(hWnd, data, true);
                 InvalidateRect(hWnd, nullptr, FALSE);
+                if (PtInRect(&data->imgRect, pt)) {
+                    SetTimer(hWnd, 2, 1000, nullptr);
+                }
             }
             return 0;
         case WM_RBUTTONDOWN:
             if (data) {
+                KillTimer(hWnd, 2);
+                if (data->showingImgHoverTip) {
+                    data->showingImgHoverTip = false;
+                    HidePinnedBubbleTooltip();
+                }
                 data->pendingRightDblClickClose = false;
             }
             return 0;
@@ -4714,10 +4856,29 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 return 0;
             }
+            if (wParam == 2 && data) {
+                KillTimer(hWnd, 2);
+                if (!data->dragging && data->hoveredBtnId == -1 && data->pressedBtnId == -1) {
+                    POINT ptScreen;
+                    if (GetCursorPos(&ptScreen)) {
+                        POINT ptClient = ptScreen;
+                        if (ScreenToClient(hWnd, &ptClient) && PtInRect(&data->imgRect, ptClient)) {
+                            data->showingImgHoverTip = true;
+                            ShowPinnedImageHoverTooltip(hWnd, data, ptScreen);
+                        }
+                    }
+                }
+                return 0;
+            }
             break;
         case WM_MOUSEMOVE:
             if (data) {
                 if (data->pressedBtnId != -1) {
+                    KillTimer(hWnd, 2);
+                    if (data->showingImgHoverTip) {
+                        data->showingImgHoverTip = false;
+                        HidePinnedBubbleTooltip();
+                    }
                     POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                     int newHover = -1;
                     for (const auto& b : data->buttons) {
@@ -4744,6 +4905,11 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     return 0;
                 }
                 if (data->dragging) {
+                    KillTimer(hWnd, 2);
+                    if (data->showingImgHoverTip) {
+                        data->showingImgHoverTip = false;
+                        HidePinnedBubbleTooltip();
+                    }
                     UpdatePinnedDragPosition(hWnd, data);
                     return 0;
                 }
@@ -4760,6 +4926,24 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         break;
                     }
                 }
+                if (newHover != -1) {
+                    KillTimer(hWnd, 2);
+                    data->showingImgHoverTip = false;
+                    data->lastHoverMouse = { -10000, -10000 };
+                } else if (PtInRect(&data->imgRect, pt)) {
+                    bool movedMouse = (pt.x != data->lastHoverMouse.x || pt.y != data->lastHoverMouse.y);
+                    data->lastHoverMouse = pt;
+                    if (!data->showingImgHoverTip && movedMouse) {
+                        SetTimer(hWnd, 2, 1000, nullptr);
+                    }
+                } else {
+                    KillTimer(hWnd, 2);
+                    data->lastHoverMouse = { -10000, -10000 };
+                    if (data->showingImgHoverTip) {
+                        data->showingImgHoverTip = false;
+                        HidePinnedBubbleTooltip();
+                    }
+                }
                 if (newHover != data->hoveredBtnId) {
                     data->hoveredBtnId = newHover;
                     SetCursor(LoadCursorW(nullptr, (newHover != -1) ? IDC_HAND : IDC_SIZEALL));
@@ -4770,7 +4954,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                 break;
                             }
                         }
-                    } else {
+                    } else if (!data->showingImgHoverTip) {
                         HidePinnedBubbleTooltip();
                     }
                     if (!data->buttons.empty()) {
@@ -4789,6 +4973,9 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         case WM_MOUSELEAVE:
             if (data) {
                 data->trackingMouseLeave = false;
+                KillTimer(hWnd, 2);
+                data->showingImgHoverTip = false;
+                data->lastHoverMouse = { -10000, -10000 };
                 HidePinnedBubbleTooltip();
                 if (data->hoveredBtnId != -1) {
                     data->hoveredBtnId = -1;
@@ -4945,6 +5132,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         case WM_DESTROY:
             KillTimer(hWnd, 1);
+            KillTimer(hWnd, 2);
             HidePinnedBubbleTooltip();
             g_Daemon.pinnedWindows.erase(
                 std::remove(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hWnd),
@@ -4972,8 +5160,8 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
     data->scale = initialScale;
     data->screenImgX = x;
     data->screenImgY = y;
-    data->hideOutline = false;
-    data->smoothImage = false;
+    data->hideOutline = hidePinnedOutline;
+    data->smoothImage = smoothPinnedImage;
 
     int imgW = 32, imgH = 32;
     GetPinnedScaledDims(data, imgW, imgH);
@@ -5144,6 +5332,7 @@ struct NamingSyntaxDlgState {
     int footerHeight = 50;
     int fixedWinWidth = 490;
     int fullWinHeight = 706;
+    int savedWinHeight = 706;
     HWND hOkBtn = nullptr;
 };
 
@@ -5250,6 +5439,10 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
             if (st && wParam != SIZE_MINIMIZED) {
                 UpdateNamingSyntaxScroll(hWnd, st, st->scrollY);
                 InvalidateRect(hWnd, nullptr, FALSE);
+                RECT rcW;
+                if (GetWindowRect(hWnd, &rcW)) {
+                    st->savedWinHeight = rcW.bottom - rcW.top;
+                }
             }
             return 0;
         }
@@ -5473,9 +5666,11 @@ static void ShowNamingSyntaxModal(HWND hParentOptWnd) {
     int fullWinH = rcWin.bottom - rcWin.top;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
-    int winH = std::min(fullWinH, std::max(300, sh - 36));
+    int maxAllowedH = std::min(fullWinH, std::max(300, sh - 36));
+    int winH = std::max(260, std::min(maxAllowedH, g_Daemon.namingSyntaxWindowHeight));
     st.fixedWinWidth = fixedW;
     st.fullWinHeight = fullWinH;
+    st.savedWinHeight = winH;
 
     int posX = (sw - fixedW) / 2;
     int posY = (sh - winH) / 2;
@@ -5517,6 +5712,10 @@ static void ShowNamingSyntaxModal(HWND hParentOptWnd) {
     }
 
     g_Daemon.hNamingSyntaxWnd = nullptr;
+    if (st.savedWinHeight >= 260 && st.savedWinHeight != g_Daemon.namingSyntaxWindowHeight) {
+        g_Daemon.namingSyntaxWindowHeight = st.savedWinHeight;
+        g_Daemon.SaveSettings();
+    }
     if (hParentOptWnd && IsWindow(hParentOptWnd)) {
         EnableWindow(hParentOptWnd, TRUE);
         BringWindowToTop(hParentOptWnd);
@@ -7284,6 +7483,13 @@ void PepperSnapDaemon::ShowOptionsModal() {
             if (hPin && IsWindow(hPin)) {
                 PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
                 if (pData) {
+                    if (st.restoredAllDefaults) {
+                        pData->hideOutline = false;
+                        pData->smoothImage = false;
+                        int imgW = 32, imgH = 32;
+                        GetPinnedScaledDims(pData, imgW, imgH);
+                        EnsurePinnedWindowCache(pData, imgW, imgH, true);
+                    }
                     UpdatePinnedWindowLayout(hPin, pData, false);
                     InvalidateRect(hPin, nullptr, FALSE);
                 }
@@ -7700,7 +7906,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Options \x2192 Naming pattern (\x24D8)",   L"Click \x24D8 beside Restore default for acceptable syntax ({YYYY}, {MMMM}, {DDDD}, etc.)");
     addRow(L"Options \x2192 Restore everything to default", L"Reset all Options settings and shortcut keys back to factory defaults (with confirmation)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
-    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin, Close all pinned image, Options, etc.)");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin, Smooth / Unsmooth all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
     addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" or \"Pin on top\"");
 
     addSection(L"Custom area — window selection, aiming & size input");
@@ -7745,17 +7951,20 @@ void PepperSnapDaemon::ShowShortcutsModal() {
 
     addSection(L"Pin on top — floating window toolbar & mechanisms");
     addRow(L"You can pin multiple image at once", L"Pin multiple captures or opened images on top of your screen simultaneously");
+    addRow(L"Hover over pinned image (1s)",  L"Pop-up shows \"Double-click to hide/show toolbar\" and \"Double right-click to close\"");
     addRow(L"Drag pinned image",             L"Move floating window (snaps to screen edges; image can overflow screen)");
     addRow(L"Hold Shift + drag",             L"Temporarily disable screen-edge snapping while moving");
     addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar");
     addRow(L"Double right-click pinned image", L"Close pinned image");
+    addRow(L"Smooth / Unsmooth all pinned image", L"Tray menu button that cycles smoothing or unsmoothing the image filter across all pinned images");
+    addRow(L"Show / Hide outline on all pinned image", L"Tray menu button that cycles showing or hiding the red outline across all pinned images");
     addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
     addRow(L"Scroll / Ctrl + Scroll",        L"Zoom in or out (anchored to bottom-right corner or visible screen edge)");
     addActionRow(DBTN_ACT_ZOOM_OUT,     false, FormatLabelWithShortcut(L"Zoom out",                 hkPinZoomOut),   L"Scale pinned image down (anchored to bottom-right corner)");
     addActionRow(DBTN_ACT_ZOOM_IN,      false, FormatLabelWithShortcut(L"Zoom in",                  hkPinZoomIn),    L"Scale pinned image up (anchored to bottom-right corner)");
     addActionRow(DBTN_ACT_ZOOM_RESET,   false, FormatLabelWithShortcut(L"Reset to original size",   hkPinZoomReset), L"Restore 100% original pixel size (anchored to bottom-right corner)");
-    addActionRow(DBTN_ACT_PIN_OUTLINE,  false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),   L"Toggle red border outline around pinned image (default: on)");
-    addActionRow(DBTN_ACT_PIN_UNFILTER, false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),    L"Smooth image with filter when on; unfiltered (pixelated) when off (default: off)");
+    addActionRow(DBTN_ACT_PIN_OUTLINE,  false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),   L"Toggle red border outline around pinned image (status persists; default: on)");
+    addActionRow(DBTN_ACT_PIN_UNFILTER, false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),    L"Smooth image with filter when on; unfiltered (pixelated) when off (status persists; default: off)");
     addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image");
     addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder");
     addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),      L"Copy pinned image to clipboard");
@@ -8340,6 +8549,7 @@ void PepperSnapDaemon::ActionOcrAndClose() {
     if (alsoSaveOcrText) {
         CreateDirectoryW(saveFolder.c_str(), nullptr);
         std::wstring fn = FormatFilename(captureCounter++) + L".txt";
+        SaveSettings();
         std::wstring full = saveFolder + L"\\" + fn;
         HANDLE hFile = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE) {
@@ -8838,6 +9048,7 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
     }
     if (b.isColor) {
         g_Daemon.activeColor = b.swatchColor;
+        g_Daemon.SaveSettings();
         if (g_Daemon.selectedAnnotationId != -1) {
             g_Daemon.PushUndo();
             for (auto& a : g_Daemon.annotations) {
@@ -8852,6 +9063,7 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
     }
     if (b.isStroke) {
         g_Daemon.ApplyStrokeToSelectedAnnotation(b.strokeVal, true);
+        g_Daemon.SaveSettings();
         if (IsWindow(hWnd)) InvalidateRect(hWnd, nullptr, FALSE);
         return;
     }
@@ -10898,6 +11110,60 @@ void PepperSnapDaemon::MaybeRunScheduledUpdateCheck() {
 // System Tray Daemon Window Procedure
 // ----------------------------------------------------------------------------
 
+static bool ShouldTrayMenuSmoothAllPins() {
+    int pinCount = 0;
+    bool anyUnsmoothed = false;
+    auto inspectPin = [&](HWND hp) {
+        if (!hp || !IsWindow(hp)) return;
+        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+        if (!pData || !pData->bmp) return;
+        pinCount++;
+        if (!pData->smoothImage) {
+            anyUnsmoothed = true;
+        }
+    };
+    for (HWND hp : g_Daemon.pinnedWindows) {
+        inspectPin(hp);
+    }
+    HWND hPinExtra = nullptr;
+    while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+        if (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hPinExtra) == g_Daemon.pinnedWindows.end()) {
+            inspectPin(hPinExtra);
+        }
+    }
+    if (pinCount > 0) {
+        return anyUnsmoothed;
+    }
+    return !g_Daemon.smoothPinnedImage;
+}
+
+static bool ShouldTrayMenuShowOutlineOnAllPins() {
+    int pinCount = 0;
+    bool anyOutlineHidden = false;
+    auto inspectPin = [&](HWND hp) {
+        if (!hp || !IsWindow(hp)) return;
+        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+        if (!pData || !pData->bmp) return;
+        pinCount++;
+        if (pData->hideOutline) {
+            anyOutlineHidden = true;
+        }
+    };
+    for (HWND hp : g_Daemon.pinnedWindows) {
+        inspectPin(hp);
+    }
+    HWND hPinExtra = nullptr;
+    while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+        if (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hPinExtra) == g_Daemon.pinnedWindows.end()) {
+            inspectPin(hPinExtra);
+        }
+    }
+    if (pinCount > 0) {
+        return anyOutlineHidden;
+    }
+    return g_Daemon.hidePinnedOutline;
+}
+
 static void ShowTrayContextMenu(HWND hWnd) {
     POINT pt;
     GetCursorPos(&pt);
@@ -10906,13 +11172,21 @@ static void ShowTrayContextMenu(HWND hWnd) {
     std::wstring regMenu  = L"Custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkRegionSnip);
     std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);
     std::wstring prevMenu = L"Instant save previous custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPrevRegion);
+    const wchar_t* smoothPinsMenu = ShouldTrayMenuSmoothAllPins()
+        ? L"Smooth all pinned image"
+        : L"Unsmooth all pinned image";
+    const wchar_t* outlinePinsMenu = ShouldTrayMenuShowOutlineOnAllPins()
+        ? L"Show outline on all pinned image"
+        : L"Hide outline on all pinned image";
 
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_REGION,         regMenu.c_str());
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_FULL,           fullMenu.c_str());
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,    prevMenu.c_str());
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,     L"Open image to edit with PepperSnap...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE, L"Open image to pin on top...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CLOSE_PINS,     L"Close all pinned image");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_REGION,            regMenu.c_str());
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_FULL,              fullMenu.c_str());
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,       prevMenu.c_str());
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,        L"Open image to edit with PepperSnap...");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE,    L"Open image to pin on top...");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SMOOTH_PINS,       smoothPinsMenu);
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_OUTLINE_PINS, outlinePinsMenu);
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CLOSE_PINS,        L"Close all pinned image");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_FOLDER,   L"Open save folder...");
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPTIONS,       L"Options...");
@@ -11075,6 +11349,58 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     break;
                 case IDM_TRAY_OPTIONS:        g_Daemon.ShowOptionsModal(); break;
                 case IDM_TRAY_STARTUP_RUN:    g_Daemon.ToggleRunAtStartup(); break;
+                case IDM_TRAY_SMOOTH_PINS: {
+                    bool smoothNow = ShouldTrayMenuSmoothAllPins();
+                    g_Daemon.smoothPinnedImage = smoothNow;
+                    g_Daemon.SaveSettings();
+                    auto setSmoothOnPin = [&](HWND hp) {
+                        if (!hp || !IsWindow(hp)) return;
+                        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+                        if (!pData || !pData->bmp) return;
+                        if (pData->smoothImage != smoothNow) {
+                            pData->smoothImage = smoothNow;
+                            int imgW = 32, imgH = 32;
+                            GetPinnedScaledDims(pData, imgW, imgH);
+                            EnsurePinnedWindowCache(pData, imgW, imgH, true);
+                            InvalidateRect(hp, nullptr, FALSE);
+                        }
+                    };
+                    for (HWND hp : g_Daemon.pinnedWindows) {
+                        setSmoothOnPin(hp);
+                    }
+                    HWND hPinExtra = nullptr;
+                    while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+                        setSmoothOnPin(hPinExtra);
+                    }
+                    break;
+                }
+                case IDM_TRAY_SHOW_OUTLINE_PINS: {
+                    bool showOutlineNow = ShouldTrayMenuShowOutlineOnAllPins();
+                    bool targetHideOutline = !showOutlineNow;
+                    g_Daemon.hidePinnedOutline = targetHideOutline;
+                    g_Daemon.SaveSettings();
+                    auto setOutlineOnPin = [&](HWND hp) {
+                        if (!hp || !IsWindow(hp)) return;
+                        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+                        if (!pData || !pData->bmp) return;
+                        if (pData->hideOutline != targetHideOutline) {
+                            pData->hideOutline = targetHideOutline;
+                            int imgW = 32, imgH = 32;
+                            GetPinnedScaledDims(pData, imgW, imgH);
+                            EnsurePinnedWindowCache(pData, imgW, imgH, true);
+                            UpdatePinnedWindowLayout(hp, pData, false);
+                            InvalidateRect(hp, nullptr, FALSE);
+                        }
+                    };
+                    for (HWND hp : g_Daemon.pinnedWindows) {
+                        setOutlineOnPin(hp);
+                    }
+                    HWND hPinExtra = nullptr;
+                    while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+                        setOutlineOnPin(hPinExtra);
+                    }
+                    break;
+                }
                 case IDM_TRAY_CLOSE_PINS: {
                     HidePinnedBubbleTooltip();
                     std::vector<HWND> pinsToClose = g_Daemon.pinnedWindows;
