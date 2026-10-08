@@ -19,12 +19,14 @@
 #include <shlwapi.h>
 #include <dwmapi.h>
 #include <objidl.h>
+#include <wincodec.h>
 #include <uiautomation.h>
 #include <wininet.h>
 #include <gdiplus.h>
 
 #if defined(_MSC_VER)
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -57,6 +59,7 @@ using namespace Gdiplus;
 #define WM_TRIGGER_PREV_REGION (WM_USER + 104)
 #define WM_UPDATE_CHECK_RESULT (WM_USER + 105)
 #define WM_SHORTCUT_RECORDED   (WM_USER + 106)
+#define WM_PROCESS_PIN_QUEUE   (WM_USER + 107)
 
 #define COPYDATA_OPEN_IMAGE        0x5053494DUL
 #define COPYDATA_PIN_IMAGE         0x5053504EUL
@@ -81,6 +84,11 @@ enum class ImageFormat {
     BMP  = 3
 };
 
+enum class AnimationFormat {
+    GIF  = 0,
+    WEBP = 1
+};
+
 enum class UpdateCheckInterval {
     EveryDay    = 0,
     Every3Days  = 1,
@@ -99,6 +107,7 @@ enum TrayMenuID {
     IDM_TRAY_OPTIONS,
     IDM_TRAY_STARTUP_RUN,
     IDM_TRAY_SMOOTH_PINS,
+    IDM_TRAY_SHOW_TOOLBAR_PINS,
     IDM_TRAY_SHOW_OUTLINE_PINS,
     IDM_TRAY_CLOSE_PINS,
     IDM_TRAY_CHECK_UPDATE,
@@ -132,7 +141,10 @@ enum class DragMode {
     MovingAnnotation,
     DraggingAnnotationStart,
     DraggingAnnotationEnd,
-    DraggingHUD
+    DraggingHUD,
+    ResizingFrameStrip,
+    ScrollingFrameStrip,
+    SelectingFrameCards
 };
 
 struct PointF2D {
@@ -179,6 +191,7 @@ enum DockBtnID {
     DBTN_ACT_ZOOM_IN,
     DBTN_ACT_ZOOM_RESET,
     DBTN_ACT_PIN_OUTLINE,
+    DBTN_ACT_PIN_HIDE_TOOLBAR,
     DBTN_ACT_PIN_UNFILTER,
     DBTN_ACT_UNDO,
     DBTN_ACT_REDO,
@@ -187,16 +200,25 @@ enum DockBtnID {
     DBTN_ACT_OPTIONS,
     DBTN_ACT_HELP,
     DBTN_ACT_CLOSE,
-    DBTN_ACT_DRAG_HUD
+    DBTN_ACT_DRAG_HUD,
+    DBTN_ACT_FRAME_PLAY_PAUSE,
+    DBTN_ACT_FRAME_TOGGLE
 };
 
 struct PinnedWindowData {
     Bitmap* bmp = nullptr;
+    std::vector<Bitmap*> animFrames;
+    std::vector<int> animDelaysMs;
+    size_t curFrameIdx = 0;
     int origW = 0;
     int origH = 0;
     float scale = 1.0f;
     int screenImgX = 0;
     int screenImgY = 0;
+    int winX = 0;
+    int winY = 0;
+    int winW = 32;
+    int winH = 32;
     RECT imgRect{0, 0, 0, 0};
     RECT lastRgnImgRect{0, 0, 0, 0};
     RECT lastRgnStripRect{0, 0, 0, 0};
@@ -206,20 +228,25 @@ struct PinnedWindowData {
     bool hideOutline = false;
     bool smoothImage = false;
     bool dragging = false;
+    bool dragMoved = false;
     POINT dragStartMouse{0, 0};
     POINT dragStartWnd{0, 0};
     int hoveredBtnId = -1;
     int pressedBtnId = -1;
     POINT lastHoverMouse{-10000, -10000};
     bool pendingRightDblClickClose = false;
+    bool pendingLeftDblClickToggleToolbar = false;
+    bool pendingMiddleClickReset = false;
     bool showingImgHoverTip = false;
     bool trackingMouseLeave = false;
     std::vector<DockButton> buttons;
     HDC hCacheDC = nullptr;
     HBITMAP hCacheBmp = nullptr;
     HGDIOBJ hCacheOldBmp = nullptr;
+    DWORD* cachePixels = nullptr;
     int cachedImgW = 0;
     int cachedImgH = 0;
+    size_t cachedFrameIdx = (size_t)-1;
     bool cachedHideOutline = false;
     bool cachedSmooth = false;
     bool cachedHq = false;

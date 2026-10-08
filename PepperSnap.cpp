@@ -16,8 +16,10 @@ public:
     NOTIFYICONDATAW nid = {0};
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
+    std::vector<std::wstring> pendingPinFiles;
+    std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.6.5";
+    static constexpr const wchar_t* APP_VERSION = L"3.7.2";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -39,10 +41,13 @@ public:
     bool alsoSavePinned = true;
     bool alsoSaveOcrText = true;
     bool keepCursorOnScreenshot = false;
+    bool autoHideFrameList = true;
+    bool hidePinnedToolbar = false;
     bool hidePinnedOutline = false;
     bool smoothPinnedImage = false;
-    int optionsWindowHeight = 744;
+    int optionsWindowHeight = 772;
     int customizeKeysWindowHeight = 560;
+    int shortcutsWindowWidth = 880;
     int shortcutsWindowHeight = 560;
     int namingSyntaxWindowHeight = 706;
     bool autoCheckUpdates = true;
@@ -72,16 +77,24 @@ public:
     // Custom Area Toolbar Action Shortcut Bindings
     HotkeyBinding hkActUndo{ MOD_CONTROL, 'Z' };
     HotkeyBinding hkActRedo{ MOD_CONTROL, 'Y' };
+    HotkeyBinding hkActClear{ 0, 0 };
+    HotkeyBinding hkActOptions{ 0, 0 };
     HotkeyBinding hkActPin{ 0, 'F' };
     HotkeyBinding hkActOcr{ 0, 'O' };
+    HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+
+    // Multi-Frame GIF / WebP Editor Shortcut Bindings
+    HotkeyBinding hkFramePlayPause{ 0, VK_SPACE };
+    HotkeyBinding hkFrameToggleStrip{ 0, 0 };
 
     // Pinned Image Toolbar Shortcut Bindings
     HotkeyBinding hkPinZoomOut{ 0, VK_OEM_MINUS };
     HotkeyBinding hkPinZoomIn{ 0, VK_OEM_PLUS };
     HotkeyBinding hkPinZoomReset{ 0, '0' };
     HotkeyBinding hkPinOutline{ 0, 'O' };
+    HotkeyBinding hkPinHideToolbar{ 0, 'H' };
     HotkeyBinding hkPinSmooth{ 0, 'S' };
     HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
@@ -170,6 +183,50 @@ public:
     POINT dragHudOrigPos{0, 0};
     RECT hudBoundsRect{0, 0, 0, 0};
 
+    // Multi-Frame GIF / WebP Selector Strip State (Bottom of Edit with PepperSnap)
+    bool isSavingAsModalOpen = false;
+    Bitmap* overlaySingleImageBmp = nullptr;
+    std::vector<Bitmap*> overlayFrames;
+    std::vector<int> overlayFrameDelaysMs;
+    size_t overlayActiveFrameIdx = 0;
+    RECT overlayImgDrawRect{0, 0, 0, 0};
+    bool overlayFrameStripCollapsed = false;
+    int overlayFrameStripHeight = 142;
+    float overlayFrameScrollX = 0.0f;
+    float overlayFrameMaxScrollX = 0.0f;
+    int overlayHoveredFrameIdx = -1;
+    bool overlayToggleBtnHovered = false;
+    bool overlayPlayBtnHovered = false;
+    bool overlayFramesPlaying = false;
+    bool overlayTopResizeHovered = false;
+    bool overlayScrollbarHovered = false;
+    bool overlayScrollLeftBtnHovered = false;
+    bool overlayScrollRightBtnHovered = false;
+    RECT overlayFrameStripPanelRect{0, 0, 0, 0};
+    RECT overlayFrameStripToggleBtnRect{0, 0, 0, 0};
+    RECT overlayFrameStripPlayBtnRect{0, 0, 0, 0};
+    RECT overlayFrameStripResizeRect{0, 0, 0, 0};
+    RECT overlayFrameStripScrollTrackRect{0, 0, 0, 0};
+    RECT overlayFrameStripScrollThumbRect{0, 0, 0, 0};
+    RECT overlayFrameStripScrollLeftRect{0, 0, 0, 0};
+    RECT overlayFrameStripScrollRightRect{0, 0, 0, 0};
+    std::vector<RECT> overlayFrameCardRects;
+    int dragFrameStripStartY = 0;
+    int dragFrameStripOrigH = 142;
+    int dragFrameScrollStartX = 0;
+    float dragFrameScrollOrigX = 0.0f;
+
+    enum class FrameStripPressedItem {
+        None = 0,
+        ToggleCollapse,
+        PlayPause,
+        ScrollLeft,
+        ScrollRight,
+        FrameCard
+    };
+    FrameStripPressedItem overlayFramePressedItem = FrameStripPressedItem::None;
+    int overlayFramePressedCardIdx = -1;
+
     // Persistent Native GDI Surface Cache (eliminates per-frame fullscreen GDI+ DrawImage & alpha-blend lag)
     HDC hBrightDesktopDC = nullptr;
     HBITMAP hBrightDesktopBmp = nullptr;
@@ -227,9 +284,17 @@ public:
     void CloseRegionSnipOverlay();
     void OpenImageIntoOverlay();
     void OpenImageFileIntoOverlay(const std::wstring& filePath);
+    bool HasOverlayMultiFrames() const { return overlayFrames.size() > 1; }
+    void ClearOverlayFrames();
+    void SelectOverlayFrame(size_t frameIdx);
+    void ToggleOverlayFramePlayback();
+    void StopOverlayFramePlayback();
+    void EnsureActiveFrameVisibleInStrip();
+    void LayoutOverlayFrameStrip(int screenW, int screenH);
+    void RenderOverlayFrameStrip(Graphics& g, int screenW, int screenH);
     void OpenImageToPinOnTop();
     void OpenImageFileToPinOnTop(const std::wstring& filePath);
-    HWND CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale = 1.0f);
+    HWND CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale = 1.0f, std::vector<Bitmap*> animFrames = {}, std::vector<int> animDelaysMs = {});
 
     void CommitActiveTextBox();
     void CommitActiveSizeInput();
@@ -348,12 +413,16 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoSavePinned", alsoSavePinned ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoSaveOcrText", alsoSaveOcrText ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"KeepCursorOnScreenshot", keepCursorOnScreenshot ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"AutoHideFrameList", autoHideFrameList ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"HidePinnedToolbar", hidePinnedToolbar ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"HidePinnedOutline", hidePinnedOutline ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"SmoothPinnedImage", smoothPinnedImage ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowWidth", std::to_wstring(shortcutsWindowWidth).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowHeight", std::to_wstring(shortcutsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"NamingSyntaxWindowHeight", std::to_wstring(namingSyntaxWindowHeight).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"FrameStripHeight", std::to_wstring(overlayFrameStripHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ActiveColorARGB", std::to_wstring(activeColor.GetValue()).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ActiveStrokeWidth", std::to_wstring((int)std::round(activeStroke)).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CaptureCounter", std::to_wstring(captureCounter).c_str(), iniPath.c_str());
@@ -391,9 +460,10 @@ void PepperSnapDaemon::SaveSettings() const {
     writeHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy);
     writeHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut);
     writeHk(L"HkPinZoomInMod",     L"HkPinZoomInVk",     hkPinZoomIn);
-    writeHk(L"HkPinZoomResetMod",  L"HkPinZoomResetVk",  hkPinZoomReset);
-    writeHk(L"HkPinOutlineMod",    L"HkPinOutlineVk",    hkPinOutline);
-    writeHk(L"HkPinSmoothMod",     L"HkPinSmoothVk",     hkPinSmooth);
+    writeHk(L"HkPinZoomResetMod",   L"HkPinZoomResetVk",   hkPinZoomReset);
+    writeHk(L"HkPinOutlineMod",     L"HkPinOutlineVk",     hkPinOutline);
+    writeHk(L"HkPinHideToolbarMod", L"HkPinHideToolbarVk", hkPinHideToolbar);
+    writeHk(L"HkPinSmoothMod",      L"HkPinSmoothVk",      hkPinSmooth);
     writeHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs);
     writeHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave);
     writeHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy);
@@ -435,17 +505,23 @@ void PepperSnapDaemon::LoadSettings() {
     alsoSavePinned = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSavePinned", 1, iniPath.c_str()) != 0);
     alsoSaveOcrText = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSaveOcrText", 1, iniPath.c_str()) != 0);
     keepCursorOnScreenshot = (GetPrivateProfileIntW(L"PepperSnap", L"KeepCursorOnScreenshot", 0, iniPath.c_str()) != 0);
+    autoHideFrameList = (GetPrivateProfileIntW(L"PepperSnap", L"AutoHideFrameList", 1, iniPath.c_str()) != 0);
+    hidePinnedToolbar = (GetPrivateProfileIntW(L"PepperSnap", L"HidePinnedToolbar", 0, iniPath.c_str()) != 0);
     hidePinnedOutline = (GetPrivateProfileIntW(L"PepperSnap", L"HidePinnedOutline", 0, iniPath.c_str()) != 0);
     smoothPinnedImage = (GetPrivateProfileIntW(L"PepperSnap", L"SmoothPinnedImage", 0, iniPath.c_str()) != 0);
-    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 744, iniPath.c_str());
-    if (optWinH == 716) optWinH = 744;
+    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 772, iniPath.c_str());
+    if (optWinH == 716 || optWinH == 744) optWinH = 772;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
     int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 560, iniPath.c_str());
     customizeKeysWindowHeight = std::max(280, std::min(2160, ckWinH));
+    int scWinW = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowWidth", 880, iniPath.c_str());
+    shortcutsWindowWidth = std::max(680, std::min(3840, scWinW));
     int scWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowHeight", 560, iniPath.c_str());
     shortcutsWindowHeight = std::max(260, std::min(2160, scWinH));
     int nsWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"NamingSyntaxWindowHeight", 706, iniPath.c_str());
     namingSyntaxWindowHeight = std::max(260, std::min(2160, nsWinH));
+    int fsH = (int)GetPrivateProfileIntW(L"PepperSnap", L"FrameStripHeight", 142, iniPath.c_str());
+    overlayFrameStripHeight = std::max(92, std::min(600, fsH));
 
     WCHAR colBuf[64] = {0};
     GetPrivateProfileStringW(L"PepperSnap", L"ActiveColorARGB", L"", colBuf, 63, iniPath.c_str());
@@ -531,9 +607,10 @@ void PepperSnapDaemon::LoadSettings() {
     readHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy,       MOD_CONTROL,             'C');
     readHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut,    0,                       VK_OEM_MINUS);
     readHk(L"HkPinZoomInMod",     L"HkPinZoomInVk",     hkPinZoomIn,     0,                       VK_OEM_PLUS);
-    readHk(L"HkPinZoomResetMod",  L"HkPinZoomResetVk",  hkPinZoomReset,  0,                       '0');
-    readHk(L"HkPinOutlineMod",    L"HkPinOutlineVk",    hkPinOutline,    0,                       'O');
-    readHk(L"HkPinSmoothMod",     L"HkPinSmoothVk",     hkPinSmooth,     0,                       'S');
+    readHk(L"HkPinZoomResetMod",   L"HkPinZoomResetVk",   hkPinZoomReset,   0,                       '0');
+    readHk(L"HkPinOutlineMod",     L"HkPinOutlineVk",     hkPinOutline,     0,                       'O');
+    readHk(L"HkPinHideToolbarMod", L"HkPinHideToolbarVk", hkPinHideToolbar, 0,                       'H');
+    readHk(L"HkPinSmoothMod",      L"HkPinSmoothVk",      hkPinSmooth,      0,                       'S');
     readHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs,     MOD_CONTROL | MOD_SHIFT, 'S');
     readHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave,       MOD_CONTROL,             'S');
     readHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy,       MOD_CONTROL,             'C');
@@ -892,11 +969,42 @@ void PepperSnapDaemon::DestroyCustomCursors() {
 }
 
 void PepperSnapDaemon::UpdateOverlayCursor(int mx, int my) {
+    if (dragMode == DragMode::ResizingFrameStrip) {
+        SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+        return;
+    }
+    if (dragMode == DragMode::ScrollingFrameStrip) {
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return;
+    }
     if (dragMode == DragMode::DraggingHUD) {
         SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
         return;
     }
     POINT pt{ mx, my };
+    if (HasOverlayMultiFrames()) {
+        if (PtInRect(&overlayFrameStripToggleBtnRect, pt)) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return;
+        }
+        if (!overlayFrameStripCollapsed) {
+            if (PtInRect(&overlayFrameStripResizeRect, pt)) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+                return;
+            }
+            if (PtInRect(&overlayFrameStripPanelRect, pt)) {
+                if (overlayHoveredFrameIdx >= 0 ||
+                    PtInRect(&overlayFrameStripScrollTrackRect, pt) ||
+                    PtInRect(&overlayFrameStripScrollLeftRect, pt) ||
+                    PtInRect(&overlayFrameStripScrollRightRect, pt)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                } else {
+                    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                }
+                return;
+            }
+        }
+    }
     for (const auto& b : dockButtons) {
         if (PtInRect(&b.rect, pt)) {
             if (b.id == DBTN_ACT_DRAG_HUD) {
@@ -1131,11 +1239,14 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
     std::wstring editCmd   = L"\"" + std::wstring(exePath) + L"\" --edit \"%1\"";
     std::wstring pinCmd    = L"\"" + std::wstring(exePath) + L"\" --pin \"%1\"";
 
-    auto writeSingleVerb = [&](const std::wstring& verbKeyPath, const std::wstring& lbl, const std::wstring& cmd) {
+    auto writeSingleVerb = [&](const std::wstring& verbKeyPath, const std::wstring& lbl, const std::wstring& cmd, const wchar_t* multiSelectModel) {
         HKEY hVerbKey = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, verbKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &hVerbKey, nullptr) == ERROR_SUCCESS) {
             RegSetValueExW(hVerbKey, nullptr, 0, REG_SZ, (const BYTE*)lbl.c_str(), (DWORD)((lbl.size() + 1) * sizeof(wchar_t)));
             RegSetValueExW(hVerbKey, L"Icon", 0, REG_SZ, (const BYTE*)iconVal.c_str(), (DWORD)((iconVal.size() + 1) * sizeof(wchar_t)));
+            if (multiSelectModel && multiSelectModel[0] != L'\0') {
+                RegSetValueExW(hVerbKey, L"MultiSelectModel", 0, REG_SZ, (const BYTE*)multiSelectModel, (DWORD)((wcslen(multiSelectModel) + 1) * sizeof(wchar_t)));
+            }
             RegCloseKey(hVerbKey);
         }
         std::wstring cmdKeyPath = verbKeyPath + L"\\command";
@@ -1147,8 +1258,8 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
     };
 
     auto writeShellVerbs = [&](const std::wstring& baseKeyPath) {
-        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapEdit", editLabel, editCmd);
-        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapPin",  pinLabel,  pinCmd);
+        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapEdit", editLabel, editCmd, L"Single");
+        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapPin",  pinLabel,  pinCmd,  L"Player");
     };
 
     // Register ONLY for image files via SystemFileAssociations\image and common image extensions
@@ -1156,8 +1267,20 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
     const wchar_t* imgExts[] = {
         L".png", L".jpg", L".jpeg", L".webp", L".bmp", L".gif", L".tif", L".tiff", L".ico"
     };
+    const wchar_t* perceivedImg = L"image";
     for (const wchar_t* ext : imgExts) {
         writeShellVerbs(std::wstring(L"Software\\Classes\\SystemFileAssociations\\") + ext);
+        HKEY hExtKey = nullptr;
+        std::wstring extClassPath = std::wstring(L"Software\\Classes\\") + ext;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, extClassPath.c_str(), 0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, &hExtKey, nullptr) == ERROR_SUCCESS) {
+            RegSetValueExW(hExtKey, L"PerceivedType", 0, REG_SZ, (const BYTE*)perceivedImg, (DWORD)((wcslen(perceivedImg) + 1) * sizeof(wchar_t)));
+            WCHAR progIdBuf[256] = {0};
+            DWORD cbProg = sizeof(progIdBuf);
+            if (RegQueryValueExW(hExtKey, nullptr, nullptr, nullptr, (LPBYTE)progIdBuf, &cbProg) == ERROR_SUCCESS && progIdBuf[0] != L'\0') {
+                writeShellVerbs(std::wstring(L"Software\\Classes\\") + progIdBuf);
+            }
+            RegCloseKey(hExtKey);
+        }
     }
 }
 
@@ -1713,15 +1836,27 @@ bool PepperSnapDaemon::SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path) {
         }
     } bw;
 
-    bw.bytes.reserve(w * h * 3 + 512);
-    bw.Write(0x2F, 8);       // VP8L signature byte
-    bw.Write(w - 1, 14);     // 14-bit width - 1
-    bw.Write(h - 1, 14);     // 14-bit height - 1
-    bw.Write(0, 1);          // alpha_is_used = 0
-    bw.Write(0, 3);          // version = 0
-    bw.Write(0, 1);          // no transforms
-    bw.Write(0, 1);          // no color cache
-    bw.Write(0, 1);          // no meta prefix codes
+    const BYTE* scan0 = (const BYTE*)data.Scan0;
+    bool hasAlpha = false;
+    for (UINT y = 0; y < h && !hasAlpha; ++y) {
+        const DWORD* row = (const DWORD*)(scan0 + y * data.Stride);
+        for (UINT x = 0; x < w; ++x) {
+            if ((row[x] >> 24) < 255) {
+                hasAlpha = true;
+                break;
+            }
+        }
+    }
+
+    bw.bytes.reserve(w * h * (hasAlpha ? 4 : 3) + 512);
+    bw.Write(0x2F, 8);               // VP8L signature byte
+    bw.Write(w - 1, 14);             // 14-bit width - 1
+    bw.Write(h - 1, 14);             // 14-bit height - 1
+    bw.Write(hasAlpha ? 1 : 0, 1);   // alpha_is_used
+    bw.Write(0, 3);                  // version = 0
+    bw.Write(0, 1);                  // no transforms
+    bw.Write(0, 1);                  // no color cache
+    bw.Write(0, 1);                  // no meta prefix codes
 
     auto writeIdentity8BitTree = [&](int alphabetSize) {
         bw.Write(0, 1);      // normal code length tree
@@ -1735,8 +1870,12 @@ bool PepperSnapDaemon::SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path) {
     writeIdentity8BitTree(280); // Green + length codes
     writeIdentity8BitTree(256); // Red
     writeIdentity8BitTree(256); // Blue
-    // Alpha: single-symbol tree for 255 (0 bits per pixel)
-    bw.Write(1, 1); bw.Write(0, 1); bw.Write(1, 1); bw.Write(255, 8);
+    if (hasAlpha) {
+        writeIdentity8BitTree(256); // Full 8-bit Alpha channel
+    } else {
+        // Alpha: single-symbol tree for 255 (0 bits per pixel)
+        bw.Write(1, 1); bw.Write(0, 1); bw.Write(1, 1); bw.Write(255, 8);
+    }
     // Distance: single-symbol tree for 0
     bw.Write(1, 1); bw.Write(0, 1); bw.Write(0, 1); bw.Write(0, 1);
 
@@ -1747,7 +1886,6 @@ bool PepperSnapDaemon::SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path) {
         rev8[i] = r;
     }
 
-    const BYTE* scan0 = (const BYTE*)data.Scan0;
     for (UINT y = 0; y < h; ++y) {
         const DWORD* row = (const DWORD*)(scan0 + y * data.Stride);
         for (UINT x = 0; x < w; ++x) {
@@ -1755,9 +1893,13 @@ bool PepperSnapDaemon::SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path) {
             BYTE b = (BYTE)(px & 0xFF);
             BYTE g = (BYTE)((px >> 8) & 0xFF);
             BYTE r = (BYTE)((px >> 16) & 0xFF);
+            BYTE a = (BYTE)((px >> 24) & 0xFF);
             bw.Write(rev8[g], 8);
             bw.Write(rev8[r], 8);
             bw.Write(rev8[b], 8);
+            if (hasAlpha) {
+                bw.Write(rev8[a], 8);
+            }
         }
     }
     bmp->UnlockBits(&data);
@@ -3239,7 +3381,32 @@ Bitmap* PepperSnapDaemon::RenderCroppedRegionBitmap() {
     int rh = std::min(vScreenH - ry, (int)std::abs(selRect.bottom - selRect.top));
     if (rw < 1 || rh < 1) return nullptr;
 
-    Bitmap* out = frozenDesktopBmp->Clone(rx, ry, rw, rh, PixelFormat32bppARGB);
+    Bitmap* out = nullptr;
+    Bitmap* activeImageSource = (!overlayFrames.empty() && overlayActiveFrameIdx < overlayFrames.size())
+        ? overlayFrames[overlayActiveFrameIdx]
+        : overlaySingleImageBmp;
+    if (activeImageSource && overlayImgDrawRect.right > overlayImgDrawRect.left && overlayImgDrawRect.bottom > overlayImgDrawRect.top) {
+        out = new Bitmap(rw, rh, PixelFormat32bppARGB);
+        if (out) {
+            Graphics gOut(out);
+            gOut.SetCompositingMode(CompositingModeSourceCopy);
+            gOut.Clear(Color(0, 0, 0, 0));
+            gOut.SetCompositingMode(CompositingModeSourceOver);
+            gOut.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+            gOut.SetPixelOffsetMode(PixelOffsetModeHalf);
+            int drawX = overlayImgDrawRect.left - rx;
+            int drawY = overlayImgDrawRect.top - ry;
+            int drawW = overlayImgDrawRect.right - overlayImgDrawRect.left;
+            int drawH = overlayImgDrawRect.bottom - overlayImgDrawRect.top;
+            ImageAttributes ia;
+            ia.SetWrapMode(WrapModeTileFlipXY);
+            gOut.DrawImage(activeImageSource, Rect(drawX, drawY, drawW, drawH),
+                           0, 0, (INT)activeImageSource->GetWidth(), (INT)activeImageSource->GetHeight(), UnitPixel, &ia);
+        }
+    }
+    if (!out) {
+        out = frozenDesktopBmp->Clone(rx, ry, rw, rh, PixelFormat32bppARGB);
+    }
     if (!out) return nullptr;
 
     // Pass 1: Real-time pixelation filters (Mosaic Square & Mosaic Circle) applied directly to cropped bitmap
@@ -3541,12 +3708,37 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
             break;
         }
         case DBTN_ACT_PIN_OUTLINE: {
-            // Dotted-line outline icon (between Zoom Reset and Unfilter)
+            // Dotted-line outline icon (between Zoom Reset and Hide Toolbar)
             Pen dotPen(Color(255, 248, 250, 252), 1.7f);
             REAL dashVals[2] = { 1.6f, 1.8f };
             dotPen.SetDashPattern(dashVals, 2);
             dotPen.SetLineJoin(LineJoinMiter);
             g.DrawRectangle(&dotPen, cx - 6.5f, cy - 5.5f, 13.0f, 11.0f);
+            break;
+        }
+        case DBTN_ACT_PIN_HIDE_TOOLBAR: {
+            // Typical eye icon (Hide / Show toolbar)
+            Pen eyePen(Color(255, 248, 250, 252), 1.65f);
+            eyePen.SetStartCap(LineCapRound);
+            eyePen.SetEndCap(LineCapRound);
+            eyePen.SetLineJoin(LineJoinRound);
+            GraphicsPath eyePath;
+            PointF topPts[3] = {
+                PointF(cx - 7.4f, cy),
+                PointF(cx,        cy - 4.9f),
+                PointF(cx + 7.4f, cy)
+            };
+            PointF botPts[3] = {
+                PointF(cx + 7.4f, cy),
+                PointF(cx,        cy + 4.9f),
+                PointF(cx - 7.4f, cy)
+            };
+            eyePath.StartFigure();
+            eyePath.AddCurve(topPts, 3, 0.55f);
+            eyePath.AddCurve(botPts, 3, 0.55f);
+            eyePath.CloseFigure();
+            g.DrawPath(&eyePen, &eyePath);
+            g.DrawEllipse(&eyePen, cx - 2.2f, cy - 2.2f, 4.4f, 4.4f);
             break;
         }
         case DBTN_ACT_PIN_UNFILTER: {
@@ -3982,8 +4174,10 @@ static void FreePinnedWindowCache(PinnedWindowData* data) {
         DeleteObject(data->hCacheBmp);
         data->hCacheBmp = nullptr;
     }
+    data->cachePixels = nullptr;
     data->cachedImgW = 0;
     data->cachedImgH = 0;
+    data->cachedFrameIdx = (size_t)-1;
     data->cachedHq = false;
 }
 
@@ -4156,8 +4350,12 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
         HidePinnedBubbleTooltip();
         return;
     }
-    const wchar_t* line1Text = data->hideToolbar ? L"Double-click to show toolbar" : L"Double-click to hide toolbar";
-    const wchar_t* line2Text = L"Double right-click to close";
+    const wchar_t* lines[4] = {
+        data->hideToolbar ? L"Double-click to show toolbar" : L"Double-click to hide toolbar",
+        L"Double right-click to close",
+        L"Scroll to resize",
+        L"Middle-click to reset size"
+    };
     static bool s_tipReg = false;
     if (!s_tipReg) {
         WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
@@ -4182,16 +4380,19 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
 
     FontFamily ff(L"Segoe UI");
     Font tipFont(&ff, 11.5f, FontStyleBold, UnitPixel);
-    RectF measured1, measured2;
+    float maxLineW = 0.0f;
     {
         Graphics gMeasure(hScreen);
         gMeasure.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-        gMeasure.MeasureString(line1Text, -1, &tipFont, PointF(0, 0), &measured1);
-        gMeasure.MeasureString(line2Text, -1, &tipFont, PointF(0, 0), &measured2);
+        for (int i = 0; i < 4; ++i) {
+            RectF measured;
+            gMeasure.MeasureString(lines[i], -1, &tipFont, PointF(0, 0), &measured);
+            if (measured.Width > maxLineW) maxLineW = measured.Width;
+        }
     }
 
-    int bw = (int)std::ceil(std::max(measured1.Width, measured2.Width)) + 20;
-    int bh = 44;
+    int bw = (int)std::ceil(maxLineW) + 20;
+    int bh = 80;
     int tailH = 7;
     int totalW = bw + 4;
     int totalH = bh + tailH + 4;
@@ -4248,10 +4449,10 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
             sf.SetAlignment(StringAlignmentCenter);
             sf.SetLineAlignment(StringAlignmentCenter);
             SolidBrush textBr(Color(255, 248, 250, 252));
-            RectF line1Rc(rx, ry + 4.0f, rw, 18.0f);
-            RectF line2Rc(rx, ry + 22.0f, rw, 18.0f);
-            g.DrawString(line1Text, -1, &tipFont, line1Rc, &sf, &textBr);
-            g.DrawString(line2Text, -1, &tipFont, line2Rc, &sf, &textBr);
+            for (int i = 0; i < 4; ++i) {
+                RectF lineRc(rx, ry + 4.0f + i * 18.0f, rw, 18.0f);
+                g.DrawString(lines[i], -1, &tipFont, lineRc, &sf, &textBr);
+            }
         }
 
         POINT ptSrc = { 0, 0 };
@@ -4272,15 +4473,16 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
     if (!data || !data->bmp || imgW <= 0 || imgH <= 0) return;
     bool hideOutline = data->hideOutline;
     bool smooth = data->smoothImage;
-    if (data->hCacheDC && data->hCacheBmp &&
+    if (data->hCacheDC && data->hCacheBmp && data->cachePixels &&
         data->cachedImgW == imgW && data->cachedImgH == imgH &&
+        data->cachedFrameIdx == data->curFrameIdx &&
         data->cachedHideOutline == hideOutline &&
         data->cachedSmooth == smooth &&
         (!smooth || data->cachedHq || !highQuality)) {
         return;
     }
 
-    if (!data->hCacheDC || !data->hCacheBmp || data->cachedImgW != imgW || data->cachedImgH != imgH) {
+    if (!data->hCacheDC || !data->hCacheBmp || !data->cachePixels || data->cachedImgW != imgW || data->cachedImgH != imgH) {
         FreePinnedWindowCache(data);
         HDC hScreen = GetDC(nullptr);
         data->hCacheDC = CreateCompatibleDC(hScreen);
@@ -4293,58 +4495,172 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
         bmi.bmiHeader.biCompression = BI_RGB;
         void* pvBits = nullptr;
         data->hCacheBmp = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
-        if (!data->hCacheBmp && hScreen) {
-            data->hCacheBmp = CreateCompatibleBitmap(hScreen, imgW, imgH);
-        }
+        data->cachePixels = (DWORD*)pvBits;
         if (hScreen) ReleaseDC(nullptr, hScreen);
-        if (!data->hCacheDC || !data->hCacheBmp) {
+        if (!data->hCacheDC || !data->hCacheBmp || !data->cachePixels) {
             FreePinnedWindowCache(data);
             return;
         }
         data->hCacheOldBmp = SelectObject(data->hCacheDC, data->hCacheBmp);
     }
 
-    Graphics g(data->hCacheDC);
-    g.SetCompositingMode(CompositingModeSourceCopy);
-    g.SetPixelOffsetMode(PixelOffsetModeHalf);
+    memset(data->cachePixels, 0, (size_t)imgW * (size_t)imgH * sizeof(DWORD));
+    {
+        Bitmap cacheSurface(imgW, imgH, imgW * 4, PixelFormat32bppPARGB, (BYTE*)data->cachePixels);
+        Graphics g(&cacheSurface);
+        g.SetCompositingMode(CompositingModeSourceCopy);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
 
-    long long totalPixels = (long long)imgW * (long long)imgH;
-    if (!smooth) {
-        // Button OFF (default): image is unfiltered so zoomed pixels stay crisp and pixelated
-        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
-    } else if (!highQuality) {
-        // Button ON: smooth filter active
-        g.SetInterpolationMode(InterpolationModeBilinear);
-    } else {
-        g.SetInterpolationMode(totalPixels > (2560LL * 1440LL) ? InterpolationModeBilinear : InterpolationModeHighQualityBicubic);
+        long long totalPixels = (long long)imgW * (long long)imgH;
+        if (!smooth) {
+            // Button OFF (default): image is unfiltered so zoomed pixels stay crisp and pixelated
+            g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+        } else if (!highQuality) {
+            // Button ON: smooth filter active
+            g.SetInterpolationMode(InterpolationModeBilinear);
+        } else {
+            g.SetInterpolationMode(totalPixels > (2560LL * 1440LL) ? InterpolationModeBilinear : InterpolationModeHighQualityBicubic);
+        }
+
+        ImageAttributes ia;
+        ia.SetWrapMode(WrapModeTileFlipXY);
+        g.DrawImage(
+            data->bmp,
+            Rect(0, 0, imgW, imgH),
+            0, 0, data->origW, data->origH,
+            UnitPixel,
+            &ia
+        );
+
+        if (!hideOutline) {
+            g.SetCompositingMode(CompositingModeSourceOver);
+            g.SetSmoothingMode(SmoothingModeNone);
+            g.SetPixelOffsetMode(PixelOffsetModeNone);
+            Pen border1px(Color(255, 239, 68, 68), 1.0f);
+            g.DrawRectangle(&border1px, 0, 0, imgW - 1, imgH - 1);
+            if (imgW >= 4 && imgH >= 4) {
+                g.DrawRectangle(&border1px, 1, 1, imgW - 3, imgH - 3);
+            }
+        }
     }
 
-    ImageAttributes ia;
-    ia.SetWrapMode(WrapModeTileFlipXY);
-    g.DrawImage(
-        data->bmp,
-        Rect(0, 0, imgW, imgH),
-        0, 0, data->origW, data->origH,
-        UnitPixel,
-        &ia
-    );
-
-    if (!hideOutline) {
-        g.SetCompositingMode(CompositingModeSourceOver);
-        g.SetSmoothingMode(SmoothingModeNone);
-        g.SetPixelOffsetMode(PixelOffsetModeNone);
-        Pen border1px(Color(255, 239, 68, 68), 1.0f);
-        g.DrawRectangle(&border1px, 0, 0, imgW - 1, imgH - 1);
-        if (imgW >= 4 && imgH >= 4) {
-            g.DrawRectangle(&border1px, 1, 1, imgW - 3, imgH - 3);
+    // Ensure transparent pixels inside the image rect have alpha >= 1 (0.39% opacity, visually 100% transparent
+    // over desktop while remaining mouse-interactive for dragging, zooming, and double-clicking)
+    size_t totalPx = (size_t)imgW * (size_t)imgH;
+    for (size_t i = 0; i < totalPx; ++i) {
+        if ((data->cachePixels[i] >> 24) == 0) {
+            data->cachePixels[i] = 0x01000000u;
         }
     }
 
     data->cachedImgW = imgW;
     data->cachedImgH = imgH;
+    data->cachedFrameIdx = data->curFrameIdx;
     data->cachedHideOutline = hideOutline;
     data->cachedSmooth = smooth;
     data->cachedHq = !smooth ? true : highQuality;
+}
+
+static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
+    if (!hWnd || !IsWindow(hWnd) || !data || !data->bmp) return;
+    int imgW = 32, imgH = 32;
+    GetPinnedScaledDims(data, imgW, imgH);
+    EnsurePinnedWindowCache(data, imgW, imgH, data->cachedHq || ((long long)imgW * (long long)imgH <= 960LL * 540LL));
+    if (!data->cachePixels) return;
+
+    int winW = std::max(1, data->winW);
+    int winH = std::max(1, data->winH);
+
+    HDC hScreen = GetDC(nullptr);
+    if (!hScreen) return;
+    HDC memDC = CreateCompatibleDC(hScreen);
+    BITMAPINFO bmi = {0};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = winW;
+    bmi.bmiHeader.biHeight = -winH;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* pvBits = nullptr;
+    HBITMAP hBmp = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    if (memDC && hBmp && pvBits) {
+        HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
+        DWORD* dstPixels = (DWORD*)pvBits;
+        memset(dstPixels, 0, (size_t)winW * (size_t)winH * sizeof(DWORD));
+
+        int imgLeft = data->imgRect.left;
+        int imgTop  = data->imgRect.top;
+        for (int y = 0; y < imgH; ++y) {
+            int dy = imgTop + y;
+            if (dy < 0 || dy >= winH) continue;
+            int copyX = std::max(0, imgLeft);
+            int srcX  = copyX - imgLeft;
+            int copyW = std::min(imgW - srcX, winW - copyX);
+            if (copyW > 0) {
+                memcpy(dstPixels + (size_t)dy * winW + copyX,
+                       data->cachePixels + (size_t)y * imgW + srcX,
+                       (size_t)copyW * sizeof(DWORD));
+            }
+        }
+
+        bool suppressToolbar = data->hideToolbar || (data->dragging && data->dragMoved);
+        if (!suppressToolbar && !data->buttons.empty()) {
+            Bitmap surface(winW, winH, winW * 4, PixelFormat32bppPARGB, (BYTE*)pvBits);
+            Graphics g(&surface);
+            g.SetCompositingMode(CompositingModeSourceOver);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+
+            for (const auto& b : data->buttons) {
+                int bx = (int)b.rect.left;
+                int by = (int)b.rect.top;
+                int bw = (int)(b.rect.right - b.rect.left);
+                int bh = (int)(b.rect.bottom - b.rect.top);
+                RectF rf((float)bx, (float)by, (float)bw, (float)bh);
+                bool hovered = (b.id == data->hoveredBtnId);
+                bool pressed = (b.id == data->pressedBtnId && hovered);
+                bool activeToggleBtn = (b.id == DBTN_ACT_PIN_OUTLINE && !data->hideOutline) ||
+                                       (b.id == DBTN_ACT_PIN_UNFILTER && data->smoothImage);
+                Color bgCol = Color(245, 15, 23, 42);
+                if (b.isPrimaryAction) {
+                    bgCol = pressed ? Color(255, 185, 28, 28) : (hovered ? Color(255, 220, 38, 38) : Color(255, 239, 68, 68));
+                } else if (activeToggleBtn) {
+                    bgCol = pressed ? Color(255, 71, 85, 105) : (hovered ? Color(255, 51, 65, 85) : Color(255, 30, 41, 59));
+                } else if (pressed) {
+                    bgCol = Color(255, 71, 85, 105);
+                } else if (hovered) {
+                    bgCol = Color(255, 51, 65, 85);
+                }
+                SolidBrush btnBg(bgCol);
+                Pen btnBorder(activeToggleBtn ? Color(255, 239, 68, 68) : Color(235, 51, 65, 85), 1.0f);
+
+                GraphicsState stBtn = g.Save();
+                g.SetSmoothingMode(SmoothingModeNone);
+                g.SetPixelOffsetMode(PixelOffsetModeNone);
+                g.FillRectangle(&btnBg, bx, by, bw, bh);
+                g.Restore(stBtn);
+
+                PepperSnapDaemon::DrawDockButtonIcon(g, b, rf);
+
+                GraphicsState stOutline = g.Save();
+                g.SetSmoothingMode(SmoothingModeNone);
+                g.SetPixelOffsetMode(PixelOffsetModeNone);
+                g.DrawRectangle(&btnBorder, bx, by, bw - 1, bh - 1);
+                g.Restore(stOutline);
+            }
+        }
+
+        POINT ptSrc = { 0, 0 };
+        POINT ptDst = { data->winX, data->winY };
+        SIZE szWnd = { winW, winH };
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        UpdateLayeredWindow(hWnd, hScreen, &ptDst, &szWnd, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
+
+        SelectObject(memDC, oldBmp);
+    }
+    if (hBmp) DeleteObject(hBmp);
+    if (memDC) DeleteDC(memDC);
+    ReleaseDC(nullptr, hScreen);
 }
 
 static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWindow = true) {
@@ -4359,20 +4675,17 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
 
     struct PinBtnSpec { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     const wchar_t* outlineLbl = data->hideOutline ? L"Show outline" : L"Hide outline";
-    PinBtnSpec specs[9] = {
-        { DBTN_ACT_ZOOM_OUT,     toolBtnW,           L"",     FormatLabelWithShortcut(L"Zoom out",                g_Daemon.hkPinZoomOut),   false },
-        { DBTN_ACT_ZOOM_IN,      toolBtnW,           L"",     FormatLabelWithShortcut(L"Zoom in",                 g_Daemon.hkPinZoomIn),    false },
-        { DBTN_ACT_ZOOM_RESET,   toolBtnW,           L"",     FormatLabelWithShortcut(L"Reset to original size",  g_Daemon.hkPinZoomReset), false },
-        { DBTN_ACT_PIN_OUTLINE,  toolBtnW,           L"",     FormatLabelWithShortcut(outlineLbl,                 g_Daemon.hkPinOutline),   false },
-        { DBTN_ACT_PIN_UNFILTER, toolBtnW,           L"",     FormatLabelWithShortcut(L"Smooth the image",        g_Daemon.hkPinSmooth),    false },
-        { DBTN_ACT_SAVE_AS,      toolBtnW,           L"",     FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",g_Daemon.hkPinSaveAs),    false },
-        { DBTN_ACT_SAVE,         toolBtnW,           L"",     FormatLabelWithShortcut(L"Quick save",              g_Daemon.hkPinSave),      false },
-        { DBTN_ACT_COPY,         toolBtnW * 2 + gap, L"Copy", FormatLabelWithShortcut(L"Copy to clipboard",       g_Daemon.hkPinCopy),      true  },
-        { DBTN_ACT_CLOSE,        toolBtnW,           L"",     FormatLabelWithShortcut(L"Close pinned image",      g_Daemon.hkPinClose),     false }
+    PinBtnSpec specs[6] = {
+        { DBTN_ACT_PIN_OUTLINE,  toolBtnW,           L"",     FormatLabelWithShortcut(outlineLbl,                  g_Daemon.hkPinOutline),  false },
+        { DBTN_ACT_PIN_UNFILTER, toolBtnW,           L"",     FormatLabelWithShortcut(L"Smooth the image",         g_Daemon.hkPinSmooth),   false },
+        { DBTN_ACT_SAVE_AS,      toolBtnW,           L"",     FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", g_Daemon.hkPinSaveAs),   false },
+        { DBTN_ACT_SAVE,         toolBtnW,           L"",     FormatLabelWithShortcut(L"Quick save",               g_Daemon.hkPinSave),     false },
+        { DBTN_ACT_COPY,         toolBtnW * 2 + gap, L"Copy", FormatLabelWithShortcut(L"Copy to clipboard",        g_Daemon.hkPinCopy),     true  },
+        { DBTN_ACT_CLOSE,        toolBtnW,           L"",     FormatLabelWithShortcut(L"Close pinned image",       g_Daemon.hkPinClose),    false }
     };
 
     int stripW = 0;
-    for (int i = 0; i < 9; ++i) {
+    for (int i = 0; i < 6; ++i) {
         stripW += specs[i].w + (i > 0 ? gap : 0);
     }
 
@@ -4405,22 +4718,27 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     int sStripL = sStripR - stripW;
     int sStripB = sStripT + actBtnH;
 
-    int winL = data->hideToolbar ? sImgL : std::min(sImgL, sStripL);
-    int winT = data->hideToolbar ? sImgT : std::min(sImgT, sStripT);
-    int winR = data->hideToolbar ? sImgR : std::max(sImgR, sStripR);
-    int winB = data->hideToolbar ? sImgB : std::max(sImgB, sStripB);
+    bool suppressToolbar = data->hideToolbar || (data->dragging && data->dragMoved);
+    int winL = suppressToolbar ? sImgL : std::min(sImgL, sStripL);
+    int winT = suppressToolbar ? sImgT : std::min(sImgT, sStripT);
+    int winR = suppressToolbar ? sImgR : std::max(sImgR, sStripR);
+    int winB = suppressToolbar ? sImgB : std::max(sImgB, sStripB);
     int winW = std::max(1, winR - winL);
     int winH = std::max(1, winB - winT);
 
+    data->winX = winL;
+    data->winY = winT;
+    data->winW = winW;
+    data->winH = winH;
     data->imgRect = { sImgL - winL, sImgT - winT, sImgR - winL, sImgB - winT };
 
     RECT curStripRect = { 0, 0, 0, 0 };
     data->buttons.clear();
-    if (!data->hideToolbar) {
+    if (!suppressToolbar) {
         int bx = sStripL - winL;
         int by = sStripT - winT;
         curStripRect = { bx, by, bx + stripW, by + actBtnH };
-        for (int i = 0; i < 9; ++i) {
+        for (int i = 0; i < 6; ++i) {
             DockButton b;
             b.id = specs[i].id;
             b.rect = { bx, by, bx + specs[i].w, by + actBtnH };
@@ -4438,29 +4756,19 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
 
     if (hWnd) {
         bool rgnChanged = !data->hasAppliedRgn ||
-                          data->lastRgnHideToolbar != data->hideToolbar ||
+                          data->lastRgnHideToolbar != suppressToolbar ||
                           !EqualRect(&data->lastRgnImgRect, &data->imgRect) ||
                           !EqualRect(&data->lastRgnStripRect, &curStripRect);
         if (rgnChanged) {
-            HRGN hRgn = CreateRectRgn(data->imgRect.left, data->imgRect.top, data->imgRect.right, data->imgRect.bottom);
-            for (const auto& b : data->buttons) {
-                HRGN hBtnRgn = CreateRectRgn(b.rect.left, b.rect.top, b.rect.right, b.rect.bottom);
-                CombineRgn(hRgn, hRgn, hBtnRgn, RGN_OR);
-                DeleteObject(hBtnRgn);
-            }
-            SetWindowRgn(hWnd, hRgn, TRUE);
             data->lastRgnImgRect = data->imgRect;
             data->lastRgnStripRect = curStripRect;
-            data->lastRgnHideToolbar = data->hideToolbar;
+            data->lastRgnHideToolbar = suppressToolbar;
             data->hasAppliedRgn = true;
-        }
-
-        if (resizeWindow) {
-            UINT swpFlags = SWP_NOACTIVATE | SWP_NOZORDER | (rgnChanged ? SWP_NOCOPYBITS : SWP_NOSIZE);
-            SetWindowPos(hWnd, nullptr, winL, winT, winW, winH, swpFlags);
-            if (rgnChanged) {
-                InvalidateRect(hWnd, nullptr, FALSE);
-            }
+            RenderPinnedLayeredWindow(hWnd, data);
+        } else if (resizeWindow) {
+            SetWindowPos(hWnd, nullptr, winL, winT, winW, winH, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE);
+        } else {
+            RenderPinnedLayeredWindow(hWnd, data);
         }
     }
 }
@@ -4537,7 +4845,7 @@ static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float facto
                 HidePinnedBubbleTooltip();
             }
         }
-        RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+        RenderPinnedLayeredWindow(hWnd, data);
     }
 }
 
@@ -4545,6 +4853,12 @@ static void UpdatePinnedDragPosition(HWND hWnd, PinnedWindowData* data) {
     if (!hWnd || !data || !data->dragging) return;
     POINT cur;
     GetCursorPos(&cur);
+    if (!data->dragMoved) {
+        if (cur.x == data->dragStartMouse.x && cur.y == data->dragStartMouse.y) {
+            return;
+        }
+        data->dragMoved = true;
+    }
     int targetImgX = data->dragStartWnd.x + (cur.x - data->dragStartMouse.x);
     int targetImgY = data->dragStartWnd.y + (cur.y - data->dragStartMouse.y);
 
@@ -4620,7 +4934,17 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                     }
                 }
             }
-            InvalidateRect(hWnd, nullptr, FALSE);
+            RenderPinnedLayeredWindow(hWnd, data);
+            return;
+        }
+        case DBTN_ACT_PIN_HIDE_TOOLBAR: {
+            SetFocus(hWnd);
+            HidePinnedBubbleTooltip();
+            data->hideToolbar = !data->hideToolbar;
+            g_Daemon.hidePinnedToolbar = data->hideToolbar;
+            g_Daemon.SaveSettings();
+            UpdatePinnedWindowLayout(hWnd, data, true);
+            RenderPinnedLayeredWindow(hWnd, data);
             return;
         }
         case DBTN_ACT_PIN_UNFILTER: {
@@ -4631,7 +4955,7 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
             int imgW = 32, imgH = 32;
             GetPinnedScaledDims(data, imgW, imgH);
             EnsurePinnedWindowCache(data, imgW, imgH, true);
-            InvalidateRect(hWnd, nullptr, FALSE);
+            RenderPinnedLayeredWindow(hWnd, data);
             return;
         }
         case DBTN_ACT_CLOSE:
@@ -4722,13 +5046,14 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         data->hoveredBtnId = b.id;
                         SetCapture(hWnd);
                         SetFocus(hWnd);
-                        InvalidateRect(hWnd, nullptr, FALSE);
+                        RenderPinnedLayeredWindow(hWnd, data);
                         return 0;
                     }
                 }
                 data->pressedBtnId = -1;
                 HidePinnedBubbleTooltip();
                 data->dragging = true;
+                data->dragMoved = false;
                 GetCursorPos(&data->dragStartMouse);
                 data->dragStartWnd = { data->screenImgX, data->screenImgY };
                 SetCapture(hWnd);
@@ -4746,20 +5071,55 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         data->hoveredBtnId = b.id;
                         SetCapture(hWnd);
                         SetFocus(hWnd);
-                        InvalidateRect(hWnd, nullptr, FALSE);
+                        RenderPinnedLayeredWindow(hWnd, data);
                         return 0;
                     }
                 }
                 if (data->dragging) {
                     data->dragging = false;
-                    ReleaseCapture();
+                    data->dragMoved = false;
                 }
                 HidePinnedBubbleTooltip();
-                data->hideToolbar = !data->hideToolbar;
-                UpdatePinnedWindowLayout(hWnd, data, true);
-                InvalidateRect(hWnd, nullptr, FALSE);
+                data->pendingLeftDblClickToggleToolbar = true;
+                SetCapture(hWnd);
+                SetFocus(hWnd);
+            }
+            return 0;
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONDBLCLK:
+            if (data) {
+                KillTimer(hWnd, 2);
+                if (data->showingImgHoverTip) {
+                    data->showingImgHoverTip = false;
+                    HidePinnedBubbleTooltip();
+                }
+                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                bool onBtn = false;
+                for (const auto& b : data->buttons) {
+                    if (PtInRect(&b.rect, pt)) {
+                        onBtn = true;
+                        break;
+                    }
+                }
+                if (!onBtn) {
+                    data->pendingMiddleClickReset = true;
+                    SetCapture(hWnd);
+                    SetFocus(hWnd);
+                }
+            }
+            return 0;
+        case WM_MBUTTONUP:
+            if (data && data->pendingMiddleClickReset) {
+                data->pendingMiddleClickReset = false;
+                if (GetCapture() == hWnd && !data->dragging && data->pressedBtnId == -1 && !data->pendingLeftDblClickToggleToolbar && !data->pendingRightDblClickClose) {
+                    ReleaseCapture();
+                }
+                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 if (PtInRect(&data->imgRect, pt)) {
-                    SetTimer(hWnd, 2, 1000, nullptr);
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_RESET);
+                    if (PtInRect(&data->imgRect, pt)) {
+                        SetTimer(hWnd, 2, 500, nullptr);
+                    }
                 }
             }
             return 0;
@@ -4785,7 +5145,10 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 if (GetCapture() == hWnd) {
                     ReleaseCapture();
                 }
-                ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE);
+                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                if (PtInRect(&data->imgRect, pt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE);
+                }
                 return 0;
             }
             return 0;
@@ -4820,6 +5183,10 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_OUTLINE);
                     return 0;
                 }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinHideToolbar, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_HIDE_TOOLBAR);
+                    return 0;
+                }
                 if (MatchesOverlayShortcut(g_Daemon.hkPinSmooth, vk, ctrl, shift, alt)) {
                     ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_UNFILTER);
                     return 0;
@@ -4852,7 +5219,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 GetPinnedScaledDims(data, imgW, imgH);
                 if (!data->cachedHq) {
                     EnsurePinnedWindowCache(data, imgW, imgH, true);
-                    InvalidateRect(hWnd, nullptr, FALSE);
+                    RenderPinnedLayeredWindow(hWnd, data);
                 }
                 return 0;
             }
@@ -4868,6 +5235,20 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         }
                     }
                 }
+                return 0;
+            }
+            if (wParam == 3 && data && data->animFrames.size() > 1) {
+                data->curFrameIdx = (data->curFrameIdx + 1) % data->animFrames.size();
+                data->bmp = data->animFrames[data->curFrameIdx];
+                int nextDelay = (data->curFrameIdx < data->animDelaysMs.size())
+                    ? std::max(20, data->animDelaysMs[data->curFrameIdx])
+                    : 80;
+                SetTimer(hWnd, 3, (UINT)nextDelay, nullptr);
+                int imgW = 32, imgH = 32;
+                GetPinnedScaledDims(data, imgW, imgH);
+                bool fastInteractive = ((long long)imgW * (long long)imgH > 960LL * 540LL);
+                EnsurePinnedWindowCache(data, imgW, imgH, !fastInteractive);
+                RenderPinnedLayeredWindow(hWnd, data);
                 return 0;
             }
             break;
@@ -4900,7 +5281,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         } else {
                             HidePinnedBubbleTooltip();
                         }
-                        InvalidateRect(hWnd, nullptr, FALSE);
+                        RenderPinnedLayeredWindow(hWnd, data);
                     }
                     return 0;
                 }
@@ -4934,7 +5315,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     bool movedMouse = (pt.x != data->lastHoverMouse.x || pt.y != data->lastHoverMouse.y);
                     data->lastHoverMouse = pt;
                     if (!data->showingImgHoverTip && movedMouse) {
-                        SetTimer(hWnd, 2, 1000, nullptr);
+                        SetTimer(hWnd, 2, 500, nullptr);
                     }
                 } else {
                     KillTimer(hWnd, 2);
@@ -4957,16 +5338,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     } else if (!data->showingImgHoverTip) {
                         HidePinnedBubbleTooltip();
                     }
-                    if (!data->buttons.empty()) {
-                        RECT rcStrip = data->buttons.front().rect;
-                        for (const auto& b : data->buttons) {
-                            rcStrip.left   = std::min(rcStrip.left, b.rect.left);
-                            rcStrip.top    = std::min(rcStrip.top, b.rect.top);
-                            rcStrip.right  = std::max(rcStrip.right, b.rect.right);
-                            rcStrip.bottom = std::max(rcStrip.bottom, b.rect.bottom);
-                        }
-                        InvalidateRect(hWnd, &rcStrip, FALSE);
-                    }
+                    RenderPinnedLayeredWindow(hWnd, data);
                 }
             }
             return 0;
@@ -4979,21 +5351,31 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 HidePinnedBubbleTooltip();
                 if (data->hoveredBtnId != -1) {
                     data->hoveredBtnId = -1;
-                    if (!data->buttons.empty()) {
-                        RECT rcStrip = data->buttons.front().rect;
-                        for (const auto& b : data->buttons) {
-                            rcStrip.left   = std::min(rcStrip.left, b.rect.left);
-                            rcStrip.top    = std::min(rcStrip.top, b.rect.top);
-                            rcStrip.right  = std::max(rcStrip.right, b.rect.right);
-                            rcStrip.bottom = std::max(rcStrip.bottom, b.rect.bottom);
-                        }
-                        InvalidateRect(hWnd, &rcStrip, FALSE);
-                    }
+                    RenderPinnedLayeredWindow(hWnd, data);
                 }
             }
             return 0;
         case WM_LBUTTONUP:
             if (data) {
+                if (data->pendingLeftDblClickToggleToolbar) {
+                    data->pendingLeftDblClickToggleToolbar = false;
+                    if (GetCapture() == hWnd) {
+                        ReleaseCapture();
+                    }
+                    POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                    if (PtInRect(&data->imgRect, pt)) {
+                        HidePinnedBubbleTooltip();
+                        data->hideToolbar = !data->hideToolbar;
+                        g_Daemon.hidePinnedToolbar = data->hideToolbar;
+                        g_Daemon.SaveSettings();
+                        UpdatePinnedWindowLayout(hWnd, data, true);
+                        RenderPinnedLayeredWindow(hWnd, data);
+                        if (PtInRect(&data->imgRect, pt)) {
+                            SetTimer(hWnd, 2, 500, nullptr);
+                        }
+                    }
+                    return 0;
+                }
                 if (data->pressedBtnId != -1) {
                     int releasedBtnId = data->pressedBtnId;
                     data->pressedBtnId = -1;
@@ -5011,20 +5393,35 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         }
                     }
                     data->hoveredBtnId = newHover;
-                    InvalidateRect(hWnd, nullptr, FALSE);
+                    RenderPinnedLayeredWindow(hWnd, data);
                     if (hit) {
                         ExecutePinnedWindowAction(hWnd, data, releasedBtnId);
                     }
                     return 0;
                 }
                 if (data->dragging) {
+                    bool wasMoved = data->dragMoved;
                     data->dragging = false;
+                    data->dragMoved = false;
                     ReleaseCapture();
+                    if (wasMoved) {
+                        UpdatePinnedWindowLayout(hWnd, data, true);
+                        RenderPinnedLayeredWindow(hWnd, data);
+                    }
+                    POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                    if (PtInRect(&data->imgRect, pt)) {
+                        SetTimer(hWnd, 2, 500, nullptr);
+                    }
                 }
             }
             return 0;
         case WM_MOUSEWHEEL:
             if (data) {
+                KillTimer(hWnd, 2);
+                if (data->showingImgHoverTip) {
+                    data->showingImgHoverTip = false;
+                    HidePinnedBubbleTooltip();
+                }
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 if (delta != 0) {
                     float steps = (float)delta / (float)WHEEL_DELTA;
@@ -5035,104 +5432,14 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            RECT rc;
-            GetClientRect(hWnd, &rc);
-            int w = rc.right - rc.left, h = rc.bottom - rc.top;
-            if (w > 0 && h > 0 && data && data->bmp) {
-                int imgW = 32, imgH = 32;
-                GetPinnedScaledDims(data, imgW, imgH);
-                int imgLeft = data->imgRect.left;
-                int imgTop  = data->imgRect.top;
-
-                EnsurePinnedWindowCache(data, imgW, imgH, data->cachedHq || ((long long)imgW * (long long)imgH <= 960LL * 540LL));
-
-                if (!data->hideToolbar && !data->buttons.empty()) {
-                    RECT rcStrip = data->buttons.front().rect;
-                    for (const auto& b : data->buttons) {
-                        rcStrip.left   = std::min(rcStrip.left, b.rect.left);
-                        rcStrip.top    = std::min(rcStrip.top, b.rect.top);
-                        rcStrip.right  = std::max(rcStrip.right, b.rect.right);
-                        rcStrip.bottom = std::max(rcStrip.bottom, b.rect.bottom);
-                    }
-                    if (data->hCacheDC && data->hCacheBmp) {
-                        int savedDC = SaveDC(hdc);
-                        ExcludeClipRect(hdc, rcStrip.left, rcStrip.top, rcStrip.right, rcStrip.bottom);
-                        BitBlt(hdc, imgLeft, imgTop, imgW, imgH, data->hCacheDC, 0, 0, SRCCOPY);
-                        RestoreDC(hdc, savedDC);
-                    }
-                    int sw = std::max(1, (int)(rcStrip.right - rcStrip.left));
-                    int sh = std::max(1, (int)(rcStrip.bottom - rcStrip.top));
-                    HDC memDC = CreateCompatibleDC(hdc);
-                    HBITMAP memBmp = CreateCompatibleBitmap(hdc, sw, sh);
-                    HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
-                    {
-                        Graphics g(memDC);
-                        g.SetSmoothingMode(SmoothingModeAntiAlias);
-                        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-                        SolidBrush clearBg(Color(255, 15, 23, 42));
-                        g.FillRectangle(&clearBg, 0, 0, sw, sh);
-                    }
-                    if (data->hCacheDC && data->hCacheBmp) {
-                        BitBlt(memDC, imgLeft - rcStrip.left, imgTop - rcStrip.top, imgW, imgH, data->hCacheDC, 0, 0, SRCCOPY);
-                    }
-                    {
-                        Graphics g(memDC);
-                        g.SetSmoothingMode(SmoothingModeAntiAlias);
-                        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-
-                        for (const auto& b : data->buttons) {
-                            int bx = (int)(b.rect.left - rcStrip.left);
-                            int by = (int)(b.rect.top - rcStrip.top);
-                            int bw = (int)(b.rect.right - b.rect.left);
-                            int bh = (int)(b.rect.bottom - b.rect.top);
-                            RectF rf((float)bx, (float)by, (float)bw, (float)bh);
-                            bool hovered = (b.id == data->hoveredBtnId);
-                            bool pressed = (b.id == data->pressedBtnId && hovered);
-                            bool activeToggleBtn = (b.id == DBTN_ACT_PIN_OUTLINE && !data->hideOutline) ||
-                                                   (b.id == DBTN_ACT_PIN_UNFILTER && data->smoothImage);
-                            Color bgCol = Color(240, 15, 23, 42);
-                            if (b.isPrimaryAction) {
-                                bgCol = pressed ? Color(255, 185, 28, 28) : (hovered ? Color(255, 220, 38, 38) : Color(255, 239, 68, 68));
-                            } else if (activeToggleBtn) {
-                                bgCol = pressed ? Color(255, 71, 85, 105) : (hovered ? Color(255, 51, 65, 85) : Color(255, 30, 41, 59));
-                            } else if (pressed) {
-                                bgCol = Color(255, 71, 85, 105);
-                            } else if (hovered) {
-                                bgCol = Color(255, 51, 65, 85);
-                            }
-                            SolidBrush btnBg(bgCol);
-                            Pen btnBorder(activeToggleBtn ? Color(255, 239, 68, 68) : Color(220, 51, 65, 85), 1.0f);
-
-                            GraphicsState stBtn = g.Save();
-                            g.SetSmoothingMode(SmoothingModeNone);
-                            g.SetPixelOffsetMode(PixelOffsetModeNone);
-                            g.FillRectangle(&btnBg, bx, by, bw, bh);
-                            g.Restore(stBtn);
-
-                            PepperSnapDaemon::DrawDockButtonIcon(g, b, rf);
-
-                            GraphicsState stOutline = g.Save();
-                            g.SetSmoothingMode(SmoothingModeNone);
-                            g.SetPixelOffsetMode(PixelOffsetModeNone);
-                            g.DrawRectangle(&btnBorder, bx, by, bw - 1, bh - 1);
-                            g.Restore(stOutline);
-                        }
-                    }
-                    BitBlt(hdc, rcStrip.left, rcStrip.top, sw, sh, memDC, 0, 0, SRCCOPY);
-                    SelectObject(memDC, oldBmp);
-                    DeleteObject(memBmp);
-                    DeleteDC(memDC);
-                } else if (data->hCacheDC && data->hCacheBmp) {
-                    BitBlt(hdc, imgLeft, imgTop, imgW, imgH, data->hCacheDC, 0, 0, SRCCOPY);
-                }
-            }
+            BeginPaint(hWnd, &ps);
             EndPaint(hWnd, &ps);
             return 0;
         }
         case WM_DESTROY:
             KillTimer(hWnd, 1);
             KillTimer(hWnd, 2);
+            KillTimer(hWnd, 3);
             HidePinnedBubbleTooltip();
             g_Daemon.pinnedWindows.erase(
                 std::remove(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hWnd),
@@ -5140,7 +5447,16 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             );
             if (data) {
                 FreePinnedWindowCache(data);
-                delete data->bmp;
+                if (!data->animFrames.empty()) {
+                    for (Bitmap* f : data->animFrames) {
+                        delete f;
+                    }
+                    data->animFrames.clear();
+                    data->bmp = nullptr;
+                } else {
+                    delete data->bmp;
+                    data->bmp = nullptr;
+                }
                 delete data;
             }
             return 0;
@@ -5148,18 +5464,22 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale) {
+HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale, std::vector<Bitmap*> animFrames, std::vector<int> animDelaysMs) {
     if (!bmp) return nullptr;
     int sw = (int)bmp->GetWidth();
     int sh = (int)bmp->GetHeight();
 
     PinnedWindowData* data = new PinnedWindowData();
     data->bmp = bmp;
+    data->animFrames = std::move(animFrames);
+    data->animDelaysMs = std::move(animDelaysMs);
+    data->curFrameIdx = 0;
     data->origW = sw;
     data->origH = sh;
     data->scale = initialScale;
     data->screenImgX = x;
     data->screenImgY = y;
+    data->hideToolbar = hidePinnedToolbar;
     data->hideOutline = hidePinnedOutline;
     data->smoothImage = smoothPinnedImage;
 
@@ -5168,7 +5488,7 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
     EnsurePinnedWindowCache(data, imgW, imgH, true);
 
     HWND hPin = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         L"PepperSnapPinWnd", L"PepperSnap Pin",
         WS_POPUP, x, y, imgW, imgH,
         nullptr, nullptr, hInst, nullptr
@@ -5179,7 +5499,11 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
     BringWindowToTop(hPin);
     SetForegroundWindow(hPin);
     SetFocus(hPin);
-    InvalidateRect(hPin, nullptr, FALSE);
+    RenderPinnedLayeredWindow(hPin, data);
+    if (data->animFrames.size() > 1) {
+        int firstDelay = (!data->animDelaysMs.empty() && data->animDelaysMs[0] >= 20) ? data->animDelaysMs[0] : 80;
+        SetTimer(hPin, 3, (UINT)firstDelay, nullptr);
+    }
     pinnedWindows.push_back(hPin);
     return hPin;
 }
@@ -5219,6 +5543,7 @@ struct OptionsDlgState {
     bool alsoSavePin = true;
     bool alsoSaveOcr = true;
     bool keepCursor = false;
+    bool autoHideFrames = true;
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 15;
@@ -5240,14 +5565,20 @@ struct OptionsDlgState {
     HotkeyBinding hkToolMosaicCir{ 0, 'M' };
     HotkeyBinding hkActUndo{ MOD_CONTROL, 'Z' };
     HotkeyBinding hkActRedo{ MOD_CONTROL, 'Y' };
+    HotkeyBinding hkActClear{ 0, 0 };
+    HotkeyBinding hkActOptions{ 0, 0 };
     HotkeyBinding hkActPin{ 0, 'F' };
     HotkeyBinding hkActOcr{ 0, 'O' };
+    HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkFramePlayPause{ 0, VK_SPACE };
+    HotkeyBinding hkFrameToggleStrip{ 0, 0 };
     HotkeyBinding hkPinZoomOut{ 0, VK_OEM_MINUS };
     HotkeyBinding hkPinZoomIn{ 0, VK_OEM_PLUS };
     HotkeyBinding hkPinZoomReset{ 0, '0' };
     HotkeyBinding hkPinOutline{ 0, 'O' };
+    HotkeyBinding hkPinHideToolbar{ 0, 'H' };
     HotkeyBinding hkPinSmooth{ 0, 'S' };
     HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
@@ -5257,11 +5588,11 @@ struct OptionsDlgState {
     bool openedAppData = false;
     bool restoredAllDefaults = false;
     int scrollY = 0;
-    int scrollContentHeight = 688;
+    int scrollContentHeight = 716;
     int footerHeight = 56;
     int fixedWinWidth = 580;
-    int fullWinHeight = 744;
-    int savedWinHeight = 744;
+    int fullWinHeight = 772;
+    int savedWinHeight = 772;
 
     HWND hFolderEdit = nullptr;
     HWND hComboRegion = nullptr;
@@ -5276,6 +5607,7 @@ struct OptionsDlgState {
     HWND hSavePinChk = nullptr;
     HWND hSaveOcrChk = nullptr;
     HWND hKeepCursorChk = nullptr;
+    HWND hAutoHideFramesChk = nullptr;
     HWND hNonStackingChk = nullptr;
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
@@ -5315,6 +5647,7 @@ struct OptionsDlgState {
 #define IDC_OPT_RESTORE_ALL_DEF  1025
 #define IDC_OPT_NAMING_SYNTAX    1026
 #define IDC_OPT_KEEP_CURSOR_CHK  1027
+#define IDC_OPT_AUTOHIDE_FRM_CHK 1028
 
 #define IDC_CK_BTN_BASE          2100
 #define IDC_CK_RESTORE_DEFAULTS  2201
@@ -5333,7 +5666,13 @@ struct NamingSyntaxDlgState {
     int fixedWinWidth = 490;
     int fullWinHeight = 706;
     int savedWinHeight = 706;
+    int hoveredRowIdx = -1;
+    int pressedRowIdx = -1;
+    std::wstring copiedSyntax;
     HWND hOkBtn = nullptr;
+    HWND hListViewport = nullptr;
+    std::vector<HWND> hSyntaxEdits;
+    HFONT hCodeFont = nullptr;
 };
 
 static const NamingSyntaxRow kNamingSyntaxRows[] = {
@@ -5363,6 +5702,238 @@ static const NamingSyntaxRow kNamingSyntaxRows[] = {
     { L"{N}",    L"Capture counter (no leading 0)",L"1"          }
 };
 
+static void CopySyntaxStringToClipboard(HWND hOwner, const std::wstring& text) {
+    if (text.empty()) return;
+    if (!OpenClipboard(hOwner)) return;
+    EmptyClipboard();
+    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hMem) {
+        void* ptr = GlobalLock(hMem);
+        if (ptr) {
+            memcpy(ptr, text.c_str(), bytes);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        } else {
+            GlobalFree(hMem);
+        }
+    }
+    CloseClipboard();
+}
+
+static LRESULT CALLBACK NamingSyntaxEditSubclassProc(HWND hEdit, UINT msg, WPARAM wParam, LPARAM lParam) {
+    WNDPROC origProc = (WNDPROC)GetPropW(hEdit, L"PepperSnapOrigSyntaxEditProc");
+    HWND hViewport = GetParent(hEdit);
+    HWND hDlg = hViewport ? GetParent(hViewport) : nullptr;
+    NamingSyntaxDlgState* st = hDlg ? (NamingSyntaxDlgState*)GetWindowLongPtrW(hDlg, GWLP_USERDATA) : nullptr;
+    int rowIdx = (int)(INT_PTR)GetPropW(hEdit, L"PepperSnapSyntaxRowIdx") - 1;
+
+    switch (msg) {
+        case WM_MOUSEWHEEL:
+            if (hDlg) {
+                return SendMessageW(hDlg, WM_MOUSEWHEEL, wParam, lParam);
+            }
+            break;
+        case WM_KEYDOWN:
+            if ((wParam == VK_ESCAPE || wParam == VK_RETURN) && hDlg) {
+                DestroyWindow(hDlg);
+                return 0;
+            }
+            if (wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                LRESULT r = origProc ? CallWindowProcW(origProc, hEdit, msg, wParam, lParam) : DefWindowProcW(hEdit, msg, wParam, lParam);
+                if (st && rowIdx >= 0 && rowIdx < (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]))) {
+                    DWORD selS = 0, selE = 0;
+                    SendMessageW(hEdit, EM_GETSEL, (WPARAM)&selS, (LPARAM)&selE);
+                    if (selS == selE) {
+                        CopySyntaxStringToClipboard(hDlg, kNamingSyntaxRows[rowIdx].syntax);
+                    }
+                    st->copiedSyntax = kNamingSyntaxRows[rowIdx].syntax;
+                    if (hDlg) InvalidateRect(hDlg, nullptr, FALSE);
+                }
+                return r;
+            }
+            break;
+        case WM_LBUTTONDOWN:
+            if (st) {
+                st->pressedRowIdx = rowIdx;
+            }
+            break;
+        case WM_LBUTTONUP: {
+            LRESULT res = origProc ? CallWindowProcW(origProc, hEdit, msg, wParam, lParam) : DefWindowProcW(hEdit, msg, wParam, lParam);
+            if (st && st->pressedRowIdx == rowIdx && rowIdx >= 0 && rowIdx < (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]))) {
+                st->pressedRowIdx = -1;
+                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                RECT rcE;
+                GetClientRect(hEdit, &rcE);
+                if (PtInRect(&rcE, pt)) {
+                    DWORD selS = 0, selE = 0;
+                    SendMessageW(hEdit, EM_GETSEL, (WPARAM)&selS, (LPARAM)&selE);
+                    if (selS == selE) {
+                        SendMessageW(hEdit, EM_SETSEL, 0, -1);
+                    }
+                    CopySyntaxStringToClipboard(hDlg, kNamingSyntaxRows[rowIdx].syntax);
+                    st->copiedSyntax = kNamingSyntaxRows[rowIdx].syntax;
+                    if (hDlg) InvalidateRect(hDlg, nullptr, FALSE);
+                }
+            } else if (st) {
+                st->pressedRowIdx = -1;
+            }
+            return res;
+        }
+        case WM_NCDESTROY:
+            RemovePropW(hEdit, L"PepperSnapOrigSyntaxEditProc");
+            RemovePropW(hEdit, L"PepperSnapSyntaxRowIdx");
+            break;
+    }
+    return origProc ? CallWindowProcW(origProc, hEdit, msg, wParam, lParam) : DefWindowProcW(hEdit, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK NamingSyntaxViewportWndProc(HWND hViewport, UINT msg, WPARAM wParam, LPARAM lParam) {
+    HWND hDlg = GetParent(hViewport);
+    NamingSyntaxDlgState* st = hDlg ? (NamingSyntaxDlgState*)GetWindowLongPtrW(hDlg, GWLP_USERDATA) : nullptr;
+    switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_MOUSEWHEEL:
+            if (hDlg) return SendMessageW(hDlg, WM_MOUSEWHEEL, wParam, lParam);
+            break;
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT: {
+            HDC hdcEdit = (HDC)wParam;
+            SetTextColor(hdcEdit, RGB(30, 41, 59));
+            SetBkColor(hdcEdit, GetSysColor(COLOR_BTNFACE));
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+        case WM_LBUTTONDOWN: {
+            if (st) {
+                int mx = GET_X_LPARAM(lParam);
+                int my = GET_Y_LPARAM(lParam);
+                const int padX = 16;
+                const int col1W = 84;
+                const int sep1X = padX + col1W;
+                const int rowH = 26;
+                const int rowCount = (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]));
+                int idx = (my + st->scrollY - 4) / rowH;
+                if (mx >= padX && mx < sep1X && idx >= 0 && idx < rowCount) {
+                    st->pressedRowIdx = idx;
+                    SetCapture(hViewport);
+                    return 0;
+                }
+                st->pressedRowIdx = -1;
+            }
+            break;
+        }
+        case WM_LBUTTONUP: {
+            if (st && st->pressedRowIdx >= 0) {
+                int pressedIdx = st->pressedRowIdx;
+                st->pressedRowIdx = -1;
+                if (GetCapture() == hViewport) {
+                    ReleaseCapture();
+                }
+                int mx = GET_X_LPARAM(lParam);
+                int my = GET_Y_LPARAM(lParam);
+                const int padX = 16;
+                const int col1W = 84;
+                const int sep1X = padX + col1W;
+                const int rowH = 26;
+                const int rowCount = (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]));
+                int idx = (my + st->scrollY - 4) / rowH;
+                if (mx >= padX && mx < sep1X && idx == pressedIdx && idx >= 0 && idx < rowCount) {
+                    if (idx < (int)st->hSyntaxEdits.size() && st->hSyntaxEdits[idx]) {
+                        SetFocus(st->hSyntaxEdits[idx]);
+                        SendMessageW(st->hSyntaxEdits[idx], EM_SETSEL, 0, -1);
+                    }
+                    CopySyntaxStringToClipboard(hDlg, kNamingSyntaxRows[idx].syntax);
+                    st->copiedSyntax = kNamingSyntaxRows[idx].syntax;
+                    if (hDlg) InvalidateRect(hDlg, nullptr, FALSE);
+                }
+                return 0;
+            }
+            break;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hViewport, &ps);
+            RECT rcV;
+            GetClientRect(hViewport, &rcV);
+            int vw = std::max(1, (int)(rcV.right - rcV.left));
+            int vh = std::max(1, (int)(rcV.bottom - rcV.top));
+
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP memBmp = CreateCompatibleBitmap(hdc, vw, vh);
+            HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
+
+            FillRect(memDC, &rcV, GetSysColorBrush(COLOR_BTNFACE));
+            SetBkMode(memDC, TRANSPARENT);
+
+            HFONT hCodeFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                          CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+            HFONT hRowFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            HGDIOBJ hOldF = SelectObject(memDC, hRowFont);
+
+            const int padX = 16;
+            const int col1X = padX;
+            const int col1W = 84;
+            const int sep1X = col1X + col1W;
+            const int col2X = sep1X + 12;
+            const int col2W = 224;
+            const int sep2X = col2X + col2W;
+            const int col3X = sep2X + 12;
+            const int rightEdge = vw - padX;
+            const int rowH = 26;
+            const int rowCount = (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]));
+            const int sy = st ? st->scrollY : 0;
+
+            HPEN hRowPen = CreatePen(PS_SOLID, 1, RGB(214, 218, 224));
+            HGDIOBJ hOldP = SelectObject(memDC, hRowPen);
+
+            for (int i = 0; i < rowCount; ++i) {
+                int y = 4 + i * rowH - sy;
+                if (y + rowH < 0 || y > vh) continue;
+                if (i > 0) {
+                    SelectObject(memDC, hRowPen);
+                    MoveToEx(memDC, padX, y, nullptr);
+                    LineTo(memDC, rightEdge, y);
+                }
+
+                SelectObject(memDC, hRowFont);
+                SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
+                RECT rcC2 = { col2X, y, sep2X - 6, y + rowH };
+                DrawTextW(memDC, kNamingSyntaxRows[i].explanation.c_str(), -1, &rcC2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                SelectObject(memDC, hCodeFont);
+                SetTextColor(memDC, RGB(30, 41, 59));
+                RECT rcC3 = { col3X, y, rightEdge, y + rowH };
+                DrawTextW(memDC, kNamingSyntaxRows[i].example.c_str(), -1, &rcC3, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+
+            SelectObject(memDC, hRowPen);
+            MoveToEx(memDC, sep1X, 0, nullptr);
+            LineTo(memDC, sep1X, vh - 4);
+            MoveToEx(memDC, sep2X, 0, nullptr);
+            LineTo(memDC, sep2X, vh - 4);
+
+            SelectObject(memDC, hOldP);
+            SelectObject(memDC, hOldF);
+            DeleteObject(hRowPen);
+            DeleteObject(hRowFont);
+            DeleteObject(hCodeFont);
+
+            BitBlt(hdc, 0, 0, vw, vh, memDC, 0, 0, SRCCOPY);
+            SelectObject(memDC, oldBmp);
+            DeleteObject(memBmp);
+            DeleteDC(memDC);
+
+            EndPaint(hViewport, &ps);
+            return 0;
+        }
+    }
+    return DefWindowProcW(hViewport, msg, wParam, lParam);
+}
+
 static void UpdateNamingSyntaxScroll(HWND hWnd, NamingSyntaxDlgState* st, int newScrollY) {
     if (!hWnd || !st) return;
     RECT rcClient;
@@ -5374,6 +5945,19 @@ static void UpdateNamingSyntaxScroll(HWND hWnd, NamingSyntaxDlgState* st, int ne
     int clamped = std::max(0, std::min(newScrollY, maxScroll));
     int dy = st->scrollY - clamped;
     st->scrollY = clamped;
+    if (st->hListViewport) {
+        SetWindowPos(st->hListViewport, HWND_TOP, 0, st->headerHeight, clientW, viewportH, SWP_NOACTIVATE);
+        const int col1X = 16;
+        const int col1W = 84;
+        const int rowH = 26;
+        for (size_t i = 0; i < st->hSyntaxEdits.size(); ++i) {
+            if (st->hSyntaxEdits[i]) {
+                int y = 4 + (int)i * rowH - st->scrollY;
+                SetWindowPos(st->hSyntaxEdits[i], nullptr, col1X, y + 4, col1W - 8, rowH - 7,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
+    }
     if (st->hOkBtn) {
         int footerTop = std::max(0, clientH - st->footerHeight);
         SetWindowPos(st->hOkBtn, HWND_TOP, clientW - 16 - 88, footerTop + 10, 88, 30, SWP_NOACTIVATE);
@@ -5386,6 +5970,9 @@ static void UpdateNamingSyntaxScroll(HWND hWnd, NamingSyntaxDlgState* st, int ne
     si.nPos = st->scrollY;
     SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
     if (dy != 0) {
+        if (st->hListViewport) {
+            RedrawWindow(st->hListViewport, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        }
         InvalidateRect(hWnd, nullptr, FALSE);
     }
 }
@@ -5401,10 +5988,57 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
             HFONT hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            HFONT hCodeFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                          CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
             RECT rcC;
             GetClientRect(hWnd, &rcC);
             int clientW = rcC.right - rcC.left;
             int clientH = rcC.bottom - rcC.top;
+
+            static bool vpReg = false;
+            if (!vpReg) {
+                WNDCLASSEXW vpwc = { sizeof(WNDCLASSEXW) };
+                vpwc.lpfnWndProc = NamingSyntaxViewportWndProc;
+                vpwc.hInstance = g_Daemon.hInst;
+                vpwc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+                vpwc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+                vpwc.lpszClassName = L"PepperSnapNamingSyntaxViewport";
+                RegisterClassExW(&vpwc);
+                vpReg = true;
+            }
+
+            if (st) {
+                st->hCodeFont = hCodeFont;
+                int vpH = std::max(1, clientH - st->headerHeight - st->footerHeight);
+                st->hListViewport = CreateWindowExW(
+                    0, L"PepperSnapNamingSyntaxViewport", L"",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                    0, st->headerHeight, clientW, vpH,
+                    hWnd, nullptr, g_Daemon.hInst, nullptr
+                );
+
+                const int rowCount = (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]));
+                const int col1X = 16;
+                const int col1W = 84;
+                const int rowH = 26;
+                st->hSyntaxEdits.resize(rowCount, nullptr);
+                for (int i = 0; i < rowCount; ++i) {
+                    int y = 4 + i * rowH;
+                    HWND hEd = CreateWindowExW(
+                        0, L"EDIT", kNamingSyntaxRows[i].syntax.c_str(),
+                        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | ES_READONLY | ES_LEFT,
+                        col1X, y + 4, col1W - 8, rowH - 7,
+                        st->hListViewport, (HMENU)(INT_PTR)(3000 + i), g_Daemon.hInst, nullptr
+                    );
+                    SendMessageW(hEd, WM_SETFONT, (WPARAM)hCodeFont, TRUE);
+                    WNDPROC origEditProc = (WNDPROC)SetWindowLongPtrW(hEd, GWLP_WNDPROC, (LONG_PTR)NamingSyntaxEditSubclassProc);
+                    SetPropW(hEd, L"PepperSnapOrigSyntaxEditProc", (HANDLE)origEditProc);
+                    SetPropW(hEd, L"PepperSnapSyntaxRowIdx", (HANDLE)(INT_PTR)(i + 1));
+                    st->hSyntaxEdits[i] = hEd;
+                }
+            }
+
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"OK",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON,
                 clientW - 16 - 88, clientH - 40, 88, 30, hWnd, (HMENU)IDOK, nullptr, nullptr);
@@ -5415,6 +6049,12 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
             }
             return 0;
         }
+        case WM_DESTROY:
+            if (st && st->hCodeFont) {
+                DeleteObject(st->hCodeFont);
+                st->hCodeFont = nullptr;
+            }
+            return 0;
         case WM_ERASEBKGND:
             return 1;
         case WM_GETMINMAXINFO: {
@@ -5601,6 +6241,17 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
             MoveToEx(memDC, 0, footerTop, nullptr);
             LineTo(memDC, clientW, footerTop);
 
+            SelectObject(memDC, hRowFont);
+            RECT rcHint = { padX, footerTop + 10, clientW - 116, clientH - 10 };
+            if (st && !st->copiedSyntax.empty()) {
+                SetTextColor(memDC, RGB(22, 163, 74));
+                std::wstring copiedMsg = L"\x2713 Copied " + st->copiedSyntax + L" to clipboard";
+                DrawTextW(memDC, copiedMsg.c_str(), -1, &rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            } else {
+                SetTextColor(memDC, GetSysColor(COLOR_GRAYTEXT));
+                DrawTextW(memDC, L"Click or select any syntax to copy", -1, &rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+
             SelectObject(memDC, hOldP);
             SelectObject(memDC, hOldF);
             DeleteObject(hRowPen);
@@ -5754,14 +6405,20 @@ struct CustomizeKeysDlgState {
     HotkeyBinding hkToolMosaicCir;
     HotkeyBinding hkActUndo;
     HotkeyBinding hkActRedo;
+    HotkeyBinding hkActClear;
+    HotkeyBinding hkActOptions;
     HotkeyBinding hkActPin;
     HotkeyBinding hkActOcr;
+    HotkeyBinding hkActSaveAs;
     HotkeyBinding hkActSave;
     HotkeyBinding hkActCopy;
+    HotkeyBinding hkFramePlayPause;
+    HotkeyBinding hkFrameToggleStrip;
     HotkeyBinding hkPinZoomOut;
     HotkeyBinding hkPinZoomIn;
     HotkeyBinding hkPinZoomReset;
     HotkeyBinding hkPinOutline;
+    HotkeyBinding hkPinHideToolbar;
     HotkeyBinding hkPinSmooth;
     HotkeyBinding hkPinSaveAs;
     HotkeyBinding hkPinSave;
@@ -6259,17 +6916,23 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     ck.hkToolText      = optSt->hkToolText;
     ck.hkToolMosaicSq  = optSt->hkToolMosaicSq;
     ck.hkToolMosaicCir = optSt->hkToolMosaicCir;
-    ck.hkActUndo       = optSt->hkActUndo;
-    ck.hkActRedo       = optSt->hkActRedo;
-    ck.hkActPin        = optSt->hkActPin;
-    ck.hkActOcr        = optSt->hkActOcr;
-    ck.hkActSave       = optSt->hkActSave;
-    ck.hkActCopy       = optSt->hkActCopy;
-    ck.hkPinZoomOut    = optSt->hkPinZoomOut;
+    ck.hkActUndo          = optSt->hkActUndo;
+    ck.hkActRedo          = optSt->hkActRedo;
+    ck.hkActClear         = optSt->hkActClear;
+    ck.hkActOptions       = optSt->hkActOptions;
+    ck.hkActPin           = optSt->hkActPin;
+    ck.hkActOcr           = optSt->hkActOcr;
+    ck.hkActSaveAs        = optSt->hkActSaveAs;
+    ck.hkActSave          = optSt->hkActSave;
+    ck.hkActCopy          = optSt->hkActCopy;
+    ck.hkFramePlayPause   = optSt->hkFramePlayPause;
+    ck.hkFrameToggleStrip = optSt->hkFrameToggleStrip;
+    ck.hkPinZoomOut       = optSt->hkPinZoomOut;
     ck.hkPinZoomIn     = optSt->hkPinZoomIn;
-    ck.hkPinZoomReset  = optSt->hkPinZoomReset;
-    ck.hkPinOutline    = optSt->hkPinOutline;
-    ck.hkPinSmooth     = optSt->hkPinSmooth;
+    ck.hkPinZoomReset   = optSt->hkPinZoomReset;
+    ck.hkPinOutline     = optSt->hkPinOutline;
+    ck.hkPinHideToolbar = optSt->hkPinHideToolbar;
+    ck.hkPinSmooth      = optSt->hkPinSmooth;
     ck.hkPinSaveAs     = optSt->hkPinSaveAs;
     ck.hkPinSave       = optSt->hkPinSave;
     ck.hkPinCopy       = optSt->hkPinCopy;
@@ -6335,26 +6998,32 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
 
     addSep();
 
-    // Custom area toolbar actions & export
-    addActRow(DBTN_ACT_UNDO, false, L"Undo",                  &ck.hkActUndo, { MOD_CONTROL, 'Z' });
-    addActRow(DBTN_ACT_REDO, false, L"Redo",                  &ck.hkActRedo, { MOD_CONTROL, 'Y' });
-    addActRow(DBTN_ACT_PIN,  false, L"Pin on top",            &ck.hkActPin,  { 0, 'F' });
-    addActRow(DBTN_ACT_OCR,  false, L"Extract text with OCR", &ck.hkActOcr,  { 0, 'O' });
-    addActRow(DBTN_ACT_SAVE, false, L"Quick save",            &ck.hkActSave, { MOD_CONTROL, 'S' });
-    addActRow(DBTN_ACT_COPY, true,  L"Copy to clipboard",     &ck.hkActCopy, { MOD_CONTROL, 'C' });
+    // Custom area toolbar actions, multi-frame editor & export
+    addActRow(DBTN_ACT_UNDO,             false, L"Undo",                          &ck.hkActUndo,          { MOD_CONTROL, 'Z' });
+    addActRow(DBTN_ACT_REDO,             false, L"Redo",                          &ck.hkActRedo,          { MOD_CONTROL, 'Y' });
+    addActRow(DBTN_ACT_CLEAR,            false, L"Clear all annotations",         &ck.hkActClear,         { 0, 0 });
+    addActRow(DBTN_ACT_OPTIONS,          false, L"Options",                       &ck.hkActOptions,       { 0, 0 });
+    addActRow(DBTN_ACT_PIN,              false, L"Pin on top",                    &ck.hkActPin,           { 0, 'F' });
+    addActRow(DBTN_ACT_OCR,              false, L"Extract text with OCR",         &ck.hkActOcr,           { 0, 'O' });
+    addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkActSaveAs,        { MOD_CONTROL | MOD_SHIFT, 'S' });
+    addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkActSave,          { MOD_CONTROL, 'S' });
+    addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkActCopy,          { MOD_CONTROL, 'C' });
+    addActRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, L"Play / Pause frames (GIF/WebP)",&ck.hkFramePlayPause,   { 0, VK_SPACE });
+    addActRow(DBTN_ACT_FRAME_TOGGLE,     false, L"Hide / Show frames (GIF/WebP)", &ck.hkFrameToggleStrip, { 0, 0 });
 
     addSep();
 
     // Pinned image toolbar actions & export
-    addActRow(DBTN_ACT_ZOOM_OUT,     false, L"Zoom out",                 &ck.hkPinZoomOut,   { 0, VK_OEM_MINUS });
-    addActRow(DBTN_ACT_ZOOM_IN,      false, L"Zoom in",                  &ck.hkPinZoomIn,    { 0, VK_OEM_PLUS });
-    addActRow(DBTN_ACT_ZOOM_RESET,   false, L"Reset to original size",   &ck.hkPinZoomReset, { 0, '0' });
-    addActRow(DBTN_ACT_PIN_OUTLINE,  false, L"Show / Hide outline",      &ck.hkPinOutline,   { 0, 'O' });
-    addActRow(DBTN_ACT_PIN_UNFILTER, false, L"Smooth the image",         &ck.hkPinSmooth,    { 0, 'S' });
-    addActRow(DBTN_ACT_SAVE_AS,      false, L"Save as JPG/PNG/WEBP/BMP", &ck.hkPinSaveAs,    { MOD_CONTROL | MOD_SHIFT, 'S' });
-    addActRow(DBTN_ACT_SAVE,         false, L"Quick save",               &ck.hkPinSave,      { MOD_CONTROL, 'S' });
-    addActRow(DBTN_ACT_COPY,         true,  L"Copy to clipboard",        &ck.hkPinCopy,      { MOD_CONTROL, 'C' });
-    addActRow(DBTN_ACT_CLOSE,        false, L"Close pinned image",       &ck.hkPinClose,     { 0, VK_ESCAPE });
+    addActRow(DBTN_ACT_ZOOM_OUT,         false, L"Zoom out",                      &ck.hkPinZoomOut,       { 0, VK_OEM_MINUS });
+    addActRow(DBTN_ACT_ZOOM_IN,          false, L"Zoom in",                       &ck.hkPinZoomIn,        { 0, VK_OEM_PLUS });
+    addActRow(DBTN_ACT_ZOOM_RESET,       false, L"Reset to original size",        &ck.hkPinZoomReset,     { 0, '0' });
+    addActRow(DBTN_ACT_PIN_OUTLINE,      false, L"Show / Hide outline",           &ck.hkPinOutline,       { 0, 'O' });
+    addActRow(DBTN_ACT_PIN_HIDE_TOOLBAR, false, L"Hide / Show toolbar",           &ck.hkPinHideToolbar,   { 0, 'H' });
+    addActRow(DBTN_ACT_PIN_UNFILTER,     false, L"Smooth the image",              &ck.hkPinSmooth,        { 0, 'S' });
+    addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkPinSaveAs,        { MOD_CONTROL | MOD_SHIFT, 'S' });
+    addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkPinSave,          { MOD_CONTROL, 'S' });
+    addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkPinCopy,          { MOD_CONTROL, 'C' });
+    addActRow(DBTN_ACT_CLOSE,            false, L"Close pinned image",            &ck.hkPinClose,         { 0, VK_ESCAPE });
 
     int curY = 8;
     for (auto& r : ck.rows) {
@@ -6460,47 +7129,59 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         optSt->hkToolText      = ck.hkToolText;
         optSt->hkToolMosaicSq  = ck.hkToolMosaicSq;
         optSt->hkToolMosaicCir = ck.hkToolMosaicCir;
-        optSt->hkActUndo       = ck.hkActUndo;
-        optSt->hkActRedo       = ck.hkActRedo;
-        optSt->hkActPin        = ck.hkActPin;
-        optSt->hkActOcr        = ck.hkActOcr;
-        optSt->hkActSave       = ck.hkActSave;
-        optSt->hkActCopy       = ck.hkActCopy;
-        optSt->hkPinZoomOut    = ck.hkPinZoomOut;
-        optSt->hkPinZoomIn     = ck.hkPinZoomIn;
-        optSt->hkPinZoomReset  = ck.hkPinZoomReset;
-        optSt->hkPinOutline    = ck.hkPinOutline;
-        optSt->hkPinSmooth     = ck.hkPinSmooth;
-        optSt->hkPinSaveAs     = ck.hkPinSaveAs;
-        optSt->hkPinSave       = ck.hkPinSave;
-        optSt->hkPinCopy       = ck.hkPinCopy;
-        optSt->hkPinClose      = ck.hkPinClose;
+        optSt->hkActUndo          = ck.hkActUndo;
+        optSt->hkActRedo          = ck.hkActRedo;
+        optSt->hkActClear         = ck.hkActClear;
+        optSt->hkActOptions       = ck.hkActOptions;
+        optSt->hkActPin           = ck.hkActPin;
+        optSt->hkActOcr           = ck.hkActOcr;
+        optSt->hkActSaveAs        = ck.hkActSaveAs;
+        optSt->hkActSave          = ck.hkActSave;
+        optSt->hkActCopy          = ck.hkActCopy;
+        optSt->hkFramePlayPause   = ck.hkFramePlayPause;
+        optSt->hkFrameToggleStrip = ck.hkFrameToggleStrip;
+        optSt->hkPinZoomOut       = ck.hkPinZoomOut;
+        optSt->hkPinZoomIn        = ck.hkPinZoomIn;
+        optSt->hkPinZoomReset     = ck.hkPinZoomReset;
+        optSt->hkPinOutline       = ck.hkPinOutline;
+        optSt->hkPinHideToolbar   = ck.hkPinHideToolbar;
+        optSt->hkPinSmooth        = ck.hkPinSmooth;
+        optSt->hkPinSaveAs        = ck.hkPinSaveAs;
+        optSt->hkPinSave          = ck.hkPinSave;
+        optSt->hkPinCopy          = ck.hkPinCopy;
+        optSt->hkPinClose         = ck.hkPinClose;
 
-        g_Daemon.hkRegionSnip    = ck.hkRegion;
-        g_Daemon.hkFullSnap      = ck.hkFull;
-        g_Daemon.hkPrevRegion    = ck.hkPrev;
-        g_Daemon.hkToolSelect    = ck.hkToolSelect;
-        g_Daemon.hkToolPen       = ck.hkToolPen;
-        g_Daemon.hkToolStabilo   = ck.hkToolStabilo;
-        g_Daemon.hkToolLine      = ck.hkToolLine;
-        g_Daemon.hkToolArrow     = ck.hkToolArrow;
-        g_Daemon.hkToolNumber    = ck.hkToolNumber;
-        g_Daemon.hkToolRect      = ck.hkToolRect;
-        g_Daemon.hkToolEllipse   = ck.hkToolEllipse;
-        g_Daemon.hkToolText      = ck.hkToolText;
-        g_Daemon.hkToolMosaicSq  = ck.hkToolMosaicSq;
-        g_Daemon.hkToolMosaicCir = ck.hkToolMosaicCir;
-        g_Daemon.hkActUndo       = ck.hkActUndo;
-        g_Daemon.hkActRedo       = ck.hkActRedo;
-        g_Daemon.hkActPin        = ck.hkActPin;
-        g_Daemon.hkActOcr        = ck.hkActOcr;
-        g_Daemon.hkActSave       = ck.hkActSave;
-        g_Daemon.hkActCopy       = ck.hkActCopy;
-        g_Daemon.hkPinZoomOut    = ck.hkPinZoomOut;
-        g_Daemon.hkPinZoomIn     = ck.hkPinZoomIn;
-        g_Daemon.hkPinZoomReset  = ck.hkPinZoomReset;
-        g_Daemon.hkPinOutline    = ck.hkPinOutline;
-        g_Daemon.hkPinSmooth     = ck.hkPinSmooth;
+        g_Daemon.hkRegionSnip       = ck.hkRegion;
+        g_Daemon.hkFullSnap         = ck.hkFull;
+        g_Daemon.hkPrevRegion       = ck.hkPrev;
+        g_Daemon.hkToolSelect       = ck.hkToolSelect;
+        g_Daemon.hkToolPen          = ck.hkToolPen;
+        g_Daemon.hkToolStabilo      = ck.hkToolStabilo;
+        g_Daemon.hkToolLine         = ck.hkToolLine;
+        g_Daemon.hkToolArrow        = ck.hkToolArrow;
+        g_Daemon.hkToolNumber       = ck.hkToolNumber;
+        g_Daemon.hkToolRect         = ck.hkToolRect;
+        g_Daemon.hkToolEllipse      = ck.hkToolEllipse;
+        g_Daemon.hkToolText         = ck.hkToolText;
+        g_Daemon.hkToolMosaicSq     = ck.hkToolMosaicSq;
+        g_Daemon.hkToolMosaicCir    = ck.hkToolMosaicCir;
+        g_Daemon.hkActUndo          = ck.hkActUndo;
+        g_Daemon.hkActRedo          = ck.hkActRedo;
+        g_Daemon.hkActClear         = ck.hkActClear;
+        g_Daemon.hkActOptions       = ck.hkActOptions;
+        g_Daemon.hkActPin           = ck.hkActPin;
+        g_Daemon.hkActOcr           = ck.hkActOcr;
+        g_Daemon.hkActSaveAs        = ck.hkActSaveAs;
+        g_Daemon.hkActSave          = ck.hkActSave;
+        g_Daemon.hkActCopy          = ck.hkActCopy;
+        g_Daemon.hkFramePlayPause   = ck.hkFramePlayPause;
+        g_Daemon.hkFrameToggleStrip = ck.hkFrameToggleStrip;
+        g_Daemon.hkPinZoomOut       = ck.hkPinZoomOut;
+        g_Daemon.hkPinZoomIn      = ck.hkPinZoomIn;
+        g_Daemon.hkPinZoomReset   = ck.hkPinZoomReset;
+        g_Daemon.hkPinOutline     = ck.hkPinOutline;
+        g_Daemon.hkPinHideToolbar = ck.hkPinHideToolbar;
+        g_Daemon.hkPinSmooth      = ck.hkPinSmooth;
         g_Daemon.hkPinSaveAs     = ck.hkPinSaveAs;
         g_Daemon.hkPinSave       = ck.hkPinSave;
         g_Daemon.hkPinCopy       = ck.hkPinCopy;
@@ -6517,7 +7198,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
                 PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
                 if (pData) {
                     UpdatePinnedWindowLayout(hPin, pData, false);
-                    InvalidateRect(hPin, nullptr, FALSE);
+                    RenderPinnedLayeredWindow(hPin, pData);
                 }
             }
         }
@@ -6830,50 +7511,57 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hKeepCursorChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hKeepCursorChk, BM_SETCHECK, st->keepCursor ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            // 8. Enable pen and highlighter smoothing.
+            // 8. Auto-hide frame list
+            st->hAutoHideFramesChk = CreateWindowExW(0, L"BUTTON",
+                L"Auto-hide frame list",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 576, 516, 24, hWnd, (HMENU)IDC_OPT_AUTOHIDE_FRM_CHK, nullptr, nullptr);
+            SendMessageW(st->hAutoHideFramesChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hAutoHideFramesChk, BM_SETCHECK, st->autoHideFrames ? BST_CHECKED : BST_UNCHECKED, 0);
+
+            // 9. Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 576, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 604, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 608, 224, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 636, 224, 22, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 604, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 632, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
-            // 9. Restore everything to default button (below smoothing strength, NOT in row with Save options)
+            // 10. Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 644, 218, 30, hWnd, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 672, 218, 30, hWnd, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Permanent pinned footer bar: clickable %appdata%\PepperSnap persistence link + Save options + Cancel
             st->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 688, 552, 56, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 716, 552, 56, hWnd, nullptr, nullptr, nullptr);
 
             HFONT hLinkFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 706, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 734, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
             WNDPROC origStaticProc = (WNDPROC)SetWindowLongPtrW(st->hAppDataInfo, GWLP_WNDPROC, (LONG_PTR)AppDataLinkStaticWndProc);
             SetPropW(st->hAppDataInfo, L"PepperSnapOrigStaticProc", (HANDLE)origStaticProc);
 
             st->hOkBtn = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 699, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 727, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(st->hOkBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 699, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 727, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             for (HWND hCh = GetWindow(hWnd, GW_CHILD); hCh != nullptr; hCh = GetWindow(hCh, GW_HWNDNEXT)) {
@@ -6881,7 +7569,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 SetWindowLongW(hCh, GWL_STYLE, stBits | WS_CLIPSIBLINGS);
             }
 
-            st->scrollContentHeight = 688;
+            st->scrollContentHeight = 716;
             st->footerHeight = 56;
             UpdateOptionsPreviewLabel(st);
             LayoutOptionsFooter(hWnd, st);
@@ -7103,9 +7791,10 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkActCopy       = { MOD_CONTROL, 'C' };
                 st->hkPinZoomOut    = { 0, VK_OEM_MINUS };
                 st->hkPinZoomIn     = { 0, VK_OEM_PLUS };
-                st->hkPinZoomReset  = { 0, '0' };
-                st->hkPinOutline    = { 0, 'O' };
-                st->hkPinSmooth     = { 0, 'S' };
+                st->hkPinZoomReset   = { 0, '0' };
+                st->hkPinOutline     = { 0, 'O' };
+                st->hkPinHideToolbar = { 0, 'H' };
+                st->hkPinSmooth      = { 0, 'S' };
                 st->hkPinSaveAs     = { MOD_CONTROL | MOD_SHIFT, 'S' };
                 st->hkPinSave       = { MOD_CONTROL, 'S' };
                 st->hkPinCopy       = { MOD_CONTROL, 'C' };
@@ -7123,12 +7812,14 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->alsoSavePin   = true;
                 st->alsoSaveOcr   = true;
                 st->keepCursor    = false;
-                SendMessageW(st->hNonStackingChk, BM_SETCHECK, BST_CHECKED, 0);
-                SendMessageW(st->hAutoSaveChk,    BM_SETCHECK, BST_CHECKED, 0);
-                SendMessageW(st->hCopyFullChk,    BM_SETCHECK, BST_CHECKED, 0);
-                SendMessageW(st->hSavePinChk,     BM_SETCHECK, BST_CHECKED, 0);
-                SendMessageW(st->hSaveOcrChk,     BM_SETCHECK, BST_CHECKED, 0);
-                SendMessageW(st->hKeepCursorChk,  BM_SETCHECK, BST_UNCHECKED, 0);
+                st->autoHideFrames = true;
+                SendMessageW(st->hNonStackingChk,    BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hAutoSaveChk,       BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hCopyFullChk,       BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hSavePinChk,        BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hSaveOcrChk,        BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hKeepCursorChk,     BM_SETCHECK, BST_UNCHECKED, 0);
+                SendMessageW(st->hAutoHideFramesChk, BM_SETCHECK, BST_CHECKED, 0);
 
                 st->penSmoothEnabled = true;
                 st->penSmoothStrength = 15;
@@ -7251,6 +7942,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->alsoSavePin   = (SendMessageW(st->hSavePinChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->alsoSaveOcr   = (SendMessageW(st->hSaveOcrChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->keepCursor    = (SendMessageW(st->hKeepCursorChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->autoHideFrames = (SendMessageW(st->hAutoHideFramesChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 int uSel = (int)SendMessageW(st->hComboUpdateInterval, CB_GETCURSEL, 0, 0);
                 if (uSel >= 0 && uSel <= 4) st->updateInterval = (UpdateCheckInterval)uSel;
@@ -7310,6 +8002,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.alsoSavePin  = alsoSavePinned;
     st.alsoSaveOcr  = alsoSaveOcrText;
     st.keepCursor   = keepCursorOnScreenshot;
+    st.autoHideFrames = autoHideFrameList;
     st.nonStackingHi = nonStackingHighlighter;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
@@ -7329,17 +8022,23 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkToolText      = hkToolText;
     st.hkToolMosaicSq  = hkToolMosaicSq;
     st.hkToolMosaicCir = hkToolMosaicCir;
-    st.hkActUndo       = hkActUndo;
-    st.hkActRedo       = hkActRedo;
-    st.hkActPin        = hkActPin;
-    st.hkActOcr        = hkActOcr;
-    st.hkActSave       = hkActSave;
-    st.hkActCopy       = hkActCopy;
-    st.hkPinZoomOut    = hkPinZoomOut;
+    st.hkActUndo          = hkActUndo;
+    st.hkActRedo          = hkActRedo;
+    st.hkActClear         = hkActClear;
+    st.hkActOptions       = hkActOptions;
+    st.hkActPin           = hkActPin;
+    st.hkActOcr           = hkActOcr;
+    st.hkActSaveAs        = hkActSaveAs;
+    st.hkActSave          = hkActSave;
+    st.hkActCopy          = hkActCopy;
+    st.hkFramePlayPause   = hkFramePlayPause;
+    st.hkFrameToggleStrip = hkFrameToggleStrip;
+    st.hkPinZoomOut       = hkPinZoomOut;
     st.hkPinZoomIn     = hkPinZoomIn;
-    st.hkPinZoomReset  = hkPinZoomReset;
-    st.hkPinOutline    = hkPinOutline;
-    st.hkPinSmooth     = hkPinSmooth;
+    st.hkPinZoomReset   = hkPinZoomReset;
+    st.hkPinOutline     = hkPinOutline;
+    st.hkPinHideToolbar = hkPinHideToolbar;
+    st.hkPinSmooth      = hkPinSmooth;
     st.hkPinSaveAs     = hkPinSaveAs;
     st.hkPinSave       = hkPinSave;
     st.hkPinCopy       = hkPinCopy;
@@ -7348,7 +8047,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = WS_EX_TOPMOST;
-    const int totalOptClientH = 688 + 56;
+    const int totalOptClientH = 716 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
@@ -7432,6 +8131,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         alsoSavePinned = st.alsoSavePin;
         alsoSaveOcrText = st.alsoSaveOcr;
         keepCursorOnScreenshot = st.keepCursor;
+        autoHideFrameList = st.autoHideFrames;
         nonStackingHighlighter = st.nonStackingHi;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
@@ -7451,22 +8151,29 @@ void PepperSnapDaemon::ShowOptionsModal() {
         hkToolText      = st.hkToolText;
         hkToolMosaicSq  = st.hkToolMosaicSq;
         hkToolMosaicCir = st.hkToolMosaicCir;
-        hkActUndo       = st.hkActUndo;
-        hkActRedo       = st.hkActRedo;
-        hkActPin        = st.hkActPin;
-        hkActOcr        = st.hkActOcr;
-        hkActSave       = st.hkActSave;
-        hkActCopy       = st.hkActCopy;
-        hkPinZoomOut    = st.hkPinZoomOut;
+        hkActUndo          = st.hkActUndo;
+        hkActRedo          = st.hkActRedo;
+        hkActClear         = st.hkActClear;
+        hkActOptions       = st.hkActOptions;
+        hkActPin           = st.hkActPin;
+        hkActOcr           = st.hkActOcr;
+        hkActSaveAs        = st.hkActSaveAs;
+        hkActSave          = st.hkActSave;
+        hkActCopy          = st.hkActCopy;
+        hkFramePlayPause   = st.hkFramePlayPause;
+        hkFrameToggleStrip = st.hkFrameToggleStrip;
+        hkPinZoomOut       = st.hkPinZoomOut;
         hkPinZoomIn     = st.hkPinZoomIn;
-        hkPinZoomReset  = st.hkPinZoomReset;
-        hkPinOutline    = st.hkPinOutline;
-        hkPinSmooth     = st.hkPinSmooth;
-        hkPinSaveAs     = st.hkPinSaveAs;
-        hkPinSave       = st.hkPinSave;
-        hkPinCopy       = st.hkPinCopy;
-        hkPinClose      = st.hkPinClose;
+        hkPinZoomReset   = st.hkPinZoomReset;
+        hkPinOutline     = st.hkPinOutline;
+        hkPinHideToolbar = st.hkPinHideToolbar;
+        hkPinSmooth      = st.hkPinSmooth;
+        hkPinSaveAs      = st.hkPinSaveAs;
+        hkPinSave        = st.hkPinSave;
+        hkPinCopy        = st.hkPinCopy;
+        hkPinClose       = st.hkPinClose;
         if (st.restoredAllDefaults) {
+            hidePinnedToolbar = false;
             hidePinnedOutline = false;
             smoothPinnedImage = false;
             activeColor = Color(255, 239, 68, 68);
@@ -7484,14 +8191,15 @@ void PepperSnapDaemon::ShowOptionsModal() {
                 PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
                 if (pData) {
                     if (st.restoredAllDefaults) {
+                        pData->hideToolbar = false;
                         pData->hideOutline = false;
                         pData->smoothImage = false;
                         int imgW = 32, imgH = 32;
                         GetPinnedScaledDims(pData, imgW, imgH);
                         EnsurePinnedWindowCache(pData, imgW, imgH, true);
                     }
-                    UpdatePinnedWindowLayout(hPin, pData, false);
-                    InvalidateRect(hPin, nullptr, FALSE);
+                    UpdatePinnedWindowLayout(hPin, pData, st.restoredAllDefaults);
+                    RenderPinnedLayeredWindow(hPin, pData);
                 }
             }
         }
@@ -7515,25 +8223,77 @@ struct ShortcutEntry {
     std::wstring keyCol;
     std::wstring descCol;
     int y = 0;
-    int h = 26;
+    int h = 28;
+    int textH = 20;
 };
 
 struct ShortcutsDlgParams {
     std::wstring mainTitle;
     std::vector<ShortcutEntry> entries;
-    int leftColX = 24;
-    int leftColW = 216;
-    int rightColX = 248;
-    int rightColW = 340;
+    int leftColX = 22;
+    int leftColW = 240;
+    int rightColX = 276;
+    int rightColW = 480;
     int scrollY = 0;
     int scrollContentHeight = 580;
     int footerHeight = 52;
-    int fixedWinWidth = 620;
+    int minWinWidth = 740;
+    int maxWinWidth = 1080;
     int fullWinHeight = 680;
+    int savedWinWidth = 880;
     int savedWinHeight = 580;
     HWND hFooterBg = nullptr;
     HWND hOkBtn = nullptr;
 };
+
+static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW) {
+    if (!p) return;
+    int padX = 18;
+    int rightEdge = std::max(p->rightColX + 240, clientW - padX);
+    int availDescW = std::max(240, rightEdge - p->rightColX);
+    p->rightColW = availDescW;
+
+    HDC hdc = hWnd ? GetDC(hWnd) : GetDC(nullptr);
+    HFONT hDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HGDIOBJ hOldF = hdc ? SelectObject(hdc, hDescFont) : nullptr;
+
+    int curY = 48;
+    for (size_t i = 0; i < p->entries.size(); ++i) {
+        auto& e = p->entries[i];
+        e.y = curY;
+        if (e.isSectionHeader) {
+            e.h = (i == 0) ? 28 : 38;
+            e.textH = 20;
+        } else {
+            int measuredH = 20;
+            if (hdc && !e.descCol.empty()) {
+                RECT rcD = { 0, 0, availDescW, 0 };
+                DrawTextW(hdc, e.descCol.c_str(), -1, &rcD, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+                measuredH = std::max(18, (int)(rcD.bottom - rcD.top));
+            }
+            e.textH = measuredH;
+            e.h = std::max(28, measuredH + 10);
+        }
+        curY += e.h;
+    }
+
+    if (hdc) {
+        SelectObject(hdc, hOldF);
+        ReleaseDC(hWnd, hdc);
+    }
+    DeleteObject(hDescFont);
+
+    p->scrollContentHeight = curY + 12;
+
+    DWORD dwStyle = hWnd ? (DWORD)GetWindowLongPtrW(hWnd, GWL_STYLE)
+                         : (WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN);
+    DWORD dwExStyle = hWnd ? (DWORD)GetWindowLongPtrW(hWnd, GWL_EXSTYLE) : WS_EX_TOPMOST;
+    RECT rcFull = { 0, 0, std::max(320, clientW), p->scrollContentHeight + p->footerHeight };
+    AdjustWindowRectEx(&rcFull, dwStyle, FALSE, dwExStyle);
+    p->fullWinHeight = rcFull.bottom - rcFull.top;
+}
 
 static void LayoutShortcutsFooter(HWND hWnd, ShortcutsDlgParams* p) {
     if (!hWnd || !p) return;
@@ -7591,6 +8351,10 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
 
             if (p) {
                 p->hOkBtn = hOk;
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int clientW = std::max(1, (int)(rcC.right - rcC.left));
+                RecalcShortcutsLayout(hWnd, p, clientW);
                 LayoutShortcutsFooter(hWnd, p);
                 UpdateShortcutsScroll(hWnd, p, 0);
             }
@@ -7637,7 +8401,7 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
 
                 int sy = p->scrollY;
                 int padX = 18;
-                int rightEdge = clientW - padX;
+                int rightEdge = std::max(p->rightColX + 240, clientW - padX);
 
                 // Main header title + horizontal separator line
                 HGDIOBJ hOldF = SelectObject(memDC, hTitleFont);
@@ -7714,8 +8478,9 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
 
                         SelectObject(memDC, hDescFont);
                         SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
-                        RECT rcDesc = { p->rightColX, drawY, rightEdge, drawY + e.h };
-                        DrawTextW(memDC, e.descCol.c_str(), -1, &rcDesc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                        int descTop = drawY + std::max(2, (e.h - e.textH) / 2);
+                        RECT rcDesc = { p->rightColX, descTop, rightEdge, drawY + e.h };
+                        DrawTextW(memDC, e.descCol.c_str(), -1, &rcDesc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
                     }
                 }
 
@@ -7751,29 +8516,30 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         }
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
-            if (p && p->fixedWinWidth > 0) {
-                mmi->ptMinTrackSize.x = p->fixedWinWidth;
-                mmi->ptMaxTrackSize.x = p->fixedWinWidth;
+            if (p && p->minWinWidth > 0) {
+                int sw = GetSystemMetrics(SM_CXSCREEN);
+                int sh = GetSystemMetrics(SM_CYSCREEN);
+                int maxW = std::min(p->maxWinWidth, std::max(p->minWinWidth, sw - 24));
+                mmi->ptMinTrackSize.x = p->minWinWidth;
+                mmi->ptMaxTrackSize.x = std::max(p->minWinWidth, maxW);
                 mmi->ptMinTrackSize.y = 280;
-                int maxH = std::min(p->fullWinHeight, std::max(320, GetSystemMetrics(SM_CYSCREEN) - 24));
+                int maxH = std::min(p->fullWinHeight, std::max(320, sh - 24));
                 mmi->ptMaxTrackSize.y = std::max(280, maxH);
             }
             return 0;
         }
-        case WM_NCHITTEST: {
-            LRESULT hit = DefWindowProcW(hWnd, msg, wParam, lParam);
-            if (hit == HTLEFT || hit == HTRIGHT) return HTBORDER;
-            if (hit == HTTOPLEFT || hit == HTTOPRIGHT) return HTTOP;
-            if (hit == HTBOTTOMLEFT || hit == HTBOTTOMRIGHT) return HTBOTTOM;
-            return hit;
-        }
         case WM_SIZE: {
             if (p && wParam != SIZE_MINIMIZED) {
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int clientW = std::max(1, (int)(rcC.right - rcC.left));
+                RecalcShortcutsLayout(hWnd, p, clientW);
                 LayoutShortcutsFooter(hWnd, p);
                 UpdateShortcutsScroll(hWnd, p, p->scrollY);
                 InvalidateRect(hWnd, nullptr, FALSE);
                 RECT rcW;
                 if (GetWindowRect(hWnd, &rcW)) {
+                    p->savedWinWidth  = rcW.right - rcW.left;
                     p->savedWinHeight = rcW.bottom - rcW.top;
                 }
             }
@@ -7903,11 +8669,15 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(FormatLabelWithShortcut(L"Instant fullscreen", hkFullSnap),                  L"Capture & save all monitors immediately (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Instant save previous custom area", hkPrevRegion), L"Capture & save previous custom area (customizable in Customize keys)");
     addRow(L"Options \x2192 Customize keys",            L"Customize any shortcut key (Esc to cancel, Delete to leave it empty; PrintScreen reserved)");
-    addRow(L"Options \x2192 Naming pattern (\x24D8)",   L"Click \x24D8 beside Restore default for acceptable syntax ({YYYY}, {MMMM}, {DDDD}, etc.)");
+    addRow(L"Options \x2192 Naming pattern (\x24D8)",   L"Click \x24D8 beside Restore default for acceptable syntax ({YYYY}, {MMMM}, {DDDD}, etc. — click or select any syntax to copy)");
     addRow(L"Options \x2192 Restore everything to default", L"Reset all Options settings and shortcut keys back to factory defaults (with confirmation)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
-    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin, Smooth / Unsmooth all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
-    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" or \"Pin on top\"");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin (supports multi-select), Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
+    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image; shows selectable bottom frame list for multi-frame .gif / .webp) or \"Pin on top\" (single or multi-selected images)");
+    addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
+    addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
+    addActionRow(DBTN_ACT_FRAME_TOGGLE,     false, FormatLabelWithShortcut(L"Hide / Show frames (GIF/WebP)",  hkFrameToggleStrip), L"Collapse or expand the bottom frame list in \"Edit with PepperSnap\" (or click the Hide / Show frames dropdown button)");
+    addRow(L"Resize this info window",       L"Drag any window edge or corner to adjust width and height (text wraps & size persists)");
 
     addSection(L"Custom area — window selection, aiming & size input");
     addRow(L"Hold Ctrl (before selecting)",  L"Auto-detect & highlight any window, notification pop-up, or sidebar");
@@ -7937,34 +8707,38 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Delete / Backspace",            L"Delete currently selected annotation (in Select mode)");
 
     addSection(L"Custom area — Row 3: toolbar actions & export shortcuts");
-    addActionRow(DBTN_ACT_DRAG_HUD, false,  L"Drag toolbar handle",                                           L"Drag 4-way arrow button to move toolbar (resets when selection moves)");
-    addActionRow(DBTN_ACT_UNDO,     false,  FormatLabelWithShortcut(L"Undo",                  hkActUndo),     L"Undo last annotation action");
-    addActionRow(DBTN_ACT_REDO,     false,  FormatLabelWithShortcut(L"Redo",                  hkActRedo),     L"Redo undone annotation action");
-    addActionRow(DBTN_ACT_CLEAR,    false,  L"Clear all annotations",                                         L"Remove all annotations from current selection");
-    addActionRow(DBTN_ACT_OPTIONS,  false,  L"Options",                                                       L"Open PepperSnap Options window");
-    addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",            hkActPin),      L"Pin selected capture as a floating topmost desktop window");
-    addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR", hkActOcr),      L"Recognize text in selection via Windows OCR & copy to clipboard");
-    addActionRow(DBTN_ACT_SAVE_AS,  false,  L"Save as JPG/PNG/WEBP/BMP",                                      L"Open Save As dialog for selected region");
-    addActionRow(DBTN_ACT_SAVE,     false,  FormatLabelWithShortcut(L"Quick save",            hkActSave),     L"Save capture directly to default folder & close");
-    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",     hkActCopy),     L"Copy capture to clipboard & close");
-    addActionRow(DBTN_ACT_CLOSE,    false,  L"Close / Select mode (Esc)",                                     L"Switch active drawing tool to Select mode, or exit custom area");
+    addActionRow(DBTN_ACT_DRAG_HUD, false,  L"Drag toolbar handle",                                                     L"Drag 4-way arrow button to move toolbar (resets when selection moves)");
+    addActionRow(DBTN_ACT_UNDO,     false,  FormatLabelWithShortcut(L"Undo",                      hkActUndo),           L"Undo last annotation action");
+    addActionRow(DBTN_ACT_REDO,     false,  FormatLabelWithShortcut(L"Redo",                      hkActRedo),           L"Redo undone annotation action");
+    addActionRow(DBTN_ACT_CLEAR,    false,  FormatLabelWithShortcut(L"Clear all annotations",     hkActClear),          L"Remove all annotations from current selection");
+    addActionRow(DBTN_ACT_OPTIONS,  false,  FormatLabelWithShortcut(L"Options",                   hkActOptions),        L"Open PepperSnap Options window");
+    addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",                hkActPin),            L"Pin selected capture as a floating topmost desktop window");
+    addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in selection via Windows OCR & copy to clipboard");
+    addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for selected region");
+    addActionRow(DBTN_ACT_SAVE,     false,  FormatLabelWithShortcut(L"Quick save",                hkActSave),           L"Save capture directly to default folder & close");
+    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close");
+    addActionRow(DBTN_ACT_CLOSE,    false,  L"Close / Select mode (Esc)",                                               L"Switch active drawing tool to Select mode, or exit custom area");
 
     addSection(L"Pin on top — floating window toolbar & mechanisms");
-    addRow(L"You can pin multiple image at once", L"Pin multiple captures or opened images on top of your screen simultaneously");
-    addRow(L"Hover over pinned image (1s)",  L"Pop-up shows \"Double-click to hide/show toolbar\" and \"Double right-click to close\"");
-    addRow(L"Drag pinned image",             L"Move floating window (snaps to screen edges; image can overflow screen)");
+    addRow(L"You can pin multiple image at once", L"Pin multiple captures, multi-select images in \"Open image to pin on top...\", or multi-select images in Explorer and click \"Pin on top\"");
+    addRow(L"Animated GIF & WebP support",   L"Pinned .gif (and animated .webp) images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
+    addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", and \"Middle-click to reset size\"");
+    addRow(L"Drag pinned image",             L"Move floating window (temporarily hides toolbar while dragging, snaps to screen edges; image can overflow screen)");
     addRow(L"Hold Shift + drag",             L"Temporarily disable screen-edge snapping while moving");
-    addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar");
+    addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar (status persists; default: shown)");
     addRow(L"Double right-click pinned image", L"Close pinned image");
-    addRow(L"Smooth / Unsmooth all pinned image", L"Tray menu button that cycles smoothing or unsmoothing the image filter across all pinned images");
-    addRow(L"Show / Hide outline on all pinned image", L"Tray menu button that cycles showing or hiding the red outline across all pinned images");
-    addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
     addRow(L"Scroll / Ctrl + Scroll",        L"Zoom in or out (anchored to bottom-right corner or visible screen edge)");
-    addActionRow(DBTN_ACT_ZOOM_OUT,     false, FormatLabelWithShortcut(L"Zoom out",                 hkPinZoomOut),   L"Scale pinned image down (anchored to bottom-right corner)");
-    addActionRow(DBTN_ACT_ZOOM_IN,      false, FormatLabelWithShortcut(L"Zoom in",                  hkPinZoomIn),    L"Scale pinned image up (anchored to bottom-right corner)");
-    addActionRow(DBTN_ACT_ZOOM_RESET,   false, FormatLabelWithShortcut(L"Reset to original size",   hkPinZoomReset), L"Restore 100% original pixel size (anchored to bottom-right corner)");
-    addActionRow(DBTN_ACT_PIN_OUTLINE,  false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),   L"Toggle red border outline around pinned image (status persists; default: on)");
-    addActionRow(DBTN_ACT_PIN_UNFILTER, false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),    L"Smooth image with filter when on; unfiltered (pixelated) when off (status persists; default: off)");
+    addRow(L"Middle-click pinned image",     L"Reset pinned image to 100% original pixel size (anchored to bottom-right corner)");
+    addRow(FormatLabelWithShortcut(L"Zoom out",               hkPinZoomOut),     L"Scale pinned image down via shortcut key or scroll down (anchored to bottom-right corner)");
+    addRow(FormatLabelWithShortcut(L"Zoom in",                hkPinZoomIn),      L"Scale pinned image up via shortcut key or scroll up (anchored to bottom-right corner)");
+    addRow(FormatLabelWithShortcut(L"Reset to original size", hkPinZoomReset),   L"Restore 100% original pixel size via shortcut key or middle-click (anchored to bottom-right corner)");
+    addRow(FormatLabelWithShortcut(L"Hide / Show toolbar",    hkPinHideToolbar), L"Hide or show floating toolbar on pinned image via shortcut key or double-click");
+    addRow(L"Smooth / Unsmooth all pinned image", L"Tray menu button that cycles smoothing or unsmoothing the image filter across all pinned images (keeps tray menu open)");
+    addRow(L"Show / Hide toolbar on all pinned image", L"Tray menu button that cycles showing or hiding the toolbar across all pinned images (keeps tray menu open)");
+    addRow(L"Show / Hide outline on all pinned image", L"Tray menu button that cycles showing or hiding the red outline across all pinned images (keeps tray menu open)");
+    addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
+    addActionRow(DBTN_ACT_PIN_OUTLINE,      false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),     L"Toggle red border outline around pinned image (status persists; default: on)");
+    addActionRow(DBTN_ACT_PIN_UNFILTER,     false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),      L"Smooth image with filter when on; unfiltered (pixelated) when off (status persists; default: off)");
     addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image");
     addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder");
     addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),      L"Copy pinned image to clipboard");
@@ -7972,17 +8746,30 @@ void PepperSnapDaemon::ShowShortcutsModal() {
 
     int maxKeyW = 220;
     int maxDescW = 360;
+    int maxHeaderW = 480;
     HDC hdcScreen = GetDC(nullptr);
     if (hdcScreen) {
+        HFONT hTitleFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
         HFONT hKeyFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
         HFONT hDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-        HGDIOBJ hOldF = SelectObject(hdcScreen, hKeyFont);
+        HGDIOBJ hOldF = SelectObject(hdcScreen, hTitleFont);
+        RECT rcT = { 0, 0, 0, 0 };
+        DrawTextW(hdcScreen, params.mainTitle.c_str(), -1, &rcT, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        maxHeaderW = std::max(maxHeaderW, (int)(rcT.right - rcT.left) + 36);
+
         for (const auto& e : params.entries) {
-            if (!e.isSectionHeader) {
+            if (e.isSectionHeader) {
+                RECT rcS = { 0, 0, 0, 0 };
+                SelectObject(hdcScreen, hTitleFont);
+                DrawTextW(hdcScreen, e.keyCol.c_str(), -1, &rcS, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+                maxHeaderW = std::max(maxHeaderW, (int)(rcS.right - rcS.left) + 36);
+            } else {
                 RECT rcK = { 0, 0, 0, 0 };
                 SelectObject(hdcScreen, hKeyFont);
                 DrawTextW(hdcScreen, e.keyCol.c_str(), -1, &rcK, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
@@ -7998,41 +8785,53 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         SelectObject(hdcScreen, hOldF);
         DeleteObject(hDescFont);
         DeleteObject(hKeyFont);
+        DeleteObject(hTitleFont);
         ReleaseDC(nullptr, hdcScreen);
     }
 
     params.leftColX = 22;
     params.leftColW = maxKeyW;
     params.rightColX = params.leftColX + params.leftColW + 14;
-    params.rightColW = maxDescW;
 
-    int curY = 48;
-    for (size_t i = 0; i < params.entries.size(); ++i) {
-        auto& e = params.entries[i];
-        e.y = curY;
-        if (e.isSectionHeader) {
-            e.h = (i == 0) ? 28 : 38;
-        } else {
-            e.h = 28;
-        }
-        curY += e.h;
-    }
-    params.scrollContentHeight = curY + 12;
+    int minDescColW = 340;
+    int defDescColW = 470;
+    int maxDescColW = std::max(540, std::min(maxDescW, 660));
+    params.rightColW = defDescColW;
     params.footerHeight = 52;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwExStyle = WS_EX_TOPMOST;
-    int totalClientW = params.rightColX + params.rightColW + 20;
-    int totalClientH = params.scrollContentHeight + params.footerHeight;
-    RECT rcWin = { 0, 0, totalClientW, totalClientH };
-    AdjustWindowRectEx(&rcWin, dwStyle, FALSE, dwExStyle);
-    int fixedW = (rcWin.right - rcWin.left) + GetSystemMetrics(SM_CXVSCROLL);
-    int fullWinH = rcWin.bottom - rcWin.top;
+    int vScrollW = GetSystemMetrics(SM_CXVSCROLL);
+
+    auto calcWinW = [&](int clientWidth) {
+        RECT rcW = { 0, 0, clientWidth, 400 };
+        AdjustWindowRectEx(&rcW, dwStyle, FALSE, dwExStyle);
+        return (int)(rcW.right - rcW.left) + vScrollW;
+    };
+
+    int minClientW = std::max(maxHeaderW, params.rightColX + minDescColW + 20);
+    int defClientW = std::max(minClientW, params.rightColX + defDescColW + 20);
+    int maxClientW = std::max(defClientW, params.rightColX + maxDescColW + 20);
+
+    int minWinW = calcWinW(minClientW);
+    int defWinW = calcWinW(defClientW);
+    int maxWinW = std::max(minWinW, std::min(calcWinW(maxClientW), std::max(minWinW, sw - 24)));
+    int initW = std::max(minWinW, std::min(maxWinW, (shortcutsWindowWidth > 0) ? shortcutsWindowWidth : defWinW));
+
+    RECT rcFrame = { 0, 0, 0, 0 };
+    AdjustWindowRectEx(&rcFrame, dwStyle, FALSE, dwExStyle);
+    int nonClientW = (rcFrame.right - rcFrame.left) + vScrollW;
+    int initClientW = std::max(minClientW, initW - nonClientW);
+
+    RecalcShortcutsLayout(nullptr, &params, initClientW);
+
+    int fullWinH = params.fullWinHeight;
     int maxAllowedH = std::min(fullWinH, std::max(320, sh - 24));
     int initH = std::max(280, std::min(maxAllowedH, shortcutsWindowHeight));
-    params.fixedWinWidth = fixedW;
-    params.fullWinHeight = fullWinH;
+    params.minWinWidth = minWinW;
+    params.maxWinWidth = maxWinW;
+    params.savedWinWidth = initW;
     params.savedWinHeight = initH;
 
     HWND hOwner = (hOptionsWnd && IsWindow(hOptionsWnd))
@@ -8043,7 +8842,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         dwExStyle, L"PepperSnapShortcutsModal",
         L"PepperSnap — keyboard shortcuts and info",
         dwStyle,
-        (sw - fixedW) / 2, std::max(10, (sh - initH) / 2), fixedW, initH, hOwner, nullptr, hInst, &params
+        std::max(10, (sw - initW) / 2), std::max(10, (sh - initH) / 2), initW, initH, hOwner, nullptr, hInst, &params
     );
     hShortcutsWnd = hDlg;
     BringWindowToTop(hDlg);
@@ -8063,8 +8862,16 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         DispatchMessageW(&msg);
     }
     hShortcutsWnd = nullptr;
+    bool sizeChanged = false;
+    if (params.savedWinWidth >= params.minWinWidth && params.savedWinWidth != shortcutsWindowWidth) {
+        shortcutsWindowWidth = params.savedWinWidth;
+        sizeChanged = true;
+    }
     if (params.savedWinHeight >= 280 && params.savedWinHeight != shortcutsWindowHeight) {
         shortcutsWindowHeight = params.savedWinHeight;
+        sizeChanged = true;
+    }
+    if (sizeChanged) {
         SaveSettings();
     }
 }
@@ -8191,7 +8998,14 @@ void PepperSnapDaemon::ActionQuickSaveAndClose() {
 void PepperSnapDaemon::ActionSaveAsAndClose() {
     Bitmap* bmp = RenderCroppedRegionBitmap();
     if (!bmp) return;
-    ShowWindow(hOverlayWnd, SW_HIDE);
+
+    StopOverlayFramePlayback();
+    isSavingAsModalOpen = true;
+
+    HWND hSaveOwner = (hOverlayWnd && IsWindow(hOverlayWnd)) ? hOverlayWnd : hTrayWnd;
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        SetForegroundWindow(hOverlayWnd);
+    }
 
     WCHAR szFile[MAX_PATH] = {0};
     std::wstring defName = FormatFilename(captureCounter++) + GetFormatExtension(regionFormat);
@@ -8199,7 +9013,7 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
 
     OPENFILENAMEW ofn = {0};
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hTrayWnd;
+    ofn.hwndOwner = hSaveOwner;
     ofn.lpstrInitialDir = saveFolder.c_str();
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
@@ -8207,16 +9021,26 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
     ofn.nFilterIndex = (DWORD)regionFormat + 1;
     const wchar_t* defExts[4] = { L"jpg", L"png", L"webp", L"bmp" };
     ofn.lpstrDefExt = defExts[(int)regionFormat & 3];
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
 
-    if (GetSaveFileNameW(&ofn)) {
+    BOOL savedOk = GetSaveFileNameW(&ofn);
+    isSavingAsModalOpen = false;
+
+    if (savedOk) {
         if (SaveBitmapToPath(bmp, szFile)) {
             lastSavedFilePath = szFile;
             ShowTrayToast(L"Saved capture", std::wstring(szFile) + L"\n(click to open in Explorer)");
         }
+        delete bmp;
+        CloseRegionSnipOverlay();
+    } else {
+        delete bmp;
+        if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+            SetForegroundWindow(hOverlayWnd);
+            SetFocus(hOverlayWnd);
+            InvalidateRect(hOverlayWnd, nullptr, FALSE);
+        }
     }
-    delete bmp;
-    CloseRegionSnipOverlay();
 }
 
 // ----------------------------------------------------------------------------
@@ -9029,6 +9853,11 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
         }
         g.DrawRectangle(&loupeBorder, lx, ly, loupeW, loupeH);
     }
+
+    // Render Multi-Frame GIF / WebP Selector Strip ON TOP of custom area and its toolbar!
+    if (g_Daemon.HasOverlayMultiFrames()) {
+        g_Daemon.RenderOverlayFrameStrip(g, W, H);
+    }
     } // Graphics g(memDC) scope ends and flushes before BitBlt to screen
 
     BitBlt(hdc, 0, 0, W, H, memDC, 0, 0, SRCCOPY);
@@ -9114,6 +9943,9 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     InvalidateRect(hWnd, nullptr, FALSE);
                 }
             } else if (wParam == 2) {
+                if (g_Daemon.isSavingAsModalOpen) {
+                    return 0;
+                }
                 g_Daemon.SuppressAboveOverlayWindows();
                 if ((!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
                     (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd))) {
@@ -9130,6 +9962,20 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
                         InvalidateRect(hWnd, nullptr, FALSE);
                     }
+                }
+            } else if (wParam == 3) {
+                KillTimer(hWnd, 3);
+                if (g_Daemon.HasOverlayMultiFrames() && g_Daemon.overlayFramesPlaying) {
+                    size_t nextIdx = (g_Daemon.overlayActiveFrameIdx + 1) % g_Daemon.overlayFrames.size();
+                    g_Daemon.SelectOverlayFrame(nextIdx);
+                    if (!g_Daemon.overlayFrameStripCollapsed) {
+                        g_Daemon.EnsureActiveFrameVisibleInStrip();
+                        g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                    }
+                    int delayMs = (nextIdx < g_Daemon.overlayFrameDelaysMs.size()) ? g_Daemon.overlayFrameDelaysMs[nextIdx] : 80;
+                    delayMs = std::max(20, std::min(60000, delayMs));
+                    SetTimer(hWnd, 3, (UINT)delayMs, nullptr);
+                    InvalidateRect(hWnd, nullptr, FALSE);
                 }
             }
             return 0;
@@ -9158,16 +10004,72 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_MOUSEWHEEL: {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            if (g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed &&
+                PtInRect(&g_Daemon.overlayFrameStripPanelRect, g_Daemon.mousePt)) {
+                float step = (delta > 0) ? -108.0f : 108.0f;
+                g_Daemon.overlayFrameScrollX = std::max(0.0f, std::min(g_Daemon.overlayFrameMaxScrollX, g_Daemon.overlayFrameScrollX + step));
+                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
             float nextS = std::max(1.0f, std::min(120.0f, g_Daemon.activeStroke + (delta > 0 ? 1.5f : -1.5f)));
             g_Daemon.ApplyStrokeToSelectedAnnotation(nextS, false);
             InvalidateRect(hWnd, nullptr, FALSE);
             return 0;
         }
 
+        case WM_MOUSEHWHEEL: {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            if (g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed &&
+                PtInRect(&g_Daemon.overlayFrameStripPanelRect, g_Daemon.mousePt)) {
+                float step = (delta > 0) ? 108.0f : -108.0f;
+                g_Daemon.overlayFrameScrollX = std::max(0.0f, std::min(g_Daemon.overlayFrameMaxScrollX, g_Daemon.overlayFrameScrollX + step));
+                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            break;
+        }
+
         case WM_LBUTTONDBLCLK: {
             int mx = GET_X_LPARAM(lParam);
             int my = GET_Y_LPARAM(lParam);
             POINT pt{ mx, my };
+            if (g_Daemon.HasOverlayMultiFrames()) {
+                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                if (PtInRect(&g_Daemon.overlayFrameStripToggleBtnRect, pt)) {
+                    g_Daemon.overlayFramePressedItem = PtInRect(&g_Daemon.overlayFrameStripPlayBtnRect, pt)
+                        ? PepperSnapDaemon::FrameStripPressedItem::PlayPause
+                        : PepperSnapDaemon::FrameStripPressedItem::ToggleCollapse;
+                    SetCapture(hWnd);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (!g_Daemon.overlayFrameStripCollapsed && PtInRect(&g_Daemon.overlayFrameStripPanelRect, pt)) {
+                    if (PtInRect(&g_Daemon.overlayFrameStripScrollLeftRect, pt)) {
+                        g_Daemon.overlayFramePressedItem = PepperSnapDaemon::FrameStripPressedItem::ScrollLeft;
+                        SetCapture(hWnd);
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (PtInRect(&g_Daemon.overlayFrameStripScrollRightRect, pt)) {
+                        g_Daemon.overlayFramePressedItem = PepperSnapDaemon::FrameStripPressedItem::ScrollRight;
+                        SetCapture(hWnd);
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    for (size_t i = 0; i < g_Daemon.overlayFrameCardRects.size(); ++i) {
+                        if (PtInRect(&g_Daemon.overlayFrameCardRects[i], pt)) {
+                            g_Daemon.overlayFramePressedItem = PepperSnapDaemon::FrameStripPressedItem::FrameCard;
+                            g_Daemon.overlayFramePressedCardIdx = (int)i;
+                            SetCapture(hWnd);
+                            InvalidateRect(hWnd, nullptr, FALSE);
+                            return 0;
+                        }
+                    }
+                    return 0;
+                }
+            }
             for (const auto& b : g_Daemon.dockButtons) {
                 if (PtInRect(&b.rect, pt) && b.id != DBTN_ACT_DRAG_HUD) {
                     g_Daemon.pressedBtnId = b.id;
@@ -9239,8 +10141,101 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             g_Daemon.mousePt = pt;
             bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
+            // -1. Multi-Frame GIF / WebP Selector Strip (on top of custom area and its toolbar)
+            if (g_Daemon.HasOverlayMultiFrames()) {
+                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                if (PtInRect(&g_Daemon.overlayFrameStripToggleBtnRect, pt)) {
+                    g_Daemon.CommitActiveTextBox();
+                    g_Daemon.CommitActiveSizeInput();
+                    g_Daemon.CommitActiveStrokeInput();
+                    g_Daemon.overlayFramePressedItem = PtInRect(&g_Daemon.overlayFrameStripPlayBtnRect, pt)
+                        ? PepperSnapDaemon::FrameStripPressedItem::PlayPause
+                        : PepperSnapDaemon::FrameStripPressedItem::ToggleCollapse;
+                    SetCapture(hWnd);
+                    g_Daemon.UpdateOverlayCursor(mx, my);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (!g_Daemon.overlayFrameStripCollapsed) {
+                    if (PtInRect(&g_Daemon.overlayFrameStripResizeRect, pt)) {
+                        g_Daemon.CommitActiveTextBox();
+                        g_Daemon.CommitActiveSizeInput();
+                        g_Daemon.CommitActiveStrokeInput();
+                        g_Daemon.dragMode = DragMode::ResizingFrameStrip;
+                        g_Daemon.dragFrameStripStartY = my;
+                        g_Daemon.dragFrameStripOrigH = g_Daemon.overlayFrameStripHeight;
+                        SetCapture(hWnd);
+                        g_Daemon.UpdateOverlayCursor(mx, my);
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (PtInRect(&g_Daemon.overlayFrameStripPanelRect, pt)) {
+                        g_Daemon.CommitActiveTextBox();
+                        g_Daemon.CommitActiveSizeInput();
+                        g_Daemon.CommitActiveStrokeInput();
+                        if (PtInRect(&g_Daemon.overlayFrameStripScrollLeftRect, pt)) {
+                            g_Daemon.overlayFramePressedItem = PepperSnapDaemon::FrameStripPressedItem::ScrollLeft;
+                            SetCapture(hWnd);
+                            InvalidateRect(hWnd, nullptr, FALSE);
+                            return 0;
+                        }
+                        if (PtInRect(&g_Daemon.overlayFrameStripScrollRightRect, pt)) {
+                            g_Daemon.overlayFramePressedItem = PepperSnapDaemon::FrameStripPressedItem::ScrollRight;
+                            SetCapture(hWnd);
+                            InvalidateRect(hWnd, nullptr, FALSE);
+                            return 0;
+                        }
+                        if (PtInRect(&g_Daemon.overlayFrameStripScrollThumbRect, pt)) {
+                            g_Daemon.dragMode = DragMode::ScrollingFrameStrip;
+                            g_Daemon.dragFrameScrollStartX = mx;
+                            g_Daemon.dragFrameScrollOrigX = g_Daemon.overlayFrameScrollX;
+                            SetCapture(hWnd);
+                            g_Daemon.UpdateOverlayCursor(mx, my);
+                            InvalidateRect(hWnd, nullptr, FALSE);
+                            return 0;
+                        }
+                        if (PtInRect(&g_Daemon.overlayFrameStripScrollTrackRect, pt)) {
+                            int trackW = std::max(1, (int)(g_Daemon.overlayFrameStripScrollTrackRect.right - g_Daemon.overlayFrameStripScrollTrackRect.left));
+                            int thumbW = std::max(24, (int)(g_Daemon.overlayFrameStripScrollThumbRect.right - g_Daemon.overlayFrameStripScrollThumbRect.left));
+                            float ratio = (float)(mx - g_Daemon.overlayFrameStripScrollTrackRect.left - thumbW / 2) / (float)std::max(1, trackW - thumbW);
+                            ratio = std::max(0.0f, std::min(1.0f, ratio));
+                            g_Daemon.overlayFrameScrollX = ratio * g_Daemon.overlayFrameMaxScrollX;
+                            g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                            g_Daemon.dragMode = DragMode::ScrollingFrameStrip;
+                            g_Daemon.dragFrameScrollStartX = mx;
+                            g_Daemon.dragFrameScrollOrigX = g_Daemon.overlayFrameScrollX;
+                            SetCapture(hWnd);
+                            InvalidateRect(hWnd, nullptr, FALSE);
+                            return 0;
+                        }
+                        for (size_t i = 0; i < g_Daemon.overlayFrameCardRects.size(); ++i) {
+                            if (PtInRect(&g_Daemon.overlayFrameCardRects[i], pt)) {
+                                g_Daemon.overlayFramePressedItem = PepperSnapDaemon::FrameStripPressedItem::FrameCard;
+                                g_Daemon.overlayFramePressedCardIdx = (int)i;
+                                SetCapture(hWnd);
+                                InvalidateRect(hWnd, nullptr, FALSE);
+                                return 0;
+                            }
+                        }
+                        return 0;
+                    }
+                }
+            }
+
+            // Auto-hide the frame list whenever the user focuses on the custom area or its toolbar (when enabled in Options)
+            auto autoHideFrameStripOnFocus = [&]() {
+                if (g_Daemon.autoHideFrameList && g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed) {
+                    g_Daemon.overlayFrameStripCollapsed = true;
+                    g_Daemon.overlayHoveredFrameIdx = -1;
+                    g_Daemon.overlayTopResizeHovered = false;
+                    g_Daemon.overlayScrollbarHovered = false;
+                    g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                }
+            };
+
             // 0a. Check Typeable Custom Stroke / Text Size Input Box (Right of [XL])
             if (g_Daemon.hasSelection && PtInRect(&g_Daemon.customStrokeRect, pt)) {
+                autoHideFrameStripOnFocus();
                 g_Daemon.CommitActiveTextBox();
                 g_Daemon.CommitActiveSizeInput();
                 if (!g_Daemon.isEditingStroke) {
@@ -9263,6 +10258,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             // 0b. Check Typeable Size Indicator Pill Click (unless grabbing a resize handle while not editing size)
             DragMode preHandleHit = g_Daemon.isEditingSize ? DragMode::None : g_Daemon.HitTestSelectionHandles(mx, my);
             if (preHandleHit == DragMode::None && g_Daemon.hasSelection && PtInRect(&g_Daemon.dimPillRect, pt)) {
+                autoHideFrameStripOnFocus();
                 g_Daemon.CommitActiveTextBox();
                 if (!g_Daemon.isEditingSize) {
                     int sw = std::abs(g_Daemon.selRect.right - g_Daemon.selRect.left);
@@ -9286,6 +10282,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             // 1. Check Docked Toolbar Buttons
             for (const auto& b : g_Daemon.dockButtons) {
                 if (PtInRect(&b.rect, pt)) {
+                    autoHideFrameStripOnFocus();
                     if (b.id == DBTN_ACT_DRAG_HUD) {
                         g_Daemon.CommitActiveTextBox();
                         if (!g_Daemon.hasCustomHudPos) {
@@ -9314,6 +10311,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             if (g_Daemon.isEditingText) {
                 RECT tbRc = g_Daemon.GetEditingTextBoxRect();
                 if (PtInRect(&tbRc, pt)) {
+                    autoHideFrameStripOnFocus();
                     size_t idx = g_Daemon.HitTestTextBoxIndex(mx, my);
                     g_Daemon.textCaretPos = idx;
                     if (!shiftHeld) g_Daemon.textSelAnchor = idx;
@@ -9329,6 +10327,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             // 2. Check 8 Selection Resize Handles
             DragMode handleHit = g_Daemon.HitTestSelectionHandles(mx, my);
             if (handleHit != DragMode::None) {
+                autoHideFrameStripOnFocus();
                 g_Daemon.dragMode = handleHit;
                 g_Daemon.dragStartPt = pt;
                 g_Daemon.dragOrigRect = {
@@ -9351,6 +10350,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     std::max(g_Daemon.selRect.top, g_Daemon.selRect.bottom)
                 };
                 if (PtInRect(&normSel, pt)) {
+                    autoHideFrameStripOnFocus();
                     if (g_Daemon.activeTool == OverlayTool::SelectMove) {
                         DragMode annDragMode = DragMode::MovingAnnotation;
                         int hitId = g_Daemon.HitTestAnnotation((float)mx, (float)my, &annDragMode);
@@ -9436,30 +10436,9 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
             }
 
-            // 4. Outside Selection Box -> Check Ctrl + click automatic window selection first!
-            bool ctrlHeld = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) || ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
-            if (!g_Daemon.hasSelection && ctrlHeld) {
-                g_Daemon.UpdateCtrlWindowHover();
-                if (g_Daemon.hasCtrlHoverWindow) {
-                    g_Daemon.hasSelection = true;
-                    g_Daemon.selRect = g_Daemon.ctrlHoverWindowRect;
-                    g_Daemon.hasCtrlHoverWindow = false;
-                    g_Daemon.hasCustomHudPos = false;
-                    g_Daemon.activeTool = OverlayTool::SelectMove;
-                    g_Daemon.annotations.clear();
-                    g_Daemon.undoStack.clear();
-                    g_Daemon.redoStack.clear();
-                    g_Daemon.nextStepNum = 1;
-                    g_Daemon.selectedAnnotationId = -1;
-                    g_Daemon.dragMode = DragMode::None;
-                    g_Daemon.UpdateOverlayCursor(mx, my);
-                    InvalidateRect(hWnd, nullptr, FALSE);
-                    return 0;
-                }
-            }
-
-            // Do NOT reset selection on simple click or click-and-hold!
-            // Only enter PendingOutsideSelection; actual reset happens in WM_MOUSEMOVE only if dragged >= 5px.
+            // 4. Outside Selection Box -> Enter PendingOutsideSelection
+            // (Ctrl + click automatic window selection executes on WM_LBUTTONUP release if not dragged;
+            //  manual region creation starts in WM_MOUSEMOVE only if dragged >= 5px)
             g_Daemon.selectedAnnotationId = -1;
             g_Daemon.dragMode = DragMode::PendingOutsideSelection;
             g_Daemon.dragStartPt = pt;
@@ -9527,16 +10506,59 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 } else {
                     g_Daemon.hasCtrlHoverWindow = false;
                 }
-                int newHover = -1;
-                for (const auto& b : g_Daemon.dockButtons) {
-                    if (PtInRect(&b.rect, pt)) {
-                        newHover = b.id;
-                        break;
+                bool overFrameStripUI = false;
+                bool frameStripHoverChanged = false;
+                if (g_Daemon.HasOverlayMultiFrames()) {
+                    g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                    bool inToggleSq = (PtInRect(&g_Daemon.overlayFrameStripToggleBtnRect, pt) != FALSE);
+                    bool newPlayHov   = (inToggleSq && PtInRect(&g_Daemon.overlayFrameStripPlayBtnRect, pt) != FALSE);
+                    bool newToggleHov = (inToggleSq && !newPlayHov);
+                    bool newResizeHov = (!g_Daemon.overlayFrameStripCollapsed && !inToggleSq && PtInRect(&g_Daemon.overlayFrameStripResizeRect, pt) != FALSE);
+                    bool newScrollHov = (!g_Daemon.overlayFrameStripCollapsed && PtInRect(&g_Daemon.overlayFrameStripScrollTrackRect, pt) != FALSE);
+                    bool newLeftHov   = (!g_Daemon.overlayFrameStripCollapsed && PtInRect(&g_Daemon.overlayFrameStripScrollLeftRect, pt) != FALSE);
+                    bool newRightHov  = (!g_Daemon.overlayFrameStripCollapsed && PtInRect(&g_Daemon.overlayFrameStripScrollRightRect, pt) != FALSE);
+                    int newCardHov = -1;
+                    if (!g_Daemon.overlayFrameStripCollapsed && !newResizeHov && !newScrollHov && !newLeftHov && !newRightHov &&
+                        PtInRect(&g_Daemon.overlayFrameStripPanelRect, pt)) {
+                        for (size_t i = 0; i < g_Daemon.overlayFrameCardRects.size(); ++i) {
+                            if (PtInRect(&g_Daemon.overlayFrameCardRects[i], pt)) {
+                                newCardHov = (int)i;
+                                break;
+                            }
+                        }
+                    }
+                    overFrameStripUI = inToggleSq || newResizeHov ||
+                                       (!g_Daemon.overlayFrameStripCollapsed && PtInRect(&g_Daemon.overlayFrameStripPanelRect, pt));
+                    if (newToggleHov != g_Daemon.overlayToggleBtnHovered ||
+                        newPlayHov != g_Daemon.overlayPlayBtnHovered ||
+                        newResizeHov != g_Daemon.overlayTopResizeHovered ||
+                        newScrollHov != g_Daemon.overlayScrollbarHovered ||
+                        newLeftHov != g_Daemon.overlayScrollLeftBtnHovered ||
+                        newRightHov != g_Daemon.overlayScrollRightBtnHovered ||
+                        newCardHov != g_Daemon.overlayHoveredFrameIdx) {
+                        frameStripHoverChanged = true;
+                        g_Daemon.overlayToggleBtnHovered = newToggleHov;
+                        g_Daemon.overlayPlayBtnHovered = newPlayHov;
+                        g_Daemon.overlayTopResizeHovered = newResizeHov;
+                        g_Daemon.overlayScrollbarHovered = newScrollHov;
+                        g_Daemon.overlayScrollLeftBtnHovered = newLeftHov;
+                        g_Daemon.overlayScrollRightBtnHovered = newRightHov;
+                        g_Daemon.overlayHoveredFrameIdx = newCardHov;
                     }
                 }
-                bool pillHover = g_Daemon.hasSelection && ( PtInRect(&g_Daemon.dimPillRect, pt) != FALSE );
-                bool strokeHover = g_Daemon.hasSelection && ( PtInRect(&g_Daemon.customStrokeRect, pt) != FALSE );
-                bool hoverChanged = (newHover != g_Daemon.hoveredBtnId) ||
+                int newHover = -1;
+                if (!overFrameStripUI) {
+                    for (const auto& b : g_Daemon.dockButtons) {
+                        if (PtInRect(&b.rect, pt)) {
+                            newHover = b.id;
+                            break;
+                        }
+                    }
+                }
+                bool pillHover = !overFrameStripUI && g_Daemon.hasSelection && ( PtInRect(&g_Daemon.dimPillRect, pt) != FALSE );
+                bool strokeHover = !overFrameStripUI && g_Daemon.hasSelection && ( PtInRect(&g_Daemon.customStrokeRect, pt) != FALSE );
+                bool hoverChanged = frameStripHoverChanged ||
+                                    (newHover != g_Daemon.hoveredBtnId) ||
                                     (pillHover != g_Daemon.lastPillHover) ||
                                     (strokeHover != g_Daemon.lastStrokeHover);
                 g_Daemon.hoveredBtnId = newHover;
@@ -9568,6 +10590,22 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             };
 
             switch (g_Daemon.dragMode) {
+                case DragMode::ResizingFrameStrip: {
+                    int maxStripH = std::max(160, (int)(g_Daemon.vScreenH * 0.48));
+                    int newH = g_Daemon.dragFrameStripOrigH + (g_Daemon.dragFrameStripStartY - my);
+                    g_Daemon.overlayFrameStripHeight = std::max(92, std::min(maxStripH, newH));
+                    g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                    break;
+                }
+                case DragMode::ScrollingFrameStrip: {
+                    int trackW = std::max(1, (int)(g_Daemon.overlayFrameStripScrollTrackRect.right - g_Daemon.overlayFrameStripScrollTrackRect.left));
+                    int thumbW = std::max(24, (int)(g_Daemon.overlayFrameStripScrollThumbRect.right - g_Daemon.overlayFrameStripScrollThumbRect.left));
+                    int usableTrack = std::max(1, trackW - thumbW);
+                    float deltaScroll = ((float)(mx - g_Daemon.dragFrameScrollStartX) / (float)usableTrack) * g_Daemon.overlayFrameMaxScrollX;
+                    g_Daemon.overlayFrameScrollX = std::max(0.0f, std::min(g_Daemon.overlayFrameMaxScrollX, g_Daemon.dragFrameScrollOrigX + deltaScroll));
+                    g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                    break;
+                }
                 case DragMode::DraggingHUD: {
                     int totalW = std::max(100, (int)(g_Daemon.hudBoundsRect.right - g_Daemon.hudBoundsRect.left));
                     int totalH = std::max(40, (int)(g_Daemon.hudBoundsRect.bottom - g_Daemon.hudBoundsRect.top));
@@ -9581,6 +10619,10 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 case DragMode::PendingOutsideSelection:
                     if (std::abs(dx) >= 5 || std::abs(dy) >= 5) {
+                        if (g_Daemon.autoHideFrameList && g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed) {
+                            g_Daemon.overlayFrameStripCollapsed = true;
+                            g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                        }
                         g_Daemon.hasSelection = true;
                         g_Daemon.hasCustomHudPos = false;
                         g_Daemon.activeTool = OverlayTool::SelectMove;
@@ -9837,6 +10879,67 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_LBUTTONUP: {
+            if (g_Daemon.overlayFramePressedItem != PepperSnapDaemon::FrameStripPressedItem::None) {
+                auto pressedItem = g_Daemon.overlayFramePressedItem;
+                int pressedCard = g_Daemon.overlayFramePressedCardIdx;
+                g_Daemon.overlayFramePressedItem = PepperSnapDaemon::FrameStripPressedItem::None;
+                g_Daemon.overlayFramePressedCardIdx = -1;
+                ReleaseCapture();
+                int mx = GET_X_LPARAM(lParam);
+                int my = GET_Y_LPARAM(lParam);
+                POINT pt{ mx, my };
+                g_Daemon.mousePt = pt;
+                if (g_Daemon.HasOverlayMultiFrames()) {
+                    g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                    switch (pressedItem) {
+                        case PepperSnapDaemon::FrameStripPressedItem::PlayPause:
+                            if (PtInRect(&g_Daemon.overlayFrameStripToggleBtnRect, pt) &&
+                                PtInRect(&g_Daemon.overlayFrameStripPlayBtnRect, pt)) {
+                                g_Daemon.ToggleOverlayFramePlayback();
+                            }
+                            break;
+                        case PepperSnapDaemon::FrameStripPressedItem::ToggleCollapse:
+                            if (PtInRect(&g_Daemon.overlayFrameStripToggleBtnRect, pt) &&
+                                !PtInRect(&g_Daemon.overlayFrameStripPlayBtnRect, pt)) {
+                                g_Daemon.overlayFrameStripCollapsed = !g_Daemon.overlayFrameStripCollapsed;
+                                if (!g_Daemon.overlayFrameStripCollapsed) {
+                                    g_Daemon.EnsureActiveFrameVisibleInStrip();
+                                }
+                                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                            }
+                            break;
+                        case PepperSnapDaemon::FrameStripPressedItem::ScrollLeft:
+                            if (!g_Daemon.overlayFrameStripCollapsed &&
+                                PtInRect(&g_Daemon.overlayFrameStripScrollLeftRect, pt)) {
+                                g_Daemon.overlayFrameScrollX = std::max(0.0f, g_Daemon.overlayFrameScrollX - 160.0f);
+                                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                            }
+                            break;
+                        case PepperSnapDaemon::FrameStripPressedItem::ScrollRight:
+                            if (!g_Daemon.overlayFrameStripCollapsed &&
+                                PtInRect(&g_Daemon.overlayFrameStripScrollRightRect, pt)) {
+                                g_Daemon.overlayFrameScrollX = std::min(g_Daemon.overlayFrameMaxScrollX, g_Daemon.overlayFrameScrollX + 160.0f);
+                                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
+                            }
+                            break;
+                        case PepperSnapDaemon::FrameStripPressedItem::FrameCard:
+                            if (!g_Daemon.overlayFrameStripCollapsed &&
+                                pressedCard >= 0 && pressedCard < (int)g_Daemon.overlayFrameCardRects.size() &&
+                                PtInRect(&g_Daemon.overlayFrameCardRects[pressedCard], pt)) {
+                                g_Daemon.StopOverlayFramePlayback();
+                                g_Daemon.SelectOverlayFrame((size_t)pressedCard);
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                g_Daemon.UpdateOverlayCursor(mx, my);
+                if (IsWindow(hWnd)) {
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
             if (g_Daemon.pressedBtnId != -1) {
                 int releasedBtnId = g_Daemon.pressedBtnId;
                 g_Daemon.pressedBtnId = -1;
@@ -9896,6 +10999,29 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     int w = std::abs(g_Daemon.selRect.right - g_Daemon.selRect.left);
                     int h = std::abs(g_Daemon.selRect.bottom - g_Daemon.selRect.top);
                     if (w < 1 || h < 1) g_Daemon.hasSelection = false;
+                } else if (g_Daemon.dragMode == DragMode::PendingOutsideSelection) {
+                    int mx = GET_X_LPARAM(lParam);
+                    int my = GET_Y_LPARAM(lParam);
+                    g_Daemon.mousePt = { mx, my };
+                    bool ctrlHeld = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) || ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
+                    if (!g_Daemon.hasSelection && ctrlHeld) {
+                        g_Daemon.UpdateCtrlWindowHover();
+                        if (g_Daemon.hasCtrlHoverWindow) {
+                            g_Daemon.hasSelection = true;
+                            g_Daemon.selRect = g_Daemon.ctrlHoverWindowRect;
+                            g_Daemon.hasCtrlHoverWindow = false;
+                            g_Daemon.hasCustomHudPos = false;
+                            g_Daemon.activeTool = OverlayTool::SelectMove;
+                            g_Daemon.annotations.clear();
+                            g_Daemon.undoStack.clear();
+                            g_Daemon.redoStack.clear();
+                            g_Daemon.nextStepNum = 1;
+                            g_Daemon.selectedAnnotationId = -1;
+                        }
+                    }
+                    g_Daemon.UpdateOverlayCursor(mx, my);
+                } else if (g_Daemon.dragMode == DragMode::ResizingFrameStrip) {
+                    g_Daemon.SaveSettings();
                 }
                 g_Daemon.dragMode = DragMode::None;
                 ReleaseCapture();
@@ -10059,6 +11185,11 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0 || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             UINT vk = (UINT)wParam;
 
+            if (vk == VK_SPACE && !ctrl && !shift && !alt && g_Daemon.HasOverlayMultiFrames()) {
+                g_Daemon.ToggleOverlayFramePlayback();
+                return 0;
+            }
+
             if (ctrl && !shift && !alt && vk == 'C' &&
                 (!g_Daemon.hasSelection ||
                  g_Daemon.dragMode == DragMode::CreatingSelection ||
@@ -10129,6 +11260,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         case WM_DESTROY:
             KillTimer(hWnd, 1);
             KillTimer(hWnd, 2);
+            KillTimer(hWnd, 3);
             return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -10666,6 +11798,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
             selRect = { cx, cy, cx + cw, cy + ch };
         }
     } else {
+        ClearOverlayFrames();
         frozenDesktopBmp = CaptureVirtualDesktop();
         hasSelection = false;
         SnapshotDesktopWindows();
@@ -10673,6 +11806,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     if (!frozenDesktopBmp) return;
     BuildOverlaySurfaceCache();
 
+    isSavingAsModalOpen = false;
     dragMode = DragMode::None;
     hoveredBtnId = -1;
     pressedBtnId = -1;
@@ -10776,6 +11910,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
 }
 
 void PepperSnapDaemon::CloseRegionSnipOverlay() {
+    isSavingAsModalOpen = false;
     RecordLastCustomSelection();
     SaveSettings();
     hasCustomHudPos = false;
@@ -10795,6 +11930,7 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
     }
     RestoreSuppressedAboveOverlayWindows();
     FreeOverlaySurfaceCache();
+    ClearOverlayFrames();
     if (frozenDesktopBmp) {
         delete frozenDesktopBmp;
         frozenDesktopBmp = nullptr;
@@ -10807,11 +11943,700 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
     pressedBtnId = -1;
 }
 
+static Bitmap* DecodePepperSnapLosslessWebP(const std::wstring& filePath) {
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return nullptr;
+    DWORD fileSize = GetFileSize(hFile, nullptr);
+    if (fileSize < 25 || fileSize == INVALID_FILE_SIZE) {
+        CloseHandle(hFile);
+        return nullptr;
+    }
+    std::vector<BYTE> buf(fileSize);
+    DWORD bytesRead = 0;
+    bool ok = ReadFile(hFile, buf.data(), fileSize, &bytesRead, nullptr) && (bytesRead == fileSize);
+    CloseHandle(hFile);
+    if (!ok) return nullptr;
+
+    if (memcmp(buf.data(), "RIFF", 4) != 0 || memcmp(buf.data() + 8, "WEBP", 4) != 0) return nullptr;
+    size_t pos = 12;
+    while (pos + 8 <= buf.size()) {
+        uint32_t chunkSize = 0;
+        memcpy(&chunkSize, buf.data() + pos + 4, 4);
+        if (memcmp(buf.data() + pos, "VP8L", 4) == 0 && pos + 8 + chunkSize <= buf.size() && chunkSize >= 5) {
+            const BYTE* vp8l = buf.data() + pos + 8;
+            struct BitReader {
+                const BYTE* data;
+                size_t size;
+                size_t bytePos = 0;
+                uint64_t acc = 0;
+                int bits = 0;
+                uint32_t Read(int n) {
+                    while (bits < n && bytePos < size) {
+                        acc |= uint64_t(data[bytePos++]) << bits;
+                        bits += 8;
+                    }
+                    if (bits < n) return 0;
+                    uint32_t val = (uint32_t)(acc & ((1ULL << n) - 1ULL));
+                    acc >>= n;
+                    bits -= n;
+                    return val;
+                }
+            } br{ vp8l, chunkSize };
+
+            if (br.Read(8) != 0x2F) return nullptr;
+            UINT w = br.Read(14) + 1;
+            UINT h = br.Read(14) + 1;
+            uint32_t hasAlpha = br.Read(1);
+            uint32_t ver = br.Read(3);
+            if (ver != 0 || w == 0 || h == 0 || w > 16383 || h > 16383) return nullptr;
+            if (br.Read(1) != 0 || br.Read(1) != 0 || br.Read(1) != 0) return nullptr;
+
+            auto skipIdentityTree = [&](int alphabetSize) -> bool {
+                if (br.Read(1) != 0) return false;
+                uint32_t numCl = br.Read(4) + 4;
+                for (uint32_t i = 0; i < numCl; ++i) br.Read(3);
+                if (br.Read(1) != 0) return false;
+                for (int i = 0; i < alphabetSize; ++i) br.Read(1);
+                return true;
+            };
+            if (!skipIdentityTree(280) || !skipIdentityTree(256) || !skipIdentityTree(256)) return nullptr;
+            if (hasAlpha) {
+                if (!skipIdentityTree(256)) return nullptr;
+            } else {
+                if (br.Read(1) != 1) return nullptr;
+                br.Read(1); br.Read(1); br.Read(8);
+            }
+            if (br.Read(1) != 1) return nullptr;
+            br.Read(3);
+
+            BYTE rev8[256];
+            for (int i = 0; i < 256; ++i) {
+                BYTE r = 0;
+                for (int b = 0; b < 8; ++b) r = (BYTE)((r << 1) | ((i >> b) & 1));
+                rev8[i] = r;
+            }
+
+            Bitmap* bmp = new Bitmap((INT)w, (INT)h, PixelFormat32bppARGB);
+            Rect lockRc(0, 0, (INT)w, (INT)h);
+            BitmapData bd = {};
+            if (bmp->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &bd) != Ok) {
+                delete bmp;
+                return nullptr;
+            }
+            for (UINT y = 0; y < h; ++y) {
+                DWORD* row = (DWORD*)((BYTE*)bd.Scan0 + (size_t)y * bd.Stride);
+                for (UINT x = 0; x < w; ++x) {
+                    BYTE g = rev8[br.Read(8) & 0xFF];
+                    BYTE r = rev8[br.Read(8) & 0xFF];
+                    BYTE b = rev8[br.Read(8) & 0xFF];
+                    BYTE a = hasAlpha ? rev8[br.Read(8) & 0xFF] : 255;
+                    row[x] = (DWORD(a) << 24) | (DWORD(r) << 16) | (DWORD(g) << 8) | DWORD(b);
+                }
+            }
+            bmp->UnlockBits(&bd);
+            return bmp;
+        }
+        pos += 8 + chunkSize + (chunkSize & 1u);
+    }
+    return nullptr;
+}
+
+static bool LoadImageFramesWithWIC(const std::wstring& filePath, std::vector<Bitmap*>& outFrames, std::vector<int>& outDelaysMs) {
+    HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool needCoUninit = SUCCEEDED(hrCo);
+
+    const CLSID clsidWicFactory2  = { 0x317d06e8, 0x5f24, 0x433d, { 0xbd, 0xf7, 0x79, 0xce, 0x68, 0xd8, 0xab, 0xc2 } };
+    const CLSID clsidWicFactory1  = { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
+    const IID   iidWicFactory     = { 0xec5ec8a9, 0xc395, 0x4314, { 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
+    const CLSID clsidWebpDecoder  = { 0x7693e886, 0x51c9, 0x4070, { 0x84, 0x19, 0x9f, 0x70, 0x73, 0x8e, 0xc8, 0xfa } };
+    const IID   iidWicDecoder     = { 0x9edde9e7, 0x8dee, 0x47ea, { 0x99, 0xdf, 0xe6, 0xfa, 0xf2, 0xed, 0x44, 0xbf } };
+    const GUID  fmt32bppBGRA      = { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x0f } };
+
+    IWICImagingFactory* pFactory = nullptr;
+    if (FAILED(CoCreateInstance(clsidWicFactory2, nullptr, CLSCTX_INPROC_SERVER, iidWicFactory, (void**)&pFactory)) || !pFactory) {
+        CoCreateInstance(clsidWicFactory1, nullptr, CLSCTX_INPROC_SERVER, iidWicFactory, (void**)&pFactory);
+    }
+
+    if (pFactory) {
+        IWICBitmapDecoder* pDecoder = nullptr;
+        IWICStream* pStream = nullptr;
+        if (FAILED(pFactory->CreateDecoderFromFilename(filePath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder)) || !pDecoder) {
+            if (SUCCEEDED(pFactory->CreateStream(&pStream)) && pStream) {
+                if (SUCCEEDED(pStream->InitializeFromFilename(filePath.c_str(), GENERIC_READ))) {
+                    if (FAILED(pFactory->CreateDecoderFromStream(pStream, nullptr, WICDecodeMetadataCacheOnDemand, &pDecoder)) || !pDecoder) {
+                        if (SUCCEEDED(CoCreateInstance(clsidWebpDecoder, nullptr, CLSCTX_INPROC_SERVER, iidWicDecoder, (void**)&pDecoder)) && pDecoder) {
+                            LARGE_INTEGER zero = {0};
+                            pStream->Seek(zero, STREAM_SEEK_SET, nullptr);
+                            if (FAILED(pDecoder->Initialize(pStream, WICDecodeMetadataCacheOnDemand))) {
+                                pDecoder->Release();
+                                pDecoder = nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (pDecoder) {
+            UINT frameCount = 0;
+            if (FAILED(pDecoder->GetFrameCount(&frameCount)) || frameCount < 1) frameCount = 1;
+            for (UINT i = 0; i < frameCount; ++i) {
+                IWICBitmapFrameDecode* pFrame = nullptr;
+                if (SUCCEEDED(pDecoder->GetFrame(i, &pFrame)) && pFrame) {
+                    UINT w = 0, h = 0;
+                    if (SUCCEEDED(pFrame->GetSize(&w, &h)) && w > 0 && h > 0) {
+                        int delayMs = 80;
+                        if (frameCount > 1) {
+                            IWICMetadataQueryReader* pMeta = nullptr;
+                            if (SUCCEEDED(pFrame->GetMetadataQueryReader(&pMeta)) && pMeta) {
+                                PROPVARIANT pv;
+                                PropVariantInit(&pv);
+                                if (SUCCEEDED(pMeta->GetMetadataByName(L"/ANMF/FrameDuration", &pv))) {
+                                    if (pv.vt == VT_UI4 || pv.vt == VT_I4) delayMs = (int)pv.ulVal;
+                                    else if (pv.vt == VT_UI2 || pv.vt == VT_I2) delayMs = (int)pv.uiVal;
+                                } else if (SUCCEEDED(pMeta->GetMetadataByName(L"/grctlext/Delay", &pv))) {
+                                    if (pv.vt == VT_UI2 || pv.vt == VT_I2) delayMs = (int)pv.uiVal * 10;
+                                }
+                                PropVariantClear(&pv);
+                                pMeta->Release();
+                            }
+                            if (delayMs <= 10) delayMs = 80;
+                            delayMs = std::max(20, std::min(60000, delayMs));
+                        }
+
+                        IWICFormatConverter* pConv = nullptr;
+                        if (SUCCEEDED(pFactory->CreateFormatConverter(&pConv)) && pConv) {
+                            if (SUCCEEDED(pConv->Initialize(pFrame, fmt32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+                                Bitmap* frameBmp = new Bitmap((INT)w, (INT)h, PixelFormat32bppARGB);
+                                Rect lockRc(0, 0, (INT)w, (INT)h);
+                                BitmapData bd = {};
+                                if (frameBmp->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Ok) {
+                                    HRESULT hrCopy = pConv->CopyPixels(nullptr, (UINT)bd.Stride, (UINT)((size_t)bd.Stride * h), (BYTE*)bd.Scan0);
+                                    frameBmp->UnlockBits(&bd);
+                                    if (SUCCEEDED(hrCopy)) {
+                                        outFrames.push_back(frameBmp);
+                                        outDelaysMs.push_back(delayMs);
+                                    } else {
+                                        delete frameBmp;
+                                    }
+                                } else {
+                                    delete frameBmp;
+                                }
+                            }
+                            pConv->Release();
+                        }
+                    }
+                    pFrame->Release();
+                }
+            }
+            pDecoder->Release();
+        }
+        if (pStream) pStream->Release();
+        pFactory->Release();
+    }
+
+    if (needCoUninit) CoUninitialize();
+    return !outFrames.empty();
+}
+
+static bool LoadImageFramesFromFile(const std::wstring& filePath, std::vector<Bitmap*>& outFrames, std::vector<int>& outDelaysMs) {
+    outFrames.clear();
+    outDelaysMs.clear();
+    if (filePath.empty()) return false;
+
+    std::wstring ext = PathFindExtensionW(filePath.c_str());
+    for (wchar_t& c : ext) c = (wchar_t)towlower(c);
+
+    // 1. For non-WebP formats (including animated .gif, .png, .jpg, .bmp, .tiff, .ico), use GDI+ first
+    //    so multi-frame GIF disposal methods and frame sub-rects composite accurately with full alpha
+    if (ext != L".webp") {
+        Bitmap loaded(filePath.c_str());
+        if (loaded.GetLastStatus() == Ok && loaded.GetWidth() > 0 && loaded.GetHeight() > 0) {
+            int imgW = (int)loaded.GetWidth();
+            int imgH = (int)loaded.GetHeight();
+            GUID timeDim = FrameDimensionTime;
+            UINT frameCount = loaded.GetFrameCount(&timeDim);
+            if (frameCount < 1) frameCount = 1;
+
+            std::vector<int> delays(frameCount, 100);
+            if (frameCount > 1) {
+                UINT propSize = loaded.GetPropertyItemSize(PropertyTagFrameDelay);
+                if (propSize > sizeof(PropertyItem)) {
+                    std::vector<BYTE> propBuf(propSize);
+                    PropertyItem* pItem = (PropertyItem*)propBuf.data();
+                    if (loaded.GetPropertyItem(PropertyTagFrameDelay, propSize, pItem) == Ok && pItem->value) {
+                        const UINT* rawDelays = (const UINT*)pItem->value;
+                        size_t count = pItem->length / sizeof(UINT);
+                        for (UINT i = 0; i < frameCount; ++i) {
+                            UINT cs = (i < count) ? rawDelays[i] : 10;
+                            int ms = (int)cs * 10;
+                            if (ms <= 10) ms = 100;
+                            delays[i] = std::max(20, std::min(60000, ms));
+                        }
+                    }
+                }
+            }
+
+            for (UINT i = 0; i < frameCount; ++i) {
+                if (frameCount > 1) {
+                    loaded.SelectActiveFrame(&timeDim, i);
+                }
+                Bitmap* frameBmp = new Bitmap(imgW, imgH, PixelFormat32bppARGB);
+                Rect lockRc(0, 0, imgW, imgH);
+                BitmapData srcBd = {}, dstBd = {};
+                if (loaded.LockBits(&lockRc, ImageLockModeRead, PixelFormat32bppARGB, &srcBd) == Ok) {
+                    if (frameBmp->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &dstBd) == Ok) {
+                        for (int y = 0; y < imgH; ++y) {
+                            memcpy((BYTE*)dstBd.Scan0 + (size_t)y * dstBd.Stride,
+                                   (const BYTE*)srcBd.Scan0 + (size_t)y * srcBd.Stride,
+                                   (size_t)imgW * 4);
+                        }
+                        frameBmp->UnlockBits(&dstBd);
+                    }
+                    loaded.UnlockBits(&srcBd);
+                } else {
+                    Graphics g(frameBmp);
+                    g.Clear(Color(0, 0, 0, 0));
+                    g.SetCompositingMode(CompositingModeSourceOver);
+                    g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+                    g.SetPixelOffsetMode(PixelOffsetModeHalf);
+                    g.DrawImage(&loaded, Rect(0, 0, imgW, imgH), 0, 0, imgW, imgH, UnitPixel);
+                }
+                outFrames.push_back(frameBmp);
+                outDelaysMs.push_back(delays[i]);
+            }
+            return !outFrames.empty();
+        }
+    }
+
+    // 2. Decode via Windows Imaging Component (WIC — supports .webp lossy/lossless/alpha/animated + all Windows codecs)
+    if (LoadImageFramesWithWIC(filePath, outFrames, outDelaysMs)) {
+        return true;
+    }
+
+    // 3. Fallback: Native PepperSnap lossless VP8L WebP decoder
+    if (Bitmap* vp8lBmp = DecodePepperSnapLosslessWebP(filePath)) {
+        outFrames.push_back(vp8lBmp);
+        outDelaysMs.push_back(100);
+        return true;
+    }
+
+    return false;
+}
+
+void PepperSnapDaemon::ClearOverlayFrames() {
+    if (overlaySingleImageBmp) {
+        delete overlaySingleImageBmp;
+        overlaySingleImageBmp = nullptr;
+    }
+    for (Bitmap* f : overlayFrames) {
+        delete f;
+    }
+    overlayFrames.clear();
+    overlayFrameDelaysMs.clear();
+    overlayFrameCardRects.clear();
+    overlayActiveFrameIdx = 0;
+    overlayImgDrawRect = { 0, 0, 0, 0 };
+    overlayFrameStripCollapsed = false;
+    overlayFrameScrollX = 0.0f;
+    overlayFrameMaxScrollX = 0.0f;
+    overlayHoveredFrameIdx = -1;
+    overlayToggleBtnHovered = false;
+    overlayPlayBtnHovered = false;
+    if (overlayFramesPlaying && hOverlayWnd && IsWindow(hOverlayWnd)) {
+        KillTimer(hOverlayWnd, 3);
+    }
+    overlayFramesPlaying = false;
+    overlayTopResizeHovered = false;
+    overlayScrollbarHovered = false;
+    overlayScrollLeftBtnHovered = false;
+    overlayScrollRightBtnHovered = false;
+    overlayFrameStripPanelRect = { 0, 0, 0, 0 };
+    overlayFrameStripToggleBtnRect = { 0, 0, 0, 0 };
+    overlayFrameStripPlayBtnRect = { 0, 0, 0, 0 };
+    overlayFrameStripResizeRect = { 0, 0, 0, 0 };
+    overlayFrameStripScrollTrackRect = { 0, 0, 0, 0 };
+    overlayFrameStripScrollThumbRect = { 0, 0, 0, 0 };
+    overlayFrameStripScrollLeftRect = { 0, 0, 0, 0 };
+    overlayFrameStripScrollRightRect = { 0, 0, 0, 0 };
+}
+
+void PepperSnapDaemon::EnsureActiveFrameVisibleInStrip() {
+    if (!HasOverlayMultiFrames() || overlayFrames.empty() || !overlayFrames[0]) return;
+    int W = vScreenW > 0 ? vScreenW : GetSystemMetrics(SM_CXSCREEN);
+    int H = vScreenH > 0 ? vScreenH : GetSystemMetrics(SM_CYSCREEN);
+    int maxStripH = std::max(160, (int)(H * 0.48));
+    int stripH = std::max(92, std::min(maxStripH, overlayFrameStripHeight));
+    int cardH = std::max(54, stripH - 30);
+    int thumbH = std::max(32, cardH - 22);
+    int origW = (int)overlayFrames[0]->GetWidth();
+    int origH = (int)overlayFrames[0]->GetHeight();
+    double aspect = (origH > 0) ? ((double)origW / (double)origH) : 1.0;
+    int thumbW = std::max(44, std::min(320, (int)std::round(thumbH * aspect)));
+    int cardW = thumbW + 12;
+    int cardGap = 8;
+    int sidePad = 14;
+    int cardLeft = sidePad + (int)overlayActiveFrameIdx * (cardW + cardGap);
+    int cardRight = cardLeft + cardW;
+    if ((float)cardLeft < overlayFrameScrollX + sidePad) {
+        overlayFrameScrollX = (float)std::max(0, cardLeft - sidePad);
+    } else if ((float)cardRight > overlayFrameScrollX + W - sidePad) {
+        overlayFrameScrollX = (float)std::max(0, cardRight - W + sidePad);
+    }
+}
+
+void PepperSnapDaemon::LayoutOverlayFrameStrip(int screenW, int screenH) {
+    overlayFrameCardRects.clear();
+    if (!HasOverlayMultiFrames() || screenW <= 0 || screenH <= 0) {
+        overlayFrameStripPanelRect = { 0, 0, 0, 0 };
+        overlayFrameStripToggleBtnRect = { 0, 0, 0, 0 };
+        overlayFrameStripPlayBtnRect = { 0, 0, 0, 0 };
+        overlayFrameStripResizeRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollTrackRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollThumbRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollLeftRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollRightRect = { 0, 0, 0, 0 };
+        return;
+    }
+
+    int maxStripH = std::max(160, (int)(screenH * 0.48));
+    overlayFrameStripHeight = std::max(92, std::min(maxStripH, overlayFrameStripHeight));
+    int toggleW = 248;
+    int toggleH = 26;
+    int playW = 30;
+    int toggleLeft = (screenW - toggleW) / 2;
+
+    if (overlayFrameStripCollapsed) {
+        overlayFrameStripPanelRect = { 0, 0, 0, 0 };
+        overlayFrameStripResizeRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollTrackRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollThumbRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollLeftRect = { 0, 0, 0, 0 };
+        overlayFrameStripScrollRightRect = { 0, 0, 0, 0 };
+        overlayFrameStripToggleBtnRect = { toggleLeft, screenH - toggleH, toggleLeft + toggleW, screenH };
+        overlayFrameStripPlayBtnRect = { toggleLeft + toggleW - playW, screenH - toggleH, toggleLeft + toggleW, screenH };
+        return;
+    }
+
+    int panelTop = screenH - overlayFrameStripHeight;
+    overlayFrameStripPanelRect = { 0, panelTop, screenW, screenH };
+    overlayFrameStripToggleBtnRect = { toggleLeft, panelTop - toggleH, toggleLeft + toggleW, panelTop };
+    overlayFrameStripPlayBtnRect = { toggleLeft + toggleW - playW, panelTop - toggleH, toggleLeft + toggleW, panelTop };
+    overlayFrameStripResizeRect = { 0, panelTop - 5, screenW, panelTop + 6 };
+
+    int cardsTop = panelTop + 8;
+    int cardsBottom = screenH - 22;
+    int cardH = std::max(54, cardsBottom - cardsTop);
+    int thumbH = std::max(32, cardH - 22);
+    int origW = overlayFrames[0] ? (int)overlayFrames[0]->GetWidth() : 64;
+    int origH = overlayFrames[0] ? (int)overlayFrames[0]->GetHeight() : 64;
+    double aspect = (origH > 0) ? ((double)origW / (double)origH) : 1.0;
+    int thumbW = std::max(44, std::min(320, (int)std::round(thumbH * aspect)));
+    int cardW = thumbW + 12;
+    int cardGap = 8;
+    int sidePad = 14;
+
+    int n = (int)overlayFrames.size();
+    int totalFramesW = sidePad * 2 + n * cardW + std::max(0, n - 1) * cardGap;
+    overlayFrameMaxScrollX = (float)std::max(0, totalFramesW - screenW);
+    overlayFrameScrollX = std::max(0.0f, std::min(overlayFrameMaxScrollX, overlayFrameScrollX));
+
+    overlayFrameCardRects.resize(overlayFrames.size());
+    int scrollInt = (int)std::round(overlayFrameScrollX);
+    for (int i = 0; i < n; ++i) {
+        int cx = sidePad + i * (cardW + cardGap) - scrollInt;
+        overlayFrameCardRects[i] = { cx, cardsTop, cx + cardW, cardsTop + cardH };
+    }
+
+    int sbTop = screenH - 18;
+    int sbBot = screenH - 3;
+    overlayFrameStripScrollLeftRect  = { 10, sbTop, 30, sbBot };
+    overlayFrameStripScrollRightRect = { screenW - 30, sbTop, screenW - 10, sbBot };
+    int trackLeft = 34;
+    int trackRight = std::max(trackLeft + 40, screenW - 34);
+    overlayFrameStripScrollTrackRect = { trackLeft, sbTop, trackRight, sbBot };
+
+    int trackW = trackRight - trackLeft;
+    if (overlayFrameMaxScrollX > 0.5f && totalFramesW > 0) {
+        int thumbSpan = std::max(36, std::min(trackW, (int)std::round((double)trackW * (double)screenW / (double)totalFramesW)));
+        int thumbX = trackLeft + (int)std::round(((double)overlayFrameScrollX / (double)overlayFrameMaxScrollX) * (trackW - thumbSpan));
+        overlayFrameStripScrollThumbRect = { thumbX, sbTop + 1, thumbX + thumbSpan, sbBot - 1 };
+    } else {
+        overlayFrameStripScrollThumbRect = { trackLeft, sbTop + 1, trackRight, sbBot - 1 };
+    }
+}
+
+void PepperSnapDaemon::SelectOverlayFrame(size_t frameIdx) {
+    if (frameIdx >= overlayFrames.size() || !overlayFrames[frameIdx] || !frozenDesktopBmp) return;
+    overlayActiveFrameIdx = frameIdx;
+    Bitmap* frameBmp = overlayFrames[frameIdx];
+    int imgW = (int)frameBmp->GetWidth();
+    int imgH = (int)frameBmp->GetHeight();
+    int drawX = overlayImgDrawRect.left;
+    int drawY = overlayImgDrawRect.top;
+    int drawW = overlayImgDrawRect.right - overlayImgDrawRect.left;
+    int drawH = overlayImgDrawRect.bottom - overlayImgDrawRect.top;
+    if (imgW > 0 && imgH > 0 && drawW > 0 && drawH > 0) {
+        Graphics g(frozenDesktopBmp);
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        SolidBrush bg(Color(255, 15, 23, 42));
+        g.FillRectangle(&bg, drawX, drawY, drawW, drawH);
+        ImageAttributes ia;
+        ia.SetWrapMode(WrapModeTileFlipXY);
+        g.DrawImage(frameBmp, Rect(drawX, drawY, drawW, drawH), 0, 0, imgW, imgH, UnitPixel, &ia);
+        BuildOverlaySurfaceCache();
+    }
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        InvalidateRect(hOverlayWnd, nullptr, FALSE);
+    }
+}
+
+void PepperSnapDaemon::StopOverlayFramePlayback() {
+    if (!overlayFramesPlaying) return;
+    overlayFramesPlaying = false;
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        KillTimer(hOverlayWnd, 3);
+        InvalidateRect(hOverlayWnd, nullptr, FALSE);
+    }
+}
+
+void PepperSnapDaemon::ToggleOverlayFramePlayback() {
+    if (!HasOverlayMultiFrames() || !hOverlayWnd || !IsWindow(hOverlayWnd)) return;
+    overlayFramesPlaying = !overlayFramesPlaying;
+    if (overlayFramesPlaying) {
+        int delayMs = (overlayActiveFrameIdx < overlayFrameDelaysMs.size()) ? overlayFrameDelaysMs[overlayActiveFrameIdx] : 80;
+        delayMs = std::max(20, std::min(60000, delayMs));
+        SetTimer(hOverlayWnd, 3, (UINT)delayMs, nullptr);
+    } else {
+        KillTimer(hOverlayWnd, 3);
+    }
+    InvalidateRect(hOverlayWnd, nullptr, FALSE);
+}
+
+void PepperSnapDaemon::RenderOverlayFrameStrip(Graphics& g, int screenW, int screenH) {
+    if (!HasOverlayMultiFrames()) return;
+    LayoutOverlayFrameStrip(screenW, screenH);
+
+    FontFamily ff(L"Segoe UI");
+    Font btnFont(&ff, 11.5f, FontStyleBold, UnitPixel);
+    Font cardFont(&ff, 10.5f, FontStyleBold, UnitPixel);
+    StringFormat centerSf;
+    centerSf.SetAlignment(StringAlignmentCenter);
+    centerSf.SetLineAlignment(StringAlignmentCenter);
+
+    // 1. Render Dropdown Toggle Button + Play/Pause Icon inside the same square (Always visible)
+    {
+        RECT tr = overlayFrameStripToggleBtnRect;
+        RECT playRc = overlayFrameStripPlayBtnRect;
+        float playW = (float)(playRc.right - playRc.left);
+        RectF trf((float)tr.left, (float)tr.top, (float)(tr.right - tr.left), (float)(tr.bottom - tr.top));
+        bool anySqHover = overlayToggleBtnHovered || overlayPlayBtnHovered;
+        SolidBrush btnBg(Color(245, 15, 23, 42));
+        g.FillRectangle(&btnBg, trf);
+
+        if (overlayToggleBtnHovered) {
+            SolidBrush leftHovBg(Color(252, 30, 41, 59));
+            g.FillRectangle(&leftHovBg, trf.X, trf.Y, trf.Width - playW, trf.Height);
+        }
+        if (overlayPlayBtnHovered) {
+            SolidBrush rightHovBg(Color(252, 30, 41, 59));
+            g.FillRectangle(&rightHovBg, (float)playRc.left, (float)playRc.top, playW, trf.Height);
+        } else if (overlayFramesPlaying) {
+            SolidBrush activePlayBg(Color(220, 45, 20, 32));
+            g.FillRectangle(&activePlayBg, (float)playRc.left, (float)playRc.top, playW, trf.Height);
+        }
+
+        // Subtle inner divider separating Hide/Show frames text from the Play/Pause button on the right
+        Pen divPen(Color(210, 71, 85, 105), 1.0f);
+        g.DrawLine(&divPen, (float)playRc.left, trf.Y + 4.0f, (float)playRc.left, trf.Y + trf.Height - 4.0f);
+
+        // Draw Up/Down Chevron Icon on the left side
+        float chevCx = trf.X + 16.0f;
+        float chevCy = trf.Y + trf.Height * 0.5f;
+        Pen chevPen(Color(255, 239, 68, 68), 2.0f);
+        chevPen.SetStartCap(LineCapRound);
+        chevPen.SetEndCap(LineCapRound);
+        if (overlayFrameStripCollapsed) {
+            // Up chevron (click to show frame list)
+            g.DrawLine(&chevPen, chevCx - 4.5f, chevCy + 2.0f, chevCx, chevCy - 2.5f);
+            g.DrawLine(&chevPen, chevCx, chevCy - 2.5f, chevCx + 4.5f, chevCy + 2.0f);
+        } else {
+            // Down chevron (click to hide frame list)
+            g.DrawLine(&chevPen, chevCx - 4.5f, chevCy - 2.0f, chevCx, chevCy + 2.5f);
+            g.DrawLine(&chevPen, chevCx, chevCy + 2.5f, chevCx + 4.5f, chevCy - 2.0f);
+        }
+
+        // Draw Label in the center between dropdown chevron and play/pause icon
+        std::wstring toggleLbl = (overlayFrameStripCollapsed ? L"Show frames (" : L"Hide frames (") +
+                                 std::to_wstring(overlayActiveFrameIdx + 1) + L" / " +
+                                 std::to_wstring(overlayFrames.size()) + L")";
+        SolidBrush txtBr(Color(255, 248, 250, 252));
+        RectF lblRc(trf.X + 26.0f, trf.Y, (trf.Width - playW) - 28.0f, trf.Height);
+        g.DrawString(toggleLbl.c_str(), -1, &btnFont, lblRc, &centerSf, &txtBr);
+
+        // Draw Play / Pause Icon on the right side literally opposite the dropdown chevron inside the square
+        float pcx = (playRc.left + playRc.right) * 0.5f;
+        float pcy = (playRc.top + playRc.bottom) * 0.5f;
+        Color iconCol = (overlayPlayBtnHovered || overlayFramesPlaying)
+            ? Color(255, 239, 68, 68)
+            : Color(255, 248, 250, 252);
+        SolidBrush iconBr(iconCol);
+        if (overlayFramesPlaying) {
+            // Pause icon (two vertical bars)
+            g.FillRectangle(&iconBr, pcx - 4.5f, pcy - 5.0f, 3.0f, 10.0f);
+            g.FillRectangle(&iconBr, pcx + 1.5f, pcy - 5.0f, 3.0f, 10.0f);
+        } else {
+            // Play icon (right-pointing triangle)
+            PointF tri[3] = {
+                PointF(pcx - 3.5f, pcy - 5.5f),
+                PointF(pcx - 3.5f, pcy + 5.5f),
+                PointF(pcx + 5.5f, pcy)
+            };
+            g.FillPolygon(&iconBr, tri, 3);
+        }
+
+        Pen btnBorder(anySqHover ? Color(255, 239, 68, 68) : Color(230, 71, 85, 105), 1.5f);
+        g.DrawRectangle(&btnBorder, trf.X, trf.Y, trf.Width, trf.Height);
+    }
+
+    if (overlayFrameStripCollapsed) return;
+
+    // 2. Render Expanded Bottom Frame Strip Panel
+    RECT pr = overlayFrameStripPanelRect;
+    SolidBrush panelBg(Color(246, 15, 23, 42));
+    g.FillRectangle(&panelBg, (INT)pr.left, (INT)pr.top, (INT)(pr.right - pr.left), (INT)(pr.bottom - pr.top));
+
+    bool topResizeActive = (dragMode == DragMode::ResizingFrameStrip) || overlayTopResizeHovered;
+    Pen topBorderPen(topResizeActive ? Color(255, 239, 68, 68) : Color(220, 71, 85, 105), topResizeActive ? 2.2f : 1.5f);
+    g.DrawLine(&topBorderPen, (INT)0, (INT)pr.top, (INT)screenW, (INT)pr.top);
+
+    // Subtle vertical-resize grip indicators on both sides of the dropdown tab
+    Pen gripPen(topResizeActive ? Color(255, 248, 250, 252) : Color(160, 148, 163, 184), 1.2f);
+    int leftGripCx = overlayFrameStripToggleBtnRect.left - 36;
+    int rightGripCx = overlayFrameStripToggleBtnRect.right + 36;
+    if (leftGripCx > 24) {
+        g.DrawLine(&gripPen, (INT)(leftGripCx - 14), (INT)(pr.top + 3), (INT)(leftGripCx + 14), (INT)(pr.top + 3));
+        g.DrawLine(&gripPen, (INT)(leftGripCx - 14), (INT)(pr.top + 5), (INT)(leftGripCx + 14), (INT)(pr.top + 5));
+    }
+    if (rightGripCx < screenW - 24) {
+        g.DrawLine(&gripPen, (INT)(rightGripCx - 14), (INT)(pr.top + 3), (INT)(rightGripCx + 14), (INT)(pr.top + 3));
+        g.DrawLine(&gripPen, (INT)(rightGripCx - 14), (INT)(pr.top + 5), (INT)(rightGripCx + 14), (INT)(pr.top + 5));
+    }
+
+    // 3. Render Frame Cards (Clipped horizontally to screen bounds)
+    GraphicsState clipSt = g.Save();
+    g.SetClip(Rect(0, (INT)(pr.top + 6), screenW, (INT)((pr.bottom - pr.top) - 25)), CombineModeReplace);
+
+    SolidBrush chkDark(Color(255, 30, 41, 59));
+    SolidBrush chkLight(Color(255, 51, 65, 85));
+
+    for (size_t i = 0; i < overlayFrameCardRects.size() && i < overlayFrames.size(); ++i) {
+        const RECT& cr = overlayFrameCardRects[i];
+        if (cr.right < 0 || cr.left > screenW) continue;
+
+        bool isSel = (i == overlayActiveFrameIdx);
+        bool isHov = ((int)i == overlayHoveredFrameIdx);
+        RectF crf((float)cr.left, (float)cr.top, (float)(cr.right - cr.left), (float)(cr.bottom - cr.top));
+
+        Color cardBgCol = isSel
+            ? Color(255, 45, 26, 38)
+            : (isHov ? Color(250, 51, 65, 85) : Color(242, 30, 41, 59));
+        SolidBrush cardBg(cardBgCol);
+        g.FillRectangle(&cardBg, crf);
+
+        int tx = cr.left + 6;
+        int ty = cr.top + 5;
+        int tw = std::max(8, (int)(cr.right - cr.left) - 12);
+        int th = std::max(8, (int)(cr.bottom - cr.top) - 23);
+
+        // Checkerboard backdrop inside thumbnail for transparent GIF/WebP frames
+        g.FillRectangle(&chkDark, tx, ty, tw, th);
+        const int cell = 8;
+        for (int cy = 0; cy < th; cy += cell) {
+            int ch = std::min(cell, th - cy);
+            for (int cx = 0; cx < tw; cx += cell) {
+                if (((cx / cell) + (cy / cell)) & 1) {
+                    int cw = std::min(cell, tw - cx);
+                    g.FillRectangle(&chkLight, tx + cx, ty + cy, cw, ch);
+                }
+            }
+        }
+
+        if (Bitmap* fb = overlayFrames[i]) {
+            int fw = (int)fb->GetWidth();
+            int fh = (int)fb->GetHeight();
+            if (fw > 0 && fh > 0) {
+                double sc = std::min((double)tw / (double)fw, (double)th / (double)fh);
+                int dw = std::max(1, (int)std::round(fw * sc));
+                int dh = std::max(1, (int)std::round(fh * sc));
+                int dx = tx + (tw - dw) / 2;
+                int dy = ty + (th - dh) / 2;
+                g.DrawImage(fb, Rect(dx, dy, dw, dh), 0, 0, fw, fh, UnitPixel);
+            }
+        }
+
+        int delayMs = (i < overlayFrameDelaysMs.size()) ? overlayFrameDelaysMs[i] : 100;
+        std::wstring cardLbl = (cr.right - cr.left >= 82)
+            ? (L"#" + std::to_wstring(i + 1) + L" \x00B7 " + std::to_wstring(delayMs) + L"ms")
+            : (L"#" + std::to_wstring(i + 1));
+        SolidBrush lblBr(isSel ? Color(255, 254, 202, 202) : Color(255, 226, 232, 240));
+        RectF lblRc((float)cr.left + 2.0f, (float)(cr.bottom - 18), (float)(cr.right - cr.left - 4), 17.0f);
+        g.DrawString(cardLbl.c_str(), -1, &cardFont, lblRc, &centerSf, &lblBr);
+
+        Color borderCol = isSel
+            ? Color(255, 239, 68, 68)
+            : (isHov ? Color(255, 56, 189, 248) : Color(210, 71, 85, 105));
+        Pen borderPen(borderCol, isSel ? 2.2f : (isHov ? 1.5f : 1.0f));
+        g.DrawRectangle(&borderPen, crf.X, crf.Y, crf.Width, crf.Height);
+    }
+
+    g.Restore(clipSt);
+
+    // 4. Render Horizontal Scrollbar & Left/Right Step Buttons at Bottom of Strip
+    auto drawStepBtn = [&](const RECT& r, bool isLeft, bool isHov) {
+        SolidBrush bBg(isHov ? Color(255, 51, 65, 85) : Color(235, 30, 41, 59));
+        Pen bPen(Color(200, 71, 85, 105), 1.0f);
+        g.FillRectangle(&bBg, (INT)r.left, (INT)r.top, (INT)(r.right - r.left), (INT)(r.bottom - r.top));
+        g.DrawRectangle(&bPen, (INT)r.left, (INT)r.top, (INT)(r.right - r.left), (INT)(r.bottom - r.top));
+        float cx = (r.left + r.right) * 0.5f;
+        float cy = (r.top + r.bottom) * 0.5f;
+        Pen arrPen(Color(255, 226, 232, 240), 1.6f);
+        if (isLeft) {
+            g.DrawLine(&arrPen, cx + 2.0f, cy - 3.5f, cx - 2.0f, cy);
+            g.DrawLine(&arrPen, cx - 2.0f, cy, cx + 2.0f, cy + 3.5f);
+        } else {
+            g.DrawLine(&arrPen, cx - 2.0f, cy - 3.5f, cx + 2.0f, cy);
+            g.DrawLine(&arrPen, cx + 2.0f, cy, cx - 2.0f, cy + 3.5f);
+        }
+    };
+    drawStepBtn(overlayFrameStripScrollLeftRect, true, overlayScrollLeftBtnHovered);
+    drawStepBtn(overlayFrameStripScrollRightRect, false, overlayScrollRightBtnHovered);
+
+    RECT trk = overlayFrameStripScrollTrackRect;
+    SolidBrush trkBg(Color(220, 9, 13, 22));
+    Pen trkBorder(Color(180, 51, 65, 85), 1.0f);
+    g.FillRectangle(&trkBg, (INT)trk.left, (INT)trk.top, (INT)(trk.right - trk.left), (INT)(trk.bottom - trk.top));
+    g.DrawRectangle(&trkBorder, (INT)trk.left, (INT)trk.top, (INT)(trk.right - trk.left), (INT)(trk.bottom - trk.top));
+
+    RECT thm = overlayFrameStripScrollThumbRect;
+    bool thumbActive = (dragMode == DragMode::ScrollingFrameStrip) || overlayScrollbarHovered;
+    SolidBrush thmBg(thumbActive ? Color(255, 239, 68, 68) : Color(240, 100, 116, 139));
+    g.FillRectangle(&thmBg, (INT)thm.left, (INT)thm.top, (INT)(thm.right - thm.left), (INT)(thm.bottom - thm.top));
+}
+
 void PepperSnapDaemon::OpenImageFileIntoOverlay(const std::wstring& filePath) {
     if (filePath.empty()) return;
-    Bitmap loaded(filePath.c_str());
-    if (loaded.GetLastStatus() != Ok) return;
+    std::vector<Bitmap*> frames;
+    std::vector<int> delays;
+    if (!LoadImageFramesFromFile(filePath, frames, delays) || frames.empty()) return;
 
+    if (hOverlayWnd) {
+        CloseRegionSnipOverlay();
+    }
+    ClearOverlayFrames();
+
+    Bitmap* firstFrame = frames[0];
     int sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     int sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     if (sw <= 0 || sh <= 0) {
@@ -10819,9 +12644,12 @@ void PepperSnapDaemon::OpenImageFileIntoOverlay(const std::wstring& filePath) {
         sh = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    int imgW = (int)loaded.GetWidth();
-    int imgH = (int)loaded.GetHeight();
-    if (imgW <= 0 || imgH <= 0) return;
+    int imgW = (int)firstFrame->GetWidth();
+    int imgH = (int)firstFrame->GetHeight();
+    if (imgW <= 0 || imgH <= 0) {
+        for (Bitmap* f : frames) delete f;
+        return;
+    }
 
     int drawW = imgW;
     int drawH = imgH;
@@ -10842,7 +12670,19 @@ void PepperSnapDaemon::OpenImageFileIntoOverlay(const std::wstring& filePath) {
     g.FillRectangle(&bg, 0, 0, sw, sh);
     ImageAttributes ia;
     ia.SetWrapMode(WrapModeTileFlipXY);
-    g.DrawImage(&loaded, Rect(imgX, imgY, drawW, drawH), 0, 0, imgW, imgH, UnitPixel, &ia);
+    g.DrawImage(firstFrame, Rect(imgX, imgY, drawW, drawH), 0, 0, imgW, imgH, UnitPixel, &ia);
+
+    overlayImgDrawRect = { imgX, imgY, imgX + drawW, imgY + drawH };
+    if (frames.size() > 1) {
+        overlayFrames = std::move(frames);
+        overlayFrameDelaysMs = std::move(delays);
+        overlayActiveFrameIdx = 0;
+        overlayFrameStripCollapsed = false;
+        overlayFrameScrollX = 0.0f;
+        LayoutOverlayFrameStrip(sw, sh);
+    } else {
+        overlaySingleImageBmp = firstFrame;
+    }
 
     RECT centeredSel = { imgX, imgY, imgX + drawW, imgY + drawH };
     StartRegionSnipOverlay(canvasBmp, &centeredSel);
@@ -10866,22 +12706,16 @@ void PepperSnapDaemon::OpenImageIntoOverlay() {
 
 void PepperSnapDaemon::OpenImageFileToPinOnTop(const std::wstring& filePath) {
     if (filePath.empty()) return;
-    Bitmap loaded(filePath.c_str());
-    if (loaded.GetLastStatus() != Ok) return;
+    std::vector<Bitmap*> frames;
+    std::vector<int> delays;
+    if (!LoadImageFramesFromFile(filePath, frames, delays) || frames.empty()) return;
 
-    int imgW = (int)loaded.GetWidth();
-    int imgH = (int)loaded.GetHeight();
-    if (imgW <= 0 || imgH <= 0) return;
-
-    Bitmap* memBmp = new Bitmap(imgW, imgH, PixelFormat32bppARGB);
-    {
-        Graphics g(memBmp);
-        g.SetCompositingMode(CompositingModeSourceCopy);
-        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
-        g.SetPixelOffsetMode(PixelOffsetModeHalf);
-        ImageAttributes ia;
-        ia.SetWrapMode(WrapModeTileFlipXY);
-        g.DrawImage(&loaded, Rect(0, 0, imgW, imgH), 0, 0, imgW, imgH, UnitPixel, &ia);
+    Bitmap* memBmp = frames[0];
+    int imgW = (int)memBmp->GetWidth();
+    int imgH = (int)memBmp->GetHeight();
+    if (imgW <= 0 || imgH <= 0) {
+        for (Bitmap* f : frames) delete f;
+        return;
     }
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
@@ -10899,22 +12733,70 @@ void PepperSnapDaemon::OpenImageFileToPinOnTop(const std::wstring& filePath) {
     int px = (sw - dispW) / 2;
     int py = std::max(20, (sh - (dispH + 36)) / 2);
 
-    CreatePinnedWindow(memBmp, px, py, initScale);
+    for (int step = 0; step < 32; ++step) {
+        bool collision = false;
+        int cx = px + dispW / 2;
+        int cy = py + dispH / 2;
+        for (HWND hp : pinnedWindows) {
+            if (!hp || !IsWindow(hp)) continue;
+            PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+            if (!pData) continue;
+            int pW = 32, pH = 32;
+            GetPinnedScaledDims(pData, pW, pH);
+            int pcx = pData->screenImgX + pW / 2;
+            int pcy = pData->screenImgY + pH / 2;
+            if ((std::abs(pData->screenImgX - px) < 20 && std::abs(pData->screenImgY - py) < 20) ||
+                (std::abs(pcx - cx) < 20 && std::abs(pcy - cy) < 20)) {
+                collision = true;
+                break;
+            }
+        }
+        if (!collision) break;
+        px += 28;
+        py += 28;
+        if (px + 64 > sw || py + 64 > sh) {
+            px = std::max(20, (sw - dispW) / 4 + (step % 5) * 24);
+            py = std::max(20, (sh - (dispH + 36)) / 4 + (step % 5) * 24);
+        }
+    }
+
+    if (frames.size() > 1) {
+        CreatePinnedWindow(memBmp, px, py, initScale, std::move(frames), std::move(delays));
+    } else {
+        CreatePinnedWindow(memBmp, px, py, initScale);
+    }
 }
 
 void PepperSnapDaemon::OpenImageToPinOnTop() {
-    WCHAR szFile[MAX_PATH] = {0};
+    std::vector<WCHAR> szFileBuf(65536, 0);
     OPENFILENAMEW ofn = {0};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hTrayWnd;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = szFileBuf.data();
+    ofn.nMaxFile = (DWORD)szFileBuf.size();
     ofn.lpstrFilter = L"Image files (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff;*.ico)\0*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff;*.ico\0All files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
 
     if (GetOpenFileNameW(&ofn)) {
-        OpenImageFileToPinOnTop(szFile);
+        const WCHAR* p = szFileBuf.data();
+        std::wstring firstPart(p);
+        p += firstPart.size() + 1;
+        if (*p == L'\0') {
+            OpenImageFileToPinOnTop(firstPart);
+        } else {
+            std::wstring dir = firstPart;
+            if (!dir.empty() && dir.back() != L'\\' && dir.back() != L'/') {
+                dir += L"\\";
+            }
+            while (*p != L'\0') {
+                std::wstring fileName(p);
+                p += fileName.size() + 1;
+                if (!fileName.empty()) {
+                    OpenImageFileToPinOnTop(dir + fileName);
+                }
+            }
+        }
     }
 }
 
@@ -11137,6 +13019,33 @@ static bool ShouldTrayMenuSmoothAllPins() {
     return !g_Daemon.smoothPinnedImage;
 }
 
+static bool ShouldTrayMenuShowToolbarOnAllPins() {
+    int pinCount = 0;
+    bool anyToolbarHidden = false;
+    auto inspectPin = [&](HWND hp) {
+        if (!hp || !IsWindow(hp)) return;
+        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+        if (!pData || !pData->bmp) return;
+        pinCount++;
+        if (pData->hideToolbar) {
+            anyToolbarHidden = true;
+        }
+    };
+    for (HWND hp : g_Daemon.pinnedWindows) {
+        inspectPin(hp);
+    }
+    HWND hPinExtra = nullptr;
+    while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+        if (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hPinExtra) == g_Daemon.pinnedWindows.end()) {
+            inspectPin(hPinExtra);
+        }
+    }
+    if (pinCount > 0) {
+        return anyToolbarHidden;
+    }
+    return g_Daemon.hidePinnedToolbar;
+}
+
 static bool ShouldTrayMenuShowOutlineOnAllPins() {
     int pinCount = 0;
     bool anyOutlineHidden = false;
@@ -11165,42 +13074,71 @@ static bool ShouldTrayMenuShowOutlineOnAllPins() {
 }
 
 static void ShowTrayContextMenu(HWND hWnd) {
-    POINT pt;
-    GetCursorPos(&pt);
-    HMENU hMenu = CreatePopupMenu();
+    POINT anchorPt;
+    GetCursorPos(&anchorPt);
+    bool isReopen = false;
 
-    std::wstring regMenu  = L"Custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkRegionSnip);
-    std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);
-    std::wstring prevMenu = L"Instant save previous custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPrevRegion);
-    const wchar_t* smoothPinsMenu = ShouldTrayMenuSmoothAllPins()
-        ? L"Smooth all pinned image"
-        : L"Unsmooth all pinned image";
-    const wchar_t* outlinePinsMenu = ShouldTrayMenuShowOutlineOnAllPins()
-        ? L"Show outline on all pinned image"
-        : L"Hide outline on all pinned image";
+    for (;;) {
+        HMENU hMenu = CreatePopupMenu();
 
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_REGION,            regMenu.c_str());
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_FULL,              fullMenu.c_str());
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,       prevMenu.c_str());
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,        L"Open image to edit with PepperSnap...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE,    L"Open image to pin on top...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SMOOTH_PINS,       smoothPinsMenu);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_OUTLINE_PINS, outlinePinsMenu);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CLOSE_PINS,        L"Close all pinned image");
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_FOLDER,   L"Open save folder...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPTIONS,       L"Options...");
-    AppendMenuW(hMenu, MF_STRING | (g_Daemon.IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED),
-                IDM_TRAY_STARTUP_RUN, L"Launch PepperSnap at Windows startup");
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CHECK_UPDATE,  L"Check for updates (GitHub releases)...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHORTCUTS,     L"Keyboard shortcuts and info...");
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT,          L"Exit PepperSnap");
+        std::wstring regMenu  = L"Custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkRegionSnip);
+        std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);
+        std::wstring prevMenu = L"Instant save previous custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPrevRegion);
+        const wchar_t* smoothPinsMenu = ShouldTrayMenuSmoothAllPins()
+            ? L"Smooth all pinned image"
+            : L"Unsmooth all pinned image";
+        const wchar_t* toolbarPinsMenu = ShouldTrayMenuShowToolbarOnAllPins()
+            ? L"Show toolbar on all pinned image"
+            : L"Hide toolbar on all pinned image";
+        const wchar_t* outlinePinsMenu = ShouldTrayMenuShowOutlineOnAllPins()
+            ? L"Show outline on all pinned image"
+            : L"Hide outline on all pinned image";
 
-    SetForegroundWindow(hWnd);
-    TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
-    PostMessageW(hWnd, WM_NULL, 0, 0);
-    DestroyMenu(hMenu);
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_REGION,            regMenu.c_str());
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_FULL,              fullMenu.c_str());
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,       prevMenu.c_str());
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,        L"Open image to edit with PepperSnap...");
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE,    L"Open image to pin on top...");
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SMOOTH_PINS,       smoothPinsMenu);
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_TOOLBAR_PINS, toolbarPinsMenu);
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_OUTLINE_PINS, outlinePinsMenu);
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CLOSE_PINS,        L"Close all pinned image");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_FOLDER,   L"Open save folder...");
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPTIONS,       L"Options...");
+        AppendMenuW(hMenu, MF_STRING | (g_Daemon.IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED),
+                    IDM_TRAY_STARTUP_RUN, L"Launch PepperSnap at Windows startup");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_CHECK_UPDATE,  L"Check for updates (GitHub releases)...");
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHORTCUTS,     L"Keyboard shortcuts and info...");
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT,          L"Exit PepperSnap");
+
+        SetForegroundWindow(hWnd);
+        if (isReopen) {
+            POINT curPt;
+            if (GetCursorPos(&curPt)) {
+                SetCursorPos(curPt.x, curPt.y);
+            }
+        }
+        UINT tpmFlags = TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD |
+                        (isReopen ? TPM_NOANIMATION : 0);
+        int cmd = (int)TrackPopupMenu(hMenu, tpmFlags, anchorPt.x, anchorPt.y, 0, hWnd, nullptr);
+        DestroyMenu(hMenu);
+
+        if (cmd == IDM_TRAY_SMOOTH_PINS ||
+            cmd == IDM_TRAY_SHOW_TOOLBAR_PINS ||
+            cmd == IDM_TRAY_SHOW_OUTLINE_PINS) {
+            SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+            isReopen = true;
+            continue;
+        }
+
+        PostMessageW(hWnd, WM_NULL, 0, 0);
+        if (cmd != 0) {
+            PostMessageW(hWnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+        }
+        break;
+    }
 }
 
 static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -11282,14 +13220,31 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 std::wstring path(wpath, wcsnlen(wpath, maxChars));
                 if (!path.empty()) {
                     if (cds->dwData == COPYDATA_PIN_IMAGE) {
-                        g_Daemon.OpenImageFileToPinOnTop(path);
+                        g_Daemon.pendingPinFiles.push_back(path);
+                        PostMessageW(hWnd, WM_PROCESS_PIN_QUEUE, 0, 0);
                     } else {
-                        g_Daemon.OpenImageFileIntoOverlay(path);
+                        g_Daemon.pendingEditFile = path;
+                        PostMessageW(hWnd, WM_PROCESS_PIN_QUEUE, 0, 0);
                     }
                 }
                 return TRUE;
             }
             break;
+        }
+        case WM_PROCESS_PIN_QUEUE: {
+            std::vector<std::wstring> toPin;
+            toPin.swap(g_Daemon.pendingPinFiles);
+            for (const auto& p : toPin) {
+                if (!p.empty()) {
+                    g_Daemon.OpenImageFileToPinOnTop(p);
+                }
+            }
+            if (!g_Daemon.pendingEditFile.empty()) {
+                std::wstring editPath = g_Daemon.pendingEditFile;
+                g_Daemon.pendingEditFile.clear();
+                g_Daemon.OpenImageFileIntoOverlay(editPath);
+            }
+            return 0;
         }
         case WM_TRIGGER_REGION_SNIP: {
             DWORD now = GetTickCount();
@@ -11362,7 +13317,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                             int imgW = 32, imgH = 32;
                             GetPinnedScaledDims(pData, imgW, imgH);
                             EnsurePinnedWindowCache(pData, imgW, imgH, true);
-                            InvalidateRect(hp, nullptr, FALSE);
+                            RenderPinnedLayeredWindow(hp, pData);
                         }
                     };
                     for (HWND hp : g_Daemon.pinnedWindows) {
@@ -11371,6 +13326,33 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     HWND hPinExtra = nullptr;
                     while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
                         setSmoothOnPin(hPinExtra);
+                    }
+                    break;
+                }
+                case IDM_TRAY_SHOW_TOOLBAR_PINS: {
+                    bool showToolbarNow = ShouldTrayMenuShowToolbarOnAllPins();
+                    bool targetHideToolbar = !showToolbarNow;
+                    g_Daemon.hidePinnedToolbar = targetHideToolbar;
+                    g_Daemon.SaveSettings();
+                    if (targetHideToolbar) {
+                        HidePinnedBubbleTooltip();
+                    }
+                    auto setToolbarOnPin = [&](HWND hp) {
+                        if (!hp || !IsWindow(hp)) return;
+                        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+                        if (!pData || !pData->bmp) return;
+                        if (pData->hideToolbar != targetHideToolbar) {
+                            pData->hideToolbar = targetHideToolbar;
+                            UpdatePinnedWindowLayout(hp, pData, true);
+                            RenderPinnedLayeredWindow(hp, pData);
+                        }
+                    };
+                    for (HWND hp : g_Daemon.pinnedWindows) {
+                        setToolbarOnPin(hp);
+                    }
+                    HWND hPinExtra = nullptr;
+                    while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+                        setToolbarOnPin(hPinExtra);
                     }
                     break;
                 }
@@ -11389,7 +13371,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                             GetPinnedScaledDims(pData, imgW, imgH);
                             EnsurePinnedWindowCache(pData, imgW, imgH, true);
                             UpdatePinnedWindowLayout(hp, pData, false);
-                            InvalidateRect(hp, nullptr, FALSE);
+                            RenderPinnedLayeredWindow(hp, pData);
                         }
                     };
                     for (HWND hp : g_Daemon.pinnedWindows) {
@@ -11445,7 +13427,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     for (wchar_t& c : cmdArgs) c = (wchar_t)towlower(c);
 
     std::wstring cliEditFilePath;
-    std::wstring cliPinFilePath;
+    std::vector<std::wstring> cliPinFilePaths;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv) {
@@ -11453,8 +13435,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
             std::wstring arg = argv[i];
             std::wstring low = arg;
             for (wchar_t& c : low) c = (wchar_t)towlower(c);
+            if (low == L"--noelevate" || low == L"/noelevate") {
+                continue;
+            }
             if ((low == L"--pin" || low == L"/pin") && i + 1 < argc) {
-                cliPinFilePath = argv[i + 1];
+                while (i + 1 < argc) {
+                    std::wstring nextArg = argv[i + 1];
+                    std::wstring nextLow = nextArg;
+                    for (wchar_t& c : nextLow) c = (wchar_t)towlower(c);
+                    if (nextLow == L"--noelevate" || nextLow == L"/noelevate") {
+                        ++i;
+                        continue;
+                    }
+                    if (!nextArg.empty() && (nextArg[0] == L'-' || nextArg[0] == L'/')) {
+                        break;
+                    }
+                    cliPinFilePaths.push_back(nextArg);
+                    ++i;
+                }
                 break;
             } else if ((low == L"--edit" || low == L"/edit" || low == L"--open" || low == L"/open") && i + 1 < argc) {
                 cliEditFilePath = argv[i + 1];
@@ -11493,24 +13491,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
 
     auto isSameVersionDaemon = [&](HWND hExisting) -> bool {
         if (!hExisting || !IsWindow(hExisting)) return false;
+        if (FindWindowW(L"PepperSnapTrayDaemonClass", currentDaemonTitle.c_str()) == hExisting) {
+            return true;
+        }
         WCHAR existingTitle[128] = {0};
         GetWindowTextW(hExisting, existingTitle, 127);
         return (wcscmp(existingTitle, currentDaemonTitle.c_str()) == 0);
     };
 
     auto forwardToRunningDaemon = [&](HWND hExisting) {
-        if (!cliPinFilePath.empty()) {
-            COPYDATASTRUCT cds = {0};
-            cds.dwData = COPYDATA_PIN_IMAGE;
-            cds.cbData = (DWORD)((cliPinFilePath.size() + 1) * sizeof(wchar_t));
-            cds.lpData = (PVOID)cliPinFilePath.c_str();
-            SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 3000, nullptr);
+        if (!cliPinFilePaths.empty()) {
+            for (const auto& pinPath : cliPinFilePaths) {
+                if (pinPath.empty()) continue;
+                COPYDATASTRUCT cds = {0};
+                cds.dwData = COPYDATA_PIN_IMAGE;
+                cds.cbData = (DWORD)((pinPath.size() + 1) * sizeof(wchar_t));
+                cds.lpData = (PVOID)pinPath.c_str();
+                SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 5000, nullptr);
+            }
         } else if (!cliEditFilePath.empty()) {
             COPYDATASTRUCT cds = {0};
             cds.dwData = COPYDATA_OPEN_IMAGE;
             cds.cbData = (DWORD)((cliEditFilePath.size() + 1) * sizeof(wchar_t));
             cds.lpData = (PVOID)cliEditFilePath.c_str();
-            SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 3000, nullptr);
+            SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 5000, nullptr);
         } else if (cliMsg != 0) {
             PostMessageW(hExisting, cliMsg, cliWParam, 0);
         } else {
@@ -11538,10 +13542,33 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         }
     };
 
+    // Serialize multi-select Explorer CLI invocations so concurrent "--pin" processes forward cleanly in order
+    HANDLE hCliForwardMutex = nullptr;
+    if (cmdArgs.find(L"--noelevate") == std::wstring::npos) {
+        hCliForwardMutex = CreateMutexW(nullptr, FALSE, L"Local\\PepperSnap_CLI_Forward_Mutex");
+        if (hCliForwardMutex) {
+            WaitForSingleObject(hCliForwardMutex, 10000);
+        }
+    }
+    auto releaseCliForwardMutex = [&]() {
+        if (hCliForwardMutex) {
+            ReleaseMutex(hCliForwardMutex);
+            CloseHandle(hCliForwardMutex);
+            hCliForwardMutex = nullptr;
+        }
+    };
+
     // If an existing PepperSnap instance of the SAME version is already running, forward CLI commands immediately
-    HWND hExistingPreCheck = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
-    if (hExistingPreCheck && isSameVersionDaemon(hExistingPreCheck)) {
+    HWND hExistingPreCheck = FindWindowW(L"PepperSnapTrayDaemonClass", currentDaemonTitle.c_str());
+    if (!hExistingPreCheck) {
+        HWND hAny = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
+        if (hAny && isSameVersionDaemon(hAny)) {
+            hExistingPreCheck = hAny;
+        }
+    }
+    if (hExistingPreCheck) {
         forwardToRunningDaemon(hExistingPreCheck);
+        releaseCliForwardMutex();
         return 0;
     }
 
@@ -11558,6 +13585,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
             sei.lpParameters = args.c_str();
             sei.nShow = SW_SHOWNORMAL;
             if (ShellExecuteExW(&sei)) {
+                // Wait briefly for the newly elevated daemon to create its tray window before releasing the CLI mutex
+                for (int w = 0; w < 125; ++w) {
+                    if (FindWindowW(L"PepperSnapTrayDaemonClass", currentDaemonTitle.c_str()) != nullptr) break;
+                    Sleep(40);
+                }
+                releaseCliForwardMutex();
                 return 0;
             }
         }
@@ -11571,16 +13604,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
 
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Global\\PepperSnap_TrayDaemon_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND hExisting = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
+        HWND hExisting = nullptr;
+        for (int w = 0; w < 50; ++w) {
+            hExisting = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
+            if (hExisting) break;
+            Sleep(40);
+        }
         if (hExisting) {
             if (isSameVersionDaemon(hExisting)) {
                 forwardToRunningDaemon(hExisting);
+                releaseCliForwardMutex();
+                if (hMutex) CloseHandle(hMutex);
                 return 0;
             }
             shutdownOlderDaemon(hExisting);
         }
     }
     if (cliMsg == WM_COMMAND && cliWParam == IDM_TRAY_EXIT) {
+        releaseCliForwardMutex();
         if (hMutex) CloseHandle(hMutex);
         return 0;
     }
@@ -11645,8 +13686,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     SetTimer(g_Daemon.hTrayWnd, TIMER_AUTO_UPDATE_CHECK, 30 * 60 * 1000, nullptr);
     g_Daemon.MaybeRunScheduledUpdateCheck();
 
-    if (!cliPinFilePath.empty()) {
-        g_Daemon.OpenImageFileToPinOnTop(cliPinFilePath);
+    releaseCliForwardMutex();
+
+    if (!cliPinFilePaths.empty()) {
+        for (const auto& pinPath : cliPinFilePaths) {
+            if (!pinPath.empty()) {
+                g_Daemon.OpenImageFileToPinOnTop(pinPath);
+            }
+        }
     } else if (!cliEditFilePath.empty()) {
         g_Daemon.OpenImageFileIntoOverlay(cliEditFilePath);
     } else if (cliMsg != 0) {
