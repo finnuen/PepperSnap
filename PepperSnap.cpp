@@ -3813,6 +3813,31 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
             g.FillPolygon(&moveBr, rightH, 3);
             break;
         }
+        case DBTN_ACT_FRAME_PLAY_PAUSE: {
+            // Play triangle on left + Pause bars on right
+            PointF tri[3] = {
+                PointF(cx - 6.8f, cy - 5.5f),
+                PointF(cx - 6.8f, cy + 5.5f),
+                PointF(cx + 0.2f, cy)
+            };
+            g.FillPolygon(&whiteBrush, tri, 3);
+            g.FillRectangle(&whiteBrush, cx + 2.0f, cy - 5.5f, 2.2f, 11.0f);
+            g.FillRectangle(&whiteBrush, cx + 5.4f, cy - 5.5f, 2.2f, 11.0f);
+            break;
+        }
+        case DBTN_ACT_FRAME_TOGGLE: {
+            // Frame strip cards + dropdown chevron below
+            Pen thinFramePen(Color(255, 248, 250, 252), 1.35f);
+            g.DrawRectangle(&whitePen, cx - 7.0f, cy - 6.2f, 14.0f, 7.6f);
+            g.DrawLine(&thinFramePen, cx - 2.3f, cy - 6.2f, cx - 2.3f, cy + 1.4f);
+            g.DrawLine(&thinFramePen, cx + 2.3f, cy - 6.2f, cx + 2.3f, cy + 1.4f);
+            Pen chevPen(Color(255, 248, 250, 252), 1.85f);
+            chevPen.SetStartCap(LineCapRound);
+            chevPen.SetEndCap(LineCapRound);
+            g.DrawLine(&chevPen, cx - 4.0f, cy + 3.8f, cx, cy + 7.2f);
+            g.DrawLine(&chevPen, cx, cy + 7.2f, cx + 4.0f, cy + 3.8f);
+            break;
+        }
     }
 }
 
