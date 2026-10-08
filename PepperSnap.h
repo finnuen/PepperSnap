@@ -58,9 +58,12 @@ using namespace Gdiplus;
 #define WM_UPDATE_CHECK_RESULT (WM_USER + 105)
 #define WM_SHORTCUT_RECORDED   (WM_USER + 106)
 
-#define COPYDATA_OPEN_IMAGE    0x5053494DUL
-#define COPYDATA_PIN_IMAGE     0x5053504EUL
-#define TIMER_AUTO_UPDATE_CHECK 77
+#define COPYDATA_OPEN_IMAGE        0x5053494DUL
+#define COPYDATA_PIN_IMAGE         0x5053504EUL
+#define TIMER_AUTO_UPDATE_CHECK    77
+#define TIMER_TRAY_DELAY_REGION    78
+#define TIMER_TRAY_DELAY_FULL      79
+#define TIMER_TRAY_DELAY_PREV      80
 
 #define HK_REGION_SNIP         9101
 #define HK_FULL_SNAP           9102
@@ -205,6 +208,7 @@ struct PinnedWindowData {
     POINT dragStartWnd{0, 0};
     int hoveredBtnId = -1;
     int pressedBtnId = -1;
+    bool pendingRightDblClickClose = false;
     bool trackingMouseLeave = false;
     std::vector<DockButton> buttons;
     HDC hCacheDC = nullptr;

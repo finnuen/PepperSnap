@@ -17,7 +17,7 @@ public:
     ULONG_PTR gdiplusToken = 0;
     std::vector<HWND> pinnedWindows;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.6.1";
+    static constexpr const wchar_t* APP_VERSION = L"3.6.3";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -84,6 +84,7 @@ public:
     HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
 
     // Previously Selected Custom Window Size & Position
     bool hasLastCustomSel = false;
@@ -392,6 +393,7 @@ void PepperSnapDaemon::SaveSettings() const {
     writeHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs);
     writeHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave);
     writeHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy);
+    writeHk(L"HkPinCloseMod",      L"HkPinCloseVk",      hkPinClose);
     WritePrivateProfileStringW(L"PepperSnap", L"HasLastCustomSel", hasLastCustomSel ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelLeft", std::to_wstring(lastCustomSelRect.left).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelTop", std::to_wstring(lastCustomSelRect.top).c_str(), iniPath.c_str());
@@ -527,6 +529,7 @@ void PepperSnapDaemon::LoadSettings() {
     readHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs,     MOD_CONTROL | MOD_SHIFT, 'S');
     readHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave,       MOD_CONTROL,             'S');
     readHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy,       MOD_CONTROL,             'C');
+    readHk(L"HkPinCloseMod",      L"HkPinCloseVk",      hkPinClose,      0,                       VK_ESCAPE);
 
     hasLastCustomSel = (GetPrivateProfileIntW(L"PepperSnap", L"HasLastCustomSel", 0, iniPath.c_str()) != 0);
     lastCustomSelRect.left   = (LONG)GetPrivateProfileIntW(L"PepperSnap", L"LastCustomSelLeft",   0, iniPath.c_str());
@@ -1020,6 +1023,7 @@ std::wstring PepperSnapDaemon::FormatHotkeyString(const HotkeyBinding& hk) {
     if (hk.modifiers & MOD_WIN)     out += L"Win + ";
 
     switch (hk.vk) {
+        case VK_ESCAPE:   out += L"Esc"; break;
         case VK_SNAPSHOT: out += L"PrintScreen"; break;
         case VK_SPACE:    out += L"Space"; break;
         case VK_TAB:      out += L"Tab"; break;
@@ -1088,7 +1092,8 @@ static bool MatchesAnyPinnedShortcut(UINT vk, bool ctrl, bool shift, bool alt) {
            MatchesOverlayShortcut(g_Daemon.hkPinSmooth,    vk, ctrl, shift, alt) ||
            MatchesOverlayShortcut(g_Daemon.hkPinSaveAs,    vk, ctrl, shift, alt) ||
            MatchesOverlayShortcut(g_Daemon.hkPinSave,      vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinCopy,      vk, ctrl, shift, alt);
+           MatchesOverlayShortcut(g_Daemon.hkPinCopy,      vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinClose,     vk, ctrl, shift, alt);
 }
 
 void PepperSnapDaemon::ApplyGlobalHotkeys() {
@@ -4216,7 +4221,7 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
         { DBTN_ACT_SAVE_AS,      toolBtnW,           L"",     FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",g_Daemon.hkPinSaveAs),    false },
         { DBTN_ACT_SAVE,         toolBtnW,           L"",     FormatLabelWithShortcut(L"Quick save",              g_Daemon.hkPinSave),      false },
         { DBTN_ACT_COPY,         toolBtnW * 2 + gap, L"Copy", FormatLabelWithShortcut(L"Copy to clipboard",       g_Daemon.hkPinCopy),      true  },
-        { DBTN_ACT_CLOSE,        toolBtnW,           L"",     L"Close pinned image (Esc)",                                                  false }
+        { DBTN_ACT_CLOSE,        toolBtnW,           L"",     FormatLabelWithShortcut(L"Close pinned image",      g_Daemon.hkPinClose),     false }
     };
 
     int stripW = 0;
@@ -4598,6 +4603,27 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 InvalidateRect(hWnd, nullptr, FALSE);
             }
             return 0;
+        case WM_RBUTTONDOWN:
+            if (data) {
+                data->pendingRightDblClickClose = false;
+            }
+            return 0;
+        case WM_RBUTTONDBLCLK:
+            if (data) {
+                data->pendingRightDblClickClose = true;
+                SetCapture(hWnd);
+            }
+            return 0;
+        case WM_RBUTTONUP:
+            if (data && data->pendingRightDblClickClose) {
+                data->pendingRightDblClickClose = false;
+                if (GetCapture() == hWnd) {
+                    ReleaseCapture();
+                }
+                ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE);
+                return 0;
+            }
+            return 0;
         case WM_KEYDOWN: {
             if (data && data->dragging && (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
                 UpdatePinnedDragPosition(hWnd, data);
@@ -4608,7 +4634,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 bool shift = ((GetKeyState(VK_SHIFT)   & 0x8000) != 0) || ((GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0);
                 bool alt   = ((GetKeyState(VK_MENU)    & 0x8000) != 0) || ((GetAsyncKeyState(VK_MENU)    & 0x8000) != 0);
                 UINT vk = (UINT)wParam;
-                if (vk == VK_ESCAPE && !ctrl && !shift && !alt) {
+                if ((vk == VK_ESCAPE && !ctrl && !shift && !alt) ||
+                    MatchesOverlayShortcut(g_Daemon.hkPinClose, vk, ctrl, shift, alt)) {
                     ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE);
                     return 0;
                 }
@@ -5013,6 +5040,7 @@ struct OptionsDlgState {
     HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
     bool confirmed = false;
     bool openedAppData = false;
     bool restoredAllDefaults = false;
@@ -5513,6 +5541,7 @@ struct CustomizeKeysDlgState {
     HotkeyBinding hkPinSaveAs;
     HotkeyBinding hkPinSave;
     HotkeyBinding hkPinCopy;
+    HotkeyBinding hkPinClose;
 
     std::vector<CustomizeKeyRow> rows;
     bool confirmed = false;
@@ -6019,6 +6048,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     ck.hkPinSaveAs     = optSt->hkPinSaveAs;
     ck.hkPinSave       = optSt->hkPinSave;
     ck.hkPinCopy       = optSt->hkPinCopy;
+    ck.hkPinClose      = optSt->hkPinClose;
 
     int nextSlot = 1;
     auto addGlobalRow = [&](const std::wstring& lbl, HotkeyBinding* ptr, HotkeyBinding defHk) {
@@ -6099,6 +6129,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addActRow(DBTN_ACT_SAVE_AS,      false, L"Save as JPG/PNG/WEBP/BMP", &ck.hkPinSaveAs,    { MOD_CONTROL | MOD_SHIFT, 'S' });
     addActRow(DBTN_ACT_SAVE,         false, L"Quick save",               &ck.hkPinSave,      { MOD_CONTROL, 'S' });
     addActRow(DBTN_ACT_COPY,         true,  L"Copy to clipboard",        &ck.hkPinCopy,      { MOD_CONTROL, 'C' });
+    addActRow(DBTN_ACT_CLOSE,        false, L"Close pinned image",       &ck.hkPinClose,     { 0, VK_ESCAPE });
 
     int curY = 8;
     for (auto& r : ck.rows) {
@@ -6218,6 +6249,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         optSt->hkPinSaveAs     = ck.hkPinSaveAs;
         optSt->hkPinSave       = ck.hkPinSave;
         optSt->hkPinCopy       = ck.hkPinCopy;
+        optSt->hkPinClose      = ck.hkPinClose;
 
         g_Daemon.hkRegionSnip    = ck.hkRegion;
         g_Daemon.hkFullSnap      = ck.hkFull;
@@ -6247,6 +6279,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         g_Daemon.hkPinSaveAs     = ck.hkPinSaveAs;
         g_Daemon.hkPinSave       = ck.hkPinSave;
         g_Daemon.hkPinCopy       = ck.hkPinCopy;
+        g_Daemon.hkPinClose      = ck.hkPinClose;
 
         g_Daemon.ApplyGlobalHotkeys();
         g_Daemon.SaveSettings();
@@ -6844,6 +6877,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkPinSaveAs     = { MOD_CONTROL | MOD_SHIFT, 'S' };
                 st->hkPinSave       = { MOD_CONTROL, 'S' };
                 st->hkPinCopy       = { MOD_CONTROL, 'C' };
+                st->hkPinClose      = { 0, VK_ESCAPE };
 
                 st->autoUpdateEnabled = true;
                 st->updateInterval = UpdateCheckInterval::EveryDay;
@@ -7073,6 +7107,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkPinSaveAs     = hkPinSaveAs;
     st.hkPinSave       = hkPinSave;
     st.hkPinCopy       = hkPinCopy;
+    st.hkPinClose      = hkPinClose;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
@@ -7193,6 +7228,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         hkPinSaveAs     = st.hkPinSaveAs;
         hkPinSave       = st.hkPinSave;
         hkPinCopy       = st.hkPinCopy;
+        hkPinClose      = st.hkPinClose;
         if (st.restoredAllDefaults) {
             hidePinnedOutline = false;
             smoothPinnedImage = false;
@@ -7674,6 +7710,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Drag pinned image",             L"Move floating window (snaps to screen edges; image can overflow screen)");
     addRow(L"Hold Shift + drag",             L"Temporarily disable screen-edge snapping while moving");
     addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar");
+    addRow(L"Double right-click pinned image", L"Close pinned image");
     addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
     addRow(L"Scroll / Ctrl + Scroll",        L"Zoom in or out (anchored to bottom-right corner or visible screen edge)");
     addActionRow(DBTN_ACT_ZOOM_OUT,     false, FormatLabelWithShortcut(L"Zoom out",                 hkPinZoomOut),   L"Scale pinned image down (anchored to bottom-right corner)");
@@ -7684,7 +7721,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image");
     addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder");
     addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),      L"Copy pinned image to clipboard");
-    addActionRow(DBTN_ACT_CLOSE,        false, L"Close pinned image (Esc)",                                          L"Close pinned image (or click \"Close all pinned image\" in tray menu)");
+    addActionRow(DBTN_ACT_CLOSE,        false, FormatLabelWithShortcut(L"Close pinned image",       hkPinClose),     L"Close pinned image (or double right-click, or click \"Close all pinned image\" in tray menu)");
 
     int maxKeyW = 220;
     int maxDescW = 360;
@@ -10859,6 +10896,18 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         case WM_TIMER:
             if (wParam == TIMER_AUTO_UPDATE_CHECK) {
                 g_Daemon.MaybeRunScheduledUpdateCheck();
+            } else if (wParam == TIMER_TRAY_DELAY_REGION) {
+                KillTimer(hWnd, TIMER_TRAY_DELAY_REGION);
+                DwmFlush();
+                g_Daemon.StartRegionSnipOverlay();
+            } else if (wParam == TIMER_TRAY_DELAY_FULL) {
+                KillTimer(hWnd, TIMER_TRAY_DELAY_FULL);
+                DwmFlush();
+                g_Daemon.InstantFullscreenCapture();
+            } else if (wParam == TIMER_TRAY_DELAY_PREV) {
+                KillTimer(hWnd, TIMER_TRAY_DELAY_PREV);
+                DwmFlush();
+                g_Daemon.InstantPreviousRegionCapture();
             }
             return 0;
         case WM_UPDATE_CHECK_RESULT: {
@@ -10961,7 +11010,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             else if (wParam == HK_PREV_REGION) PostMessageW(hWnd, WM_TRIGGER_PREV_REGION, 0, 0);
             return 0;
         case WM_TRAYICON:
-            if (lParam == WM_LBUTTONUP) g_Daemon.StartRegionSnipOverlay();
+            if (lParam == WM_LBUTTONUP) SetTimer(hWnd, TIMER_TRAY_DELAY_REGION, 400, nullptr);
             else if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) ShowTrayContextMenu(hWnd);
             else if (lParam == NIN_BALLOONUSERCLICK) {
                 if (!g_Daemon.lastBalloonClickFolder.empty()) {
@@ -10977,9 +11026,9 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             return 0;
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
-                case IDM_TRAY_REGION:         g_Daemon.StartRegionSnipOverlay(); break;
-                case IDM_TRAY_FULL:           g_Daemon.InstantFullscreenCapture(); break;
-                case IDM_TRAY_PREV_REGION:    g_Daemon.InstantPreviousRegionCapture(); break;
+                case IDM_TRAY_REGION:         SetTimer(hWnd, TIMER_TRAY_DELAY_REGION, 400, nullptr); break;
+                case IDM_TRAY_FULL:           SetTimer(hWnd, TIMER_TRAY_DELAY_FULL, 400, nullptr); break;
+                case IDM_TRAY_PREV_REGION:    SetTimer(hWnd, TIMER_TRAY_DELAY_PREV, 400, nullptr); break;
                 case IDM_TRAY_OPEN_IMAGE:     g_Daemon.OpenImageIntoOverlay(); break;
                 case IDM_TRAY_OPEN_PIN_IMAGE: g_Daemon.OpenImageToPinOnTop(); break;
                 case IDM_TRAY_OPEN_FOLDER:
