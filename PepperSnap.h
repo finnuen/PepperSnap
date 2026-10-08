@@ -67,6 +67,7 @@ using namespace Gdiplus;
 #define TIMER_TRAY_DELAY_REGION    78
 #define TIMER_TRAY_DELAY_FULL      79
 #define TIMER_TRAY_DELAY_PREV      80
+#define TIMER_PROCESS_PIN_QUEUE    81
 
 #define HK_REGION_SNIP         9101
 #define HK_FULL_SNAP           9102
@@ -141,6 +142,7 @@ enum class DragMode {
     MovingAnnotation,
     DraggingAnnotationStart,
     DraggingAnnotationEnd,
+    MarqueeSelectingAnnotations,
     DraggingHUD,
     ResizingFrameStrip,
     ScrollingFrameStrip,
@@ -210,6 +212,7 @@ struct PinnedWindowData {
     std::vector<Bitmap*> animFrames;
     std::vector<int> animDelaysMs;
     size_t curFrameIdx = 0;
+    bool animPaused = false;
     int origW = 0;
     int origH = 0;
     float scale = 1.0f;
@@ -233,6 +236,7 @@ struct PinnedWindowData {
     POINT dragStartWnd{0, 0};
     int hoveredBtnId = -1;
     int pressedBtnId = -1;
+    bool pressedBtnShift = false;
     POINT lastHoverMouse{-10000, -10000};
     bool pendingRightDblClickClose = false;
     bool pendingLeftDblClickToggleToolbar = false;
@@ -240,6 +244,23 @@ struct PinnedWindowData {
     bool showingImgHoverTip = false;
     bool trackingMouseLeave = false;
     std::vector<DockButton> buttons;
+    RECT sizeRowRect{0, 0, 0, 0};
+    RECT sizeBoxRect{0, 0, 0, 0};
+    RECT pctBoxRect{0, 0, 0, 0};
+    int sizeTextLeftX = 0;
+    int pctTextLeftX = 0;
+    bool hoveredSizeBox = false;
+    bool hoveredPctBox = false;
+    bool isEditingSize = false;
+    bool isDraggingSizeText = false;
+    std::wstring editingSizeText;
+    size_t sizeCaretPos = 0;
+    size_t sizeSelAnchor = 0;
+    bool isEditingPct = false;
+    bool isDraggingPctText = false;
+    std::wstring editingPctText;
+    size_t pctCaretPos = 0;
+    size_t pctSelAnchor = 0;
     HDC hCacheDC = nullptr;
     HBITMAP hCacheBmp = nullptr;
     HGDIOBJ hCacheOldBmp = nullptr;

@@ -19,7 +19,7 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.7.2";
+    static constexpr const wchar_t* APP_VERSION = L"3.7.5";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -96,8 +96,8 @@ public:
     HotkeyBinding hkPinOutline{ 0, 'O' };
     HotkeyBinding hkPinHideToolbar{ 0, 'H' };
     HotkeyBinding hkPinSmooth{ 0, 'S' };
-    HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
-    HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
+    HotkeyBinding hkPinSaveAs{ 0, 0 };
+    HotkeyBinding hkPinSave{ 0, 0 };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
     HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
 
@@ -147,9 +147,56 @@ public:
     int nextStepNum = 1;
     int nextAnnotationId = 1;
     int selectedAnnotationId = -1;
+    std::vector<int> selectedAnnotationIds;
+    POINT marqueeStartPt{0, 0};
+    RECT marqueeRect{0, 0, 0, 0};
+    bool hasMarqueeBox = false;
+    bool moveAnnUndoPushed = false;
+    bool clickedAlreadySelectedAnn = false;
+    int clickedAlreadySelectedAnnId = -1;
     PointF2D moveAnnOffset{0.0f, 0.0f};
     PointF2D penSnapAnchor{0.0f, 0.0f};
     bool isPenShiftSnapping = false;
+
+    bool IsAnnotationSelected(int id) const {
+        if (id == -1) return false;
+        if (id == selectedAnnotationId) return true;
+        return std::find(selectedAnnotationIds.begin(), selectedAnnotationIds.end(), id) != selectedAnnotationIds.end();
+    }
+
+    bool HasSelectedAnnotations() const {
+        return selectedAnnotationId != -1 || !selectedAnnotationIds.empty();
+    }
+
+    void ClearAnnotationSelection() {
+        selectedAnnotationId = -1;
+        selectedAnnotationIds.clear();
+    }
+
+    void SelectSingleAnnotation(int id) {
+        selectedAnnotationIds.clear();
+        selectedAnnotationId = id;
+        if (id != -1) {
+            selectedAnnotationIds.push_back(id);
+        }
+    }
+
+    void ToggleAnnotationSelection(int id) {
+        if (id == -1) return;
+        if (selectedAnnotationIds.empty() && selectedAnnotationId != -1) {
+            selectedAnnotationIds.push_back(selectedAnnotationId);
+        }
+        auto it = std::find(selectedAnnotationIds.begin(), selectedAnnotationIds.end(), id);
+        if (it != selectedAnnotationIds.end()) {
+            selectedAnnotationIds.erase(it);
+            if (selectedAnnotationId == id) {
+                selectedAnnotationId = selectedAnnotationIds.empty() ? -1 : selectedAnnotationIds.back();
+            }
+        } else {
+            selectedAnnotationIds.push_back(id);
+            selectedAnnotationId = id;
+        }
+    }
 
     // In-Place Live Text Box Editing State (With Caret & Partial Selection)
     bool isEditingText = false;
@@ -294,6 +341,7 @@ public:
     void RenderOverlayFrameStrip(Graphics& g, int screenW, int screenH);
     void OpenImageToPinOnTop();
     void OpenImageFileToPinOnTop(const std::wstring& filePath);
+    void OpenImageFilesToPinOnTop(const std::vector<std::wstring>& filePaths);
     HWND CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale = 1.0f, std::vector<Bitmap*> animFrames = {}, std::vector<int> animDelaysMs = {});
 
     void CommitActiveTextBox();
@@ -303,6 +351,7 @@ public:
     void RecalcNextStepNum();
     Bitmap* RenderCroppedRegionBitmap();
     bool CopyBitmapToClipboard(Bitmap* bmp);
+    bool CopyMultipleBitmapsToClipboard(const std::vector<Bitmap*>& bmps);
     bool SaveBitmapToPath(Bitmap* bmp, const std::wstring& path);
     static bool SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path);
     static bool SaveBitmapAsMetadataFreeBMP(Bitmap* bmp, const std::wstring& path);
@@ -330,8 +379,10 @@ public:
         return std::max(2, (int)std::round((strokeWidth * 2.5f + 6.0f) * 0.25f));
     }
     static float MeasureMonoPrefixWidth(Graphics& g, const Font& monoFont, const std::wstring& s, size_t count);
-    static size_t HitTestMonoIndex(int mouseX, int textLeftX, const std::wstring& s);
-    static void DrawEditablePillText(Graphics& g, const Font& monoFont, int textLeftX, int textTopY, int boxTopY, int boxH, const std::wstring& text, const std::wstring& suffix, bool isEditing, size_t caretPos, size_t selAnchor);
+    static float GetFittedPillFontSize(Graphics& g, const FontFamily& ff, const std::wstring& fullText, int boxW, int boxH);
+    static float GetCenteredPillTextLeftX(Graphics& g, const Font& font, const std::wstring& fullText, int boxLeft, int boxW);
+    static size_t HitTestMonoIndex(int mouseX, const RECT& boxRect, const std::wstring& s, const std::wstring& suffix = L" px");
+    static void DrawEditablePillText(Graphics& g, const RECT& boxRect, const std::wstring& text, const std::wstring& suffix, bool isEditing, size_t caretPos, size_t selAnchor);
     static void ApplyInlineEditKeyDown(WPARAM wParam, bool ctrl, bool shift, std::wstring& text, size_t& caret, size_t& anchor, size_t maxLen, bool isSizeField, HWND hWnd);
     static void ApplyInlineEditChar(wchar_t ch, std::wstring& text, size_t& caret, size_t& anchor, size_t maxLen);
     RECT GetEditingTextBoxRect() const;
@@ -345,6 +396,7 @@ public:
     void GetDimensionPillAnchor(bool& outRightAlign, bool& outBottomAlign) const;
     void BuildDockedHUD();
     DragMode HitTestSelectionHandles(int mx, int my) const;
+    static bool AnnotationIntersectsRect(const Annotation& a, const RECT& rc);
     int HitTestAnnotation(float x, float y, DragMode* outHandleMode) const;
 };
 
@@ -611,8 +663,21 @@ void PepperSnapDaemon::LoadSettings() {
     readHk(L"HkPinOutlineMod",     L"HkPinOutlineVk",     hkPinOutline,     0,                       'O');
     readHk(L"HkPinHideToolbarMod", L"HkPinHideToolbarVk", hkPinHideToolbar, 0,                       'H');
     readHk(L"HkPinSmoothMod",      L"HkPinSmoothVk",      hkPinSmooth,      0,                       'S');
-    readHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs,     MOD_CONTROL | MOD_SHIFT, 'S');
-    readHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave,       MOD_CONTROL,             'S');
+    readHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs,     0,                       0);
+    readHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave,       0,                       0);
+    if (GetPrivateProfileIntW(L"PepperSnap", L"PinSaveShortcutsEmptyDefaultV1", 0, iniPath.c_str()) == 0) {
+        if (hkPinSaveAs.modifiers == (MOD_CONTROL | MOD_SHIFT) && hkPinSaveAs.vk == 'S') {
+            hkPinSaveAs = { 0, 0 };
+            WritePrivateProfileStringW(L"PepperSnap", L"HkPinSaveAsMod", L"0", iniPath.c_str());
+            WritePrivateProfileStringW(L"PepperSnap", L"HkPinSaveAsVk", L"0", iniPath.c_str());
+        }
+        if (hkPinSave.modifiers == MOD_CONTROL && hkPinSave.vk == 'S') {
+            hkPinSave = { 0, 0 };
+            WritePrivateProfileStringW(L"PepperSnap", L"HkPinSaveMod", L"0", iniPath.c_str());
+            WritePrivateProfileStringW(L"PepperSnap", L"HkPinSaveVk", L"0", iniPath.c_str());
+        }
+        WritePrivateProfileStringW(L"PepperSnap", L"PinSaveShortcutsEmptyDefaultV1", L"1", iniPath.c_str());
+    }
     readHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy,       MOD_CONTROL,             'C');
     readHk(L"HkPinCloseMod",      L"HkPinCloseVk",      hkPinClose,      0,                       VK_ESCAPE);
 
@@ -1199,17 +1264,32 @@ static bool MatchesOverlayShortcut(const HotkeyBinding& hk, UINT vk, bool ctrl, 
     return (ctrl == reqCtrl) && (shift == reqShift) && (alt == reqAlt);
 }
 
+static bool MatchesOverlayShortcutWithOptionalShift(const HotkeyBinding& hk, UINT vk, bool ctrl, bool shift, bool alt) {
+    if (hk.vk == 0 || vk == 0) return false;
+    bool vkMatch = (vk == hk.vk) ||
+                   (hk.vk == VK_OEM_MINUS && vk == VK_SUBTRACT) ||
+                   (hk.vk == VK_OEM_PLUS  && vk == VK_ADD) ||
+                   (hk.vk == '0'          && vk == VK_NUMPAD0);
+    if (!vkMatch) return false;
+    bool reqCtrl  = (hk.modifiers & MOD_CONTROL) != 0;
+    bool reqShift = (hk.modifiers & MOD_SHIFT) != 0;
+    bool reqAlt   = (hk.modifiers & MOD_ALT) != 0;
+    if (ctrl != reqCtrl || alt != reqAlt) return false;
+    return (shift == reqShift) || (shift && !reqShift);
+}
+
 static bool MatchesAnyPinnedShortcut(UINT vk, bool ctrl, bool shift, bool alt) {
-    if (vk == VK_ESCAPE && !ctrl && !shift && !alt) return true;
-    return MatchesOverlayShortcut(g_Daemon.hkPinZoomOut,   vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinZoomIn,    vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinZoomReset, vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinOutline,   vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinSmooth,    vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinSaveAs,    vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinSave,      vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinCopy,      vk, ctrl, shift, alt) ||
-           MatchesOverlayShortcut(g_Daemon.hkPinClose,     vk, ctrl, shift, alt);
+    if (vk == VK_ESCAPE && !ctrl && !alt) return true;
+    return MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinZoomOut,     vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinZoomIn,      vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinZoomReset,   vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinOutline,     vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinHideToolbar, vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinSmooth,      vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinSaveAs,      vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinSave,        vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinCopy,        vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinClose,       vk, ctrl, shift, alt);
 }
 
 void PepperSnapDaemon::ApplyGlobalHotkeys() {
@@ -2195,6 +2275,62 @@ bool PepperSnapDaemon::CopyBitmapToClipboard(Bitmap* bmp) {
     return true;
 }
 
+static bool IsWindowsClipboardHistoryEnabled() {
+    HKEY hKey = nullptr;
+    DWORD enabled = 0;
+    DWORD cbData = sizeof(enabled);
+    DWORD dwType = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Clipboard", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(hKey, L"EnableClipboardHistory", nullptr, &dwType, (LPBYTE)&enabled, &cbData) != ERROR_SUCCESS) {
+            enabled = 0;
+        }
+        RegCloseKey(hKey);
+    }
+    return enabled != 0;
+}
+
+static std::wstring BuildUniqueSaveFilePath(const std::wstring& folder, const std::wstring& stem, const std::wstring& ext, int batchIdx = 0, int batchTotal = 1) {
+    std::wstring baseStem = stem;
+    if (batchTotal > 1 && batchIdx > 0) {
+        baseStem += L"_" + std::to_wstring(batchIdx);
+    }
+    std::wstring candidate = folder + L"\\" + baseStem + ext;
+    int suffix = 2;
+    while (GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        candidate = folder + L"\\" + baseStem + L"_" + std::to_wstring(suffix++) + ext;
+    }
+    return candidate;
+}
+
+bool PepperSnapDaemon::CopyMultipleBitmapsToClipboard(const std::vector<Bitmap*>& bmps) {
+    std::vector<Bitmap*> validBmps;
+    for (Bitmap* b : bmps) {
+        if (b && b->GetWidth() > 0 && b->GetHeight() > 0) {
+            validBmps.push_back(b);
+        }
+    }
+    if (validBmps.empty()) return false;
+    bool anyOk = false;
+    for (size_t i = 0; i < validBmps.size(); ++i) {
+        if (CopyBitmapToClipboard(validBmps[i])) {
+            anyOk = true;
+        }
+        if (i + 1 < validBmps.size()) {
+            // Pump messages and pause briefly so Windows Clipboard History (Win+V / cbdhsvc) records each image separately
+            DWORD t0 = GetTickCount();
+            while (GetTickCount() - t0 < 220) {
+                MSG msg;
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                Sleep(15);
+            }
+        }
+    }
+    return anyOk;
+}
+
 void PepperSnapDaemon::InstantFullscreenCapture() {
     if (hOverlayWnd) CloseRegionSnipOverlay();
 
@@ -2617,7 +2753,7 @@ void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, 
                 }
             }
 
-            float boxW = std::max(maxLineW + 14.0f, 110.0f);
+            float boxW = isEditingCaret ? std::max(maxLineW + 14.0f, 110.0f) : std::max(12.0f, maxLineW + 10.0f);
             float boxH = std::max((float)lines.size() * lineStep + 8.0f, fSize + 10.0f);
 
             if (isEditingCaret || isSelected) {
@@ -2846,7 +2982,7 @@ void PepperSnapDaemon::CommitActiveTextBox() {
         float bx = std::min(editingTextAnn.startPt.x, editingTextAnn.endPt.x);
         float by = std::min(editingTextAnn.startPt.y, editingTextAnn.endPt.y);
         editingTextAnn.startPt = { bx, by };
-        editingTextAnn.endPt = { bx + std::max(maxW + 14.0f, 40.0f), by + lineCount * lineStep + 8.0f };
+        editingTextAnn.endPt = { bx + std::max(maxW + 10.0f, 12.0f), by + lineCount * lineStep + 6.0f };
         annotations.push_back(editingTextAnn);
     }
     editingTextAnn = Annotation();
@@ -3076,11 +3212,13 @@ void PepperSnapDaemon::ApplyStrokeToSelectedAnnotation(float newStroke, bool rec
     if (isEditingText) {
         editingTextAnn.strokeWidth = newStroke;
     }
-    if (selectedAnnotationId == -1) return;
+    if (!HasSelectedAnnotations()) return;
+    bool pushed = false;
     for (auto& a : annotations) {
-        if (a.id == selectedAnnotationId) {
-            if (recordUndo && std::abs(a.strokeWidth - newStroke) > 0.05f) {
+        if (IsAnnotationSelected(a.id)) {
+            if (recordUndo && !pushed && std::abs(a.strokeWidth - newStroke) > 0.05f) {
                 PushUndo();
+                pushed = true;
             }
             a.strokeWidth = newStroke;
             if (a.tool == OverlayTool::TextBox) {
@@ -3094,7 +3232,6 @@ void PepperSnapDaemon::ApplyStrokeToSelectedAnnotation(float newStroke, bool rec
                 ReleaseDC(nullptr, hdc);
                 a.endPt = { a.startPt.x + bounds.Width + 12.0f, a.startPt.y + bounds.Height + 8.0f };
             }
-            break;
         }
     }
 }
@@ -3145,24 +3282,81 @@ void PepperSnapDaemon::CommitActiveSizeInput() {
 float PepperSnapDaemon::MeasureMonoPrefixWidth(Graphics& g, const Font& monoFont, const std::wstring& s, size_t count) {
     if (count == 0 || s.empty()) return 0.0f;
     size_t n = std::min(count, s.size());
-    const StringFormat* sf = StringFormat::GenericTypographic();
+    StringFormat sf(StringFormat::GenericTypographic());
+    sf.SetFormatFlags(sf.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces);
+    CharacterRange cr(0, (INT)n);
+    sf.SetMeasurableCharacterRanges(1, &cr);
+    Region rgn;
+    if (g.MeasureCharacterRanges(s.c_str(), (INT)s.size(), &monoFont, RectF(0.0f, 0.0f, 4000.0f, 1000.0f), &sf, 1, &rgn) == Ok) {
+        RectF bounds;
+        if (rgn.GetBounds(&bounds, &g) == Ok && bounds.Width > 0.0f) {
+            return std::max(0.0f, bounds.X + bounds.Width);
+        }
+    }
     RectF r1, r0;
     std::wstring wrapped = L"|" + s.substr(0, n) + L"|";
-    g.MeasureString(wrapped.c_str(), -1, &monoFont, PointF(0, 0), sf, &r1);
-    g.MeasureString(L"||", -1, &monoFont, PointF(0, 0), sf, &r0);
+    g.MeasureString(wrapped.c_str(), -1, &monoFont, PointF(0, 0), &sf, &r1);
+    g.MeasureString(L"||", -1, &monoFont, PointF(0, 0), &sf, &r0);
     return std::max(0.0f, r1.Width - r0.Width);
 }
 
-size_t PepperSnapDaemon::HitTestMonoIndex(int mouseX, int textLeftX, const std::wstring& s) {
-    if (s.empty() || mouseX <= textLeftX) return 0;
+float PepperSnapDaemon::GetFittedPillFontSize(Graphics& g, const FontFamily& ff, const std::wstring& fullText, int boxW, int boxH) {
+    float fontSize = std::max(11.0f, (float)boxH * 0.60f); // 16.8px for 28px-tall toolbar box
+    float maxTextW = std::max(12.0f, (float)(boxW - 10));
+    if (!fullText.empty()) {
+        Font testFont(&ff, fontSize, FontStyleRegular, UnitPixel);
+        float measuredW = MeasureMonoPrefixWidth(g, testFont, fullText, fullText.size());
+        if (measuredW > maxTextW && measuredW > 0.1f) {
+            fontSize = std::max(9.5f, fontSize * (maxTextW / measuredW));
+            for (int iter = 0; iter < 8; ++iter) {
+                Font f2(&ff, fontSize, FontStyleRegular, UnitPixel);
+                float w2 = MeasureMonoPrefixWidth(g, f2, fullText, fullText.size());
+                if (w2 <= maxTextW || fontSize <= 9.5f) break;
+                fontSize = std::max(9.5f, fontSize - 0.3f);
+            }
+        }
+    }
+    return fontSize;
+}
+
+float PepperSnapDaemon::GetCenteredPillTextLeftX(Graphics& g, const Font& font, const std::wstring& fullText, int boxLeft, int boxW) {
+    if (fullText.empty()) return (float)boxLeft + (float)boxW * 0.5f;
+    StringFormat sf(StringFormat::GenericTypographic());
+    sf.SetFormatFlags(sf.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces);
+    CharacterRange cr(0, (INT)fullText.size());
+    sf.SetMeasurableCharacterRanges(1, &cr);
+    Region rgn;
+    if (g.MeasureCharacterRanges(fullText.c_str(), (INT)fullText.size(), &font, RectF(0.0f, 0.0f, 4000.0f, 1000.0f), &sf, 1, &rgn) == Ok) {
+        RectF bounds;
+        if (rgn.GetBounds(&bounds, &g) == Ok && bounds.Width > 0.0f) {
+            float midX = bounds.X + bounds.Width * 0.5f;
+            return (float)boxLeft + (float)boxW * 0.5f - midX;
+        }
+    }
+    float fullW = MeasureMonoPrefixWidth(g, font, fullText, fullText.size());
+    return (float)boxLeft + ((float)boxW - fullW) * 0.5f;
+}
+
+size_t PepperSnapDaemon::HitTestMonoIndex(int mouseX, const RECT& boxRect, const std::wstring& s, const std::wstring& suffix) {
+    if (s.empty()) return 0;
+    int boxW = std::max(16, (int)(boxRect.right - boxRect.left));
+    int boxH = std::max(16, (int)(boxRect.bottom - boxRect.top));
     HDC hdc = GetDC(nullptr);
     Graphics g(hdc);
-    Font monoFont(L"Consolas", 11.5f, FontStyleBold, UnitPixel);
-    float relX = (float)(mouseX - textLeftX);
+    FontFamily ff(L"Segoe UI");
+    std::wstring fullText = s + suffix;
+    float fontSize = GetFittedPillFontSize(g, ff, fullText, boxW, boxH);
+    Font pillFont(&ff, fontSize, FontStyleRegular, UnitPixel);
+    float textLeftX = GetCenteredPillTextLeftX(g, pillFont, fullText, boxRect.left, boxW);
+    if ((float)mouseX <= textLeftX) {
+        ReleaseDC(nullptr, hdc);
+        return 0;
+    }
+    float relX = (float)mouseX - textLeftX;
     size_t result = s.size();
     for (size_t i = 0; i < s.size(); ++i) {
-        float x0 = MeasureMonoPrefixWidth(g, monoFont, s, i);
-        float x1 = MeasureMonoPrefixWidth(g, monoFont, s, i + 1);
+        float x0 = MeasureMonoPrefixWidth(g, pillFont, s, i);
+        float x1 = MeasureMonoPrefixWidth(g, pillFont, s, i + 1);
         if (relX < (x0 + x1) * 0.5f) {
             result = i;
             break;
@@ -3173,36 +3367,66 @@ size_t PepperSnapDaemon::HitTestMonoIndex(int mouseX, int textLeftX, const std::
 }
 
 void PepperSnapDaemon::DrawEditablePillText(
-    Graphics& g, const Font& monoFont,
-    int textLeftX, int textTopY, int boxTopY, int boxH,
+    Graphics& g, const RECT& boxRect,
     const std::wstring& text, const std::wstring& suffix,
     bool isEditing, size_t caretPos, size_t selAnchor
 ) {
-    const StringFormat* sf = StringFormat::GenericTypographic();
+    int boxLeft = boxRect.left;
+    int boxTopY = boxRect.top;
+    int boxW = std::max(16, (int)(boxRect.right - boxRect.left));
+    int boxH = std::max(16, (int)(boxRect.bottom - boxRect.top));
+
+    FontFamily ff(L"Segoe UI");
+    std::wstring fullText = text + suffix;
+    float fontSize = GetFittedPillFontSize(g, ff, fullText, boxW, boxH);
+    Font pillFont(&ff, fontSize, FontStyleRegular, UnitPixel);
+
+    StringFormat sf(StringFormat::GenericTypographic());
+    sf.SetFormatFlags(sf.GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces);
+
+    float textLeftX = GetCenteredPillTextLeftX(g, pillFont, fullText, boxLeft, boxW);
+
+    GraphicsPath vPath;
+    vPath.AddString(L"0123456789%", -1, &ff, FontStyleRegular, fontSize, PointF(0.0f, 0.0f), &sf);
+    RectF vBounds;
+    vPath.GetBounds(&vBounds);
+    float digitsMidY = (vBounds.Height > 0.1f)
+        ? (vBounds.Y + vBounds.Height * 0.5f)
+        : (fontSize * 0.72f);
+    float textTopY = (float)boxTopY + (float)boxH * 0.5f - digitsMidY;
+
     SolidBrush whiteBrush(Color(255, 248, 250, 252));
     SolidBrush suffixBrush(isEditing ? Color(255, 148, 163, 184) : Color(255, 248, 250, 252));
+
+    GraphicsState st = g.Save();
+    g.SetClip(Rect(boxLeft + 1, boxTopY + 1, std::max(1, boxW - 2), std::max(1, boxH - 2)), CombineModeIntersect);
 
     if (isEditing && caretPos != selAnchor && !text.empty()) {
         size_t s0 = std::min(caretPos, selAnchor);
         size_t s1 = std::max(caretPos, selAnchor);
-        float x0 = (float)textLeftX + MeasureMonoPrefixWidth(g, monoFont, text, s0);
-        float x1 = (float)textLeftX + MeasureMonoPrefixWidth(g, monoFont, text, s1);
+        float x0 = textLeftX + MeasureMonoPrefixWidth(g, pillFont, text, s0);
+        float x1 = textLeftX + MeasureMonoPrefixWidth(g, pillFont, text, s1);
         SolidBrush selHighlight(Color(200, 2, 132, 199)); // Sky-600 selection highlight
         g.FillRectangle(&selHighlight, x0, (float)(boxTopY + 3), std::max(2.0f, x1 - x0), (float)(boxH - 6));
     }
 
-    g.DrawString(text.c_str(), -1, &monoFont, PointF((float)textLeftX, (float)textTopY), sf, &whiteBrush);
-    float textW = MeasureMonoPrefixWidth(g, monoFont, text, text.size());
-    g.DrawString(suffix.c_str(), -1, &monoFont, PointF((float)textLeftX + textW, (float)textTopY), sf, &suffixBrush);
+    if (!isEditing) {
+        g.DrawString(fullText.c_str(), -1, &pillFont, PointF(textLeftX, textTopY), &sf, &whiteBrush);
+    } else {
+        g.DrawString(text.c_str(), -1, &pillFont, PointF(textLeftX, textTopY), &sf, &whiteBrush);
+        float textW = MeasureMonoPrefixWidth(g, pillFont, fullText, text.size());
+        g.DrawString(suffix.c_str(), -1, &pillFont, PointF(textLeftX + textW, textTopY), &sf, &suffixBrush);
+    }
 
     if (isEditing) {
         bool blinkOn = ((GetTickCount() / 450) % 2) == 0;
         if (blinkOn) {
-            float cx = (float)textLeftX + MeasureMonoPrefixWidth(g, monoFont, text, caretPos);
+            float cx = textLeftX + MeasureMonoPrefixWidth(g, pillFont, text, caretPos);
             Pen caretPen(Color(255, 56, 189, 248), 1.8f);
             g.DrawLine(&caretPen, cx, (float)(boxTopY + 3), cx, (float)(boxTopY + boxH - 3));
         }
     }
+    g.Restore(st);
 }
 
 void PepperSnapDaemon::ApplyInlineEditChar(wchar_t ch, std::wstring& text, size_t& caret, size_t& anchor, size_t maxLen) {
@@ -3334,39 +3558,299 @@ void PepperSnapDaemon::ApplyInlineEditKeyDown(
     }
 }
 
+bool PepperSnapDaemon::AnnotationIntersectsRect(const Annotation& a, const RECT& rc) {
+    float rL = (float)std::min(rc.left, rc.right);
+    float rT = (float)std::min(rc.top, rc.bottom);
+    float rR = (float)std::max(rc.left, rc.right);
+    float rB = (float)std::max(rc.top, rc.bottom);
+    if (rR - rL < 1.0f && rB - rT < 1.0f) return false;
+
+    auto ptInRc = [&](float x, float y, float pad) -> bool {
+        return x >= rL - pad && x <= rR + pad && y >= rT - pad && y <= rB + pad;
+    };
+    auto distSeg = [](float px, float py, float x1, float y1, float x2, float y2) -> float {
+        float dx = x2 - x1, dy = y2 - y1;
+        float l2 = dx * dx + dy * dy;
+        if (l2 == 0.0f) return std::hypot(px - x1, py - y1);
+        float t = std::max(0.0f, std::min(1.0f, ((px - x1) * dx + (py - y1) * dy) / l2));
+        return std::hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+    };
+    auto segIntersectsRc = [&](float x1, float y1, float x2, float y2, float pad) -> bool {
+        float sMinX = std::min(x1, x2) - pad, sMaxX = std::max(x1, x2) + pad;
+        float sMinY = std::min(y1, y2) - pad, sMaxY = std::max(y1, y2) + pad;
+        if (sMaxX < rL || sMinX > rR || sMaxY < rT || sMinY > rB) return false;
+        if (ptInRc(x1, y1, pad) || ptInRc(x2, y2, pad)) return true;
+        if (distSeg(rL, rT, x1, y1, x2, y2) <= pad ||
+            distSeg(rR, rT, x1, y1, x2, y2) <= pad ||
+            distSeg(rR, rB, x1, y1, x2, y2) <= pad ||
+            distSeg(rL, rB, x1, y1, x2, y2) <= pad ||
+            distSeg((rL + rR) * 0.5f, (rT + rB) * 0.5f, x1, y1, x2, y2) <= pad) {
+            return true;
+        }
+        auto ccw = [](float ax, float ay, float bx, float by, float cx, float cy) -> bool {
+            return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax);
+        };
+        auto segCross = [&](float ax, float ay, float bx, float by, float cx, float cy, float dx, float dy) -> bool {
+            return (ccw(ax, ay, cx, cy, dx, dy) != ccw(bx, by, cx, cy, dx, dy)) &&
+                   (ccw(ax, ay, bx, by, cx, cy) != ccw(ax, ay, bx, by, dx, dy));
+        };
+        return segCross(x1, y1, x2, y2, rL, rT, rR, rT) ||
+               segCross(x1, y1, x2, y2, rR, rT, rR, rB) ||
+               segCross(x1, y1, x2, y2, rR, rB, rL, rB) ||
+               segCross(x1, y1, x2, y2, rL, rB, rL, rT);
+    };
+
+    float pad = std::max(3.0f, a.strokeWidth * 0.5f);
+    if ((a.tool == OverlayTool::Pen || a.tool == OverlayTool::Highlighter) && !a.points.empty()) {
+        if (a.points.size() == 1) {
+            return ptInRc(a.points[0].x, a.points[0].y, pad);
+        }
+        for (size_t i = 0; i + 1 < a.points.size(); ++i) {
+            if (segIntersectsRc(a.points[i].x, a.points[i].y, a.points[i + 1].x, a.points[i + 1].y, pad)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (a.tool == OverlayTool::Line || a.tool == OverlayTool::Arrow || a.tool == OverlayTool::NumberArrow) {
+        if (a.tool == OverlayTool::NumberArrow) {
+            float br = std::max(14.0f, a.strokeWidth * 2.0f + 8.0f);
+            float cx = std::max(rL, std::min(rR, a.startPt.x));
+            float cy = std::max(rT, std::min(rB, a.startPt.y));
+            if (std::hypot(a.startPt.x - cx, a.startPt.y - cy) <= br) return true;
+        }
+        return segIntersectsRc(a.startPt.x, a.startPt.y, a.endPt.x, a.endPt.y, pad);
+    }
+
+    if (a.tool == OverlayTool::Rectangle) {
+        float x0 = std::min(a.startPt.x, a.endPt.x);
+        float x1 = std::max(a.startPt.x, a.endPt.x);
+        float y0 = std::min(a.startPt.y, a.endPt.y);
+        float y1 = std::max(a.startPt.y, a.endPt.y);
+        return segIntersectsRc(x0, y0, x1, y0, pad) ||
+               segIntersectsRc(x1, y0, x1, y1, pad) ||
+               segIntersectsRc(x1, y1, x0, y1, pad) ||
+               segIntersectsRc(x0, y1, x0, y0, pad);
+    }
+
+    float minX = std::min(a.startPt.x, a.endPt.x) - pad;
+    float maxX = std::max(a.startPt.x, a.endPt.x) + pad;
+    float minY = std::min(a.startPt.y, a.endPt.y) - pad;
+    float maxY = std::max(a.startPt.y, a.endPt.y) + pad;
+    return !(maxX < rL || minX > rR || maxY < rT || minY > rB);
+}
+
 int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMode) const {
     if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+
+    auto distToSeg = [](float px, float py, float x1, float y1, float x2, float y2) -> float {
+        float dx = x2 - x1, dy = y2 - y1;
+        float l2 = dx * dx + dy * dy;
+        if (l2 < 1e-4f) return std::hypot(px - x1, py - y1);
+        float t = std::max(0.0f, std::min(1.0f, ((px - x1) * dx + (py - y1) * dy) / l2));
+        return std::hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+    };
+
+    auto hitTriangle = [&](float px, float py, float ax, float ay, float bx, float by, float cx, float cy, float pad) -> bool {
+        float d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+        float d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+        float d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+        bool hasNeg = (d1 < 0.0f) || (d2 < 0.0f) || (d3 < 0.0f);
+        bool hasPos = (d1 > 0.0f) || (d2 > 0.0f) || (d3 > 0.0f);
+        if (!(hasNeg && hasPos)) return true;
+        return distToSeg(px, py, ax, ay, bx, by) <= pad ||
+               distToSeg(px, py, bx, by, cx, cy) <= pad ||
+               distToSeg(px, py, cx, cy, ax, ay) <= pad;
+    };
+
     for (int i = (int)annotations.size() - 1; i >= 0; --i) {
         const auto& a = annotations[i];
-        if (a.tool != OverlayTool::Pen && a.tool != OverlayTool::Highlighter) {
+
+        // 1. Endpoint resize handles only when the annotation is already selected
+        if (IsAnnotationSelected(a.id) &&
+            a.tool != OverlayTool::Pen &&
+            a.tool != OverlayTool::Highlighter &&
+            a.tool != OverlayTool::TextBox) {
             float dxs = x - a.startPt.x, dys = y - a.startPt.y;
-            if (dxs * dxs + dys * dys <= 100.0f) {
+            if (dxs * dxs + dys * dys <= 49.0f) {
                 if (outHandleMode) *outHandleMode = DragMode::DraggingAnnotationStart;
                 return a.id;
             }
             float dxe = x - a.endPt.x, dye = y - a.endPt.y;
-            if (dxe * dxe + dye * dye <= 100.0f) {
+            if (dxe * dxe + dye * dye <= 49.0f) {
                 if (outHandleMode) *outHandleMode = DragMode::DraggingAnnotationEnd;
                 return a.id;
             }
-        } else {
-            float hitR = std::max(10.0f, a.strokeWidth * 1.5f);
-            float hitRSq = hitR * hitR;
-            for (const auto& pt : a.points) {
-                float dx = x - pt.x, dy = y - pt.y;
-                if (dx * dx + dy * dy <= hitRSq) {
+        }
+
+        // 2. Direct geometry hit-testing per annotation tool (no bounding-box misselection)
+        switch (a.tool) {
+            case OverlayTool::Pen:
+            case OverlayTool::Highlighter: {
+                float halfW = (a.tool == OverlayTool::Highlighter)
+                    ? std::max(5.0f, a.strokeWidth * 2.25f + 2.0f)
+                    : std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
+                if (a.points.size() == 1) {
+                    if (std::hypot(x - a.points[0].x, y - a.points[0].y) <= halfW) {
+                        if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                        return a.id;
+                    }
+                } else {
+                    for (size_t j = 0; j + 1 < a.points.size(); ++j) {
+                        if (distToSeg(x, y, a.points[j].x, a.points[j].y, a.points[j + 1].x, a.points[j + 1].y) <= halfW) {
+                            if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                            return a.id;
+                        }
+                    }
+                }
+                break;
+            }
+            case OverlayTool::Line: {
+                float halfW = std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
+                if (distToSeg(x, y, a.startPt.x, a.startPt.y, a.endPt.x, a.endPt.y) <= halfW) {
                     if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
                     return a.id;
                 }
+                break;
             }
-        }
-        float minX = std::min(a.startPt.x, a.endPt.x) - 12.0f;
-        float maxX = std::max(a.startPt.x, a.endPt.x) + 12.0f;
-        float minY = std::min(a.startPt.y, a.endPt.y) - 12.0f;
-        float maxY = std::max(a.startPt.y, a.endPt.y) + 12.0f;
-        if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
-            if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
-            return a.id;
+            case OverlayTool::Arrow: {
+                float halfW = std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
+                if (distToSeg(x, y, a.startPt.x, a.startPt.y, a.endPt.x, a.endPt.y) <= halfW) {
+                    if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                    return a.id;
+                }
+                float dx = a.endPt.x - a.startPt.x, dy = a.endPt.y - a.startPt.y;
+                float len = std::hypot(dx, dy);
+                if (len >= 2.0f) {
+                    float angle = std::atan2(dy, dx);
+                    float headLen = std::max(14.0f, a.strokeWidth * 3.8f);
+                    float headAngle = 0.48f;
+                    float ax = a.endPt.x, ay = a.endPt.y;
+                    float bx = a.endPt.x - headLen * std::cos(angle - headAngle);
+                    float by = a.endPt.y - headLen * std::sin(angle - headAngle);
+                    float cx = a.endPt.x - headLen * std::cos(angle + headAngle);
+                    float cy = a.endPt.y - headLen * std::sin(angle + headAngle);
+                    if (hitTriangle(x, y, ax, ay, bx, by, cx, cy, 3.0f)) {
+                        if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                        return a.id;
+                    }
+                }
+                break;
+            }
+            case OverlayTool::NumberArrow: {
+                float r = std::max(14.0f, a.strokeWidth * 2.0f + 8.0f);
+                if (std::hypot(x - a.startPt.x, y - a.startPt.y) <= r + 2.5f) {
+                    if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                    return a.id;
+                }
+                float halfW = std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
+                if (distToSeg(x, y, a.startPt.x, a.startPt.y, a.endPt.x, a.endPt.y) <= halfW) {
+                    if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                    return a.id;
+                }
+                float dx = a.endPt.x - a.startPt.x, dy = a.endPt.y - a.startPt.y;
+                float len = std::hypot(dx, dy);
+                if (len > r + 4.0f) {
+                    float angle = std::atan2(dy, dx);
+                    float headLen = std::max(14.0f, a.strokeWidth * 3.8f);
+                    float headAngle = 0.48f;
+                    float ax = a.endPt.x, ay = a.endPt.y;
+                    float bx = a.endPt.x - headLen * std::cos(angle - headAngle);
+                    float by = a.endPt.y - headLen * std::sin(angle - headAngle);
+                    float cx = a.endPt.x - headLen * std::cos(angle + headAngle);
+                    float cy = a.endPt.y - headLen * std::sin(angle + headAngle);
+                    if (hitTriangle(x, y, ax, ay, bx, by, cx, cy, 3.0f)) {
+                        if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                        return a.id;
+                    }
+                }
+                break;
+            }
+            case OverlayTool::Rectangle: {
+                float x0 = std::min(a.startPt.x, a.endPt.x);
+                float x1 = std::max(a.startPt.x, a.endPt.x);
+                float y0 = std::min(a.startPt.y, a.endPt.y);
+                float y1 = std::max(a.startPt.y, a.endPt.y);
+                float halfW = std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
+                if (distToSeg(x, y, x0, y0, x1, y0) <= halfW ||
+                    distToSeg(x, y, x1, y0, x1, y1) <= halfW ||
+                    distToSeg(x, y, x1, y1, x0, y1) <= halfW ||
+                    distToSeg(x, y, x0, y1, x0, y0) <= halfW) {
+                    if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                    return a.id;
+                }
+                break;
+            }
+            case OverlayTool::Ellipse: {
+                float x0 = std::min(a.startPt.x, a.endPt.x);
+                float x1 = std::max(a.startPt.x, a.endPt.x);
+                float y0 = std::min(a.startPt.y, a.endPt.y);
+                float y1 = std::max(a.startPt.y, a.endPt.y);
+                float rx = (x1 - x0) * 0.5f;
+                float ry = (y1 - y0) * 0.5f;
+                float halfW = std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
+                if (rx < 2.0f || ry < 2.0f) {
+                    if (distToSeg(x, y, a.startPt.x, a.startPt.y, a.endPt.x, a.endPt.y) <= halfW) {
+                        if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                        return a.id;
+                    }
+                } else {
+                    float cx = (x0 + x1) * 0.5f;
+                    float cy = (y0 + y1) * 0.5f;
+                    float dx = x - cx;
+                    float dy = y - cy;
+                    float normLen = std::hypot(dx / rx, dy / ry);
+                    if (normLen > 1e-4f) {
+                        float radialDist = std::hypot(dx, dy) * std::abs(1.0f - 1.0f / normLen);
+                        if (radialDist <= halfW) {
+                            if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                            return a.id;
+                        }
+                    }
+                }
+                break;
+            }
+            case OverlayTool::TextBox: {
+                float minX = std::min(a.startPt.x, a.endPt.x) - 2.0f;
+                float maxX = std::max(a.startPt.x, a.endPt.x) + 2.0f;
+                float minY = std::min(a.startPt.y, a.endPt.y) - 2.0f;
+                float maxY = std::max(a.startPt.y, a.endPt.y) + 2.0f;
+                if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
+                    if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                    return a.id;
+                }
+                break;
+            }
+            case OverlayTool::MosaicSquare: {
+                float minX = std::min(a.startPt.x, a.endPt.x) - 3.0f;
+                float maxX = std::max(a.startPt.x, a.endPt.x) + 3.0f;
+                float minY = std::min(a.startPt.y, a.endPt.y) - 3.0f;
+                float maxY = std::max(a.startPt.y, a.endPt.y) + 3.0f;
+                if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
+                    if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                    return a.id;
+                }
+                break;
+            }
+            case OverlayTool::MosaicCircle: {
+                float x0 = std::min(a.startPt.x, a.endPt.x);
+                float x1 = std::max(a.startPt.x, a.endPt.x);
+                float y0 = std::min(a.startPt.y, a.endPt.y);
+                float y1 = std::max(a.startPt.y, a.endPt.y);
+                float rx = std::max(2.0f, (x1 - x0) * 0.5f + 3.0f);
+                float ry = std::max(2.0f, (y1 - y0) * 0.5f + 3.0f);
+                float cx = (x0 + x1) * 0.5f;
+                float cy = (y0 + y1) * 0.5f;
+                float nx = (x - cx) / rx;
+                float ny = (y - cy) / ry;
+                if (nx * nx + ny * ny <= 1.0f) {
+                    if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                    return a.id;
+                }
+                break;
+            }
+            default:
+                break;
         }
     }
     return -1;
@@ -4041,8 +4525,8 @@ void PepperSnapDaemon::BuildDockedHUD() {
 
         bool pillRight = false, pillBottom = false;
         GetDimensionPillAnchor(pillRight, pillBottom);
-        int bottomExtra = (pillRight && pillBottom) ? 31 : 0;
-        int topExtra    = (pillRight && !pillBottom) ? 31 : 0;
+        int bottomExtra = (pillRight && pillBottom) ? 36 : 0;
+        int topExtra    = (pillRight && !pillBottom) ? 36 : 0;
 
         bool hasSpaceBelow = (sy + sh + 8 + bottomExtra + totalHudH <= vScreenH - 6);
         bool hasSpaceAbove = (sy - 8 - topExtra - totalHudH >= 6);
@@ -4175,14 +4659,26 @@ DragMode PepperSnapDaemon::HitTestSelectionHandles(int mx, int my) const {
 // Pinned Desktop Window & Modals (Naming Pattern, Folder, Shortcuts)
 // ----------------------------------------------------------------------------
 
+static void GetPinnedScaleBounds(const PinnedWindowData* data, float& outMinScale, float& outMaxScale) {
+    int ow = (data && data->origW > 0) ? data->origW : 32;
+    int oh = (data && data->origH > 0) ? data->origH : 32;
+    outMinScale = std::max(0.01f, std::max(8.0f / (float)ow, 8.0f / (float)oh));
+    outMaxScale = std::max(outMinScale, std::min(64.0f, std::min(8192.0f / (float)ow, 8192.0f / (float)oh)));
+}
+
 static void GetPinnedScaledDims(const PinnedWindowData* data, int& outW, int& outH) {
     if (!data || !data->bmp) {
         outW = 32;
         outH = 32;
         return;
     }
-    outW = std::max(4, std::min(8192, (int)std::round(data->origW * data->scale)));
-    outH = std::max(4, std::min(8192, (int)std::round(data->origH * data->scale)));
+    int ow = std::max(1, data->origW);
+    int oh = std::max(1, data->origH);
+    float minScale = 0.01f, maxScale = 64.0f;
+    GetPinnedScaleBounds(data, minScale, maxScale);
+    double s = std::max((double)minScale, std::min((double)maxScale, (double)data->scale));
+    outW = std::max(1, (int)std::round(ow * s));
+    outH = std::max(1, (int)std::round(oh * s));
 }
 
 static void FreePinnedWindowCache(PinnedWindowData* data) {
@@ -4283,11 +4779,11 @@ static void ShowPinnedBubbleTooltip(HWND hPinWnd, const DockButton& b) {
     RectF measured;
     {
         Graphics gMeasure(hScreen);
-        gMeasure.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+        gMeasure.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
         gMeasure.MeasureString(b.tooltip.c_str(), -1, &tipFont, PointF(0, 0), &measured);
     }
 
-    int bw = (int)std::ceil(measured.Width) + 20;
+    int bw = (int)std::ceil(measured.Width) + 18;
     int bh = 26;
     int tailH = 7;
     int totalW = bw + 4;
@@ -4318,13 +4814,13 @@ static void ShowPinnedBubbleTooltip(HWND hPinWnd, const DockButton& b) {
     void* pvBits = nullptr;
     HDC memDC = CreateCompatibleDC(hScreen);
     HBITMAP hBmp = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
-    if (memDC && hBmp) {
+    if (memDC && hBmp && pvBits) {
         HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
+        memset(pvBits, 0, (size_t)totalW * (size_t)totalH * sizeof(DWORD));
         {
             Graphics g(memDC);
             g.SetSmoothingMode(SmoothingModeAntiAlias);
-            g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-            g.Clear(Color(0, 0, 0, 0));
+            g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
 
             float rx = 2.0f;
             float ry = placeBelow ? (float)tailH : 2.0f;
@@ -4355,6 +4851,18 @@ static void ShowPinnedBubbleTooltip(HWND hPinWnd, const DockButton& b) {
             RectF textRc(rx, ry, rw, rh);
             g.DrawString(b.tooltip.c_str(), -1, &tipFont, textRc, &sf, &textBr);
         }
+        GdiFlush();
+        DWORD* pxBuf = (DWORD*)pvBits;
+        size_t totalPx = (size_t)totalW * (size_t)totalH;
+        for (size_t idx = 0; idx < totalPx; ++idx) {
+            DWORD p = pxBuf[idx];
+            if ((p >> 24) == 0 && (p & 0x00FFFFFFu) != 0) {
+                DWORD rCh = ((p >> 16) & 0xFFu) * 248u / 255u;
+                DWORD gCh = ((p >> 8) & 0xFFu) * 248u / 255u;
+                DWORD bCh = (p & 0xFFu) * 248u / 255u;
+                pxBuf[idx] = (248u << 24) | (rCh << 16) | (gCh << 8) | bCh;
+            }
+        }
 
         POINT ptSrc = { 0, 0 };
         POINT ptDst = { winX, winY };
@@ -4375,12 +4883,20 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
         HidePinnedBubbleTooltip();
         return;
     }
-    const wchar_t* lines[4] = {
+    bool isAnim = (data->animFrames.size() > 1);
+    std::vector<const wchar_t*> lines = {
         data->hideToolbar ? L"Double-click to show toolbar" : L"Double-click to hide toolbar",
         L"Double right-click to close",
         L"Scroll to resize",
         L"Middle-click to reset size"
     };
+    if (isAnim) {
+        lines.push_back(data->animPaused ? L"Ctrl + click to play" : L"Ctrl + click to pause");
+    }
+    int shiftStartIdx = (int)lines.size();
+    lines.push_back(L"Hold Shift + action / key");
+    lines.push_back(L"to apply to all pinned images");
+    int lineCount = (int)lines.size();
     static bool s_tipReg = false;
     if (!s_tipReg) {
         WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
@@ -4408,16 +4924,16 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
     float maxLineW = 0.0f;
     {
         Graphics gMeasure(hScreen);
-        gMeasure.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-        for (int i = 0; i < 4; ++i) {
+        gMeasure.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+        for (int i = 0; i < lineCount; ++i) {
             RectF measured;
             gMeasure.MeasureString(lines[i], -1, &tipFont, PointF(0, 0), &measured);
             if (measured.Width > maxLineW) maxLineW = measured.Width;
         }
     }
 
-    int bw = (int)std::ceil(maxLineW) + 20;
-    int bh = 80;
+    int bw = (int)std::ceil(maxLineW) + 18;
+    int bh = 8 + lineCount * 18;
     int tailH = 7;
     int totalW = bw + 4;
     int totalH = bh + tailH + 4;
@@ -4440,13 +4956,13 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
     void* pvBits = nullptr;
     HDC memDC = CreateCompatibleDC(hScreen);
     HBITMAP hBmp = CreateDIBSection(hScreen, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
-    if (memDC && hBmp) {
+    if (memDC && hBmp && pvBits) {
         HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
+        memset(pvBits, 0, (size_t)totalW * (size_t)totalH * sizeof(DWORD));
         {
             Graphics g(memDC);
             g.SetSmoothingMode(SmoothingModeAntiAlias);
-            g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-            g.Clear(Color(0, 0, 0, 0));
+            g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
 
             float rx = 2.0f;
             float ry = placeBelow ? (float)tailH : 2.0f;
@@ -4474,9 +4990,22 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
             sf.SetAlignment(StringAlignmentCenter);
             sf.SetLineAlignment(StringAlignmentCenter);
             SolidBrush textBr(Color(255, 248, 250, 252));
-            for (int i = 0; i < 4; ++i) {
+            SolidBrush accentBr(Color(255, 252, 165, 165));
+            for (int i = 0; i < lineCount; ++i) {
                 RectF lineRc(rx, ry + 4.0f + i * 18.0f, rw, 18.0f);
-                g.DrawString(lines[i], -1, &tipFont, lineRc, &sf, &textBr);
+                g.DrawString(lines[i], -1, &tipFont, lineRc, &sf, (i >= shiftStartIdx) ? &accentBr : &textBr);
+            }
+        }
+        GdiFlush();
+        DWORD* pxBuf = (DWORD*)pvBits;
+        size_t totalPx = (size_t)totalW * (size_t)totalH;
+        for (size_t idx = 0; idx < totalPx; ++idx) {
+            DWORD p = pxBuf[idx];
+            if ((p >> 24) == 0 && (p & 0x00FFFFFFu) != 0) {
+                DWORD rCh = ((p >> 16) & 0xFFu) * 248u / 255u;
+                DWORD gCh = ((p >> 8) & 0xFFu) * 248u / 255u;
+                DWORD bCh = (p & 0xFFu) * 248u / 255u;
+                pxBuf[idx] = (248u << 24) | (rCh << 16) | (gCh << 8) | bCh;
             }
         }
 
@@ -4549,10 +5078,17 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
 
         ImageAttributes ia;
         ia.SetWrapMode(WrapModeTileFlipXY);
+        int srcW = std::max(1, (int)data->bmp->GetWidth());
+        int srcH = std::max(1, (int)data->bmp->GetHeight());
+        double fitScale = std::min((double)imgW / (double)srcW, (double)imgH / (double)srcH);
+        int drawW = std::max(1, std::min(imgW, (int)std::round(srcW * fitScale)));
+        int drawH = std::max(1, std::min(imgH, (int)std::round(srcH * fitScale)));
+        int drawX = (imgW - drawW) / 2;
+        int drawY = (imgH - drawH) / 2;
         g.DrawImage(
             data->bmp,
-            Rect(0, 0, imgW, imgH),
-            0, 0, data->origW, data->origH,
+            Rect(drawX, drawY, drawW, drawH),
+            0, 0, srcW, srcH,
             UnitPixel,
             &ia
         );
@@ -4673,6 +5209,67 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
                 g.DrawRectangle(&btnBorder, bx, by, bw - 1, bh - 1);
                 g.Restore(stOutline);
             }
+
+            if (data->sizeRowRect.right > data->sizeRowRect.left) {
+                int rx = data->sizeRowRect.left;
+                int ry = data->sizeRowRect.top;
+                int rw = data->sizeRowRect.right - data->sizeRowRect.left;
+                int rh = data->sizeRowRect.bottom - data->sizeRowRect.top;
+
+                int sbx = data->sizeBoxRect.left;
+                int sbw = data->sizeBoxRect.right - data->sizeBoxRect.left;
+                int pbx = data->pctBoxRect.left;
+                int pbw = data->pctBoxRect.right - data->pctBoxRect.left;
+
+                Color sizeBgCol = data->isEditingSize
+                    ? Color(252, 30, 41, 59)
+                    : (data->hoveredSizeBox ? Color(250, 30, 41, 59) : Color(245, 15, 23, 42));
+                Color pctBgCol = data->isEditingPct
+                    ? Color(252, 30, 41, 59)
+                    : (data->hoveredPctBox ? Color(250, 30, 41, 59) : Color(245, 15, 23, 42));
+
+                SolidBrush sizeBg(sizeBgCol);
+                SolidBrush pctBg(pctBgCol);
+                Pen outerBorder(Color(235, 51, 65, 85), 1.0f);
+                Pen divPen(Color(235, 71, 85, 105), 1.0f);
+
+                GraphicsState stBoxes = g.Save();
+                g.SetSmoothingMode(SmoothingModeNone);
+                g.SetPixelOffsetMode(PixelOffsetModeNone);
+                g.FillRectangle(&sizeBg, sbx, ry, sbw, rh);
+                g.FillRectangle(&pctBg, pbx, ry, pbw, rh);
+                g.DrawRectangle(&outerBorder, rx, ry, rw - 1, rh - 1);
+                g.DrawLine(&divPen, pbx, ry + 4, pbx, ry + rh - 5);
+
+                if (data->isEditingSize || data->hoveredSizeBox) {
+                    Pen hiPen(data->isEditingSize ? Color(255, 56, 189, 248) : Color(255, 239, 68, 68), 1.0f);
+                    g.DrawRectangle(&hiPen, sbx, ry, sbw - 1, rh - 1);
+                }
+                if (data->isEditingPct || data->hoveredPctBox) {
+                    Pen hiPen(data->isEditingPct ? Color(255, 56, 189, 248) : Color(255, 239, 68, 68), 1.0f);
+                    g.DrawRectangle(&hiPen, pbx, ry, pbw - 1, rh - 1);
+                }
+                g.Restore(stBoxes);
+
+                std::wstring dimValStr = data->isEditingSize
+                    ? data->editingSizeText
+                    : (std::to_wstring(imgW) + L"\x00D7" + std::to_wstring(imgH));
+                PepperSnapDaemon::DrawEditablePillText(
+                    g, data->sizeBoxRect,
+                    dimValStr, L" px",
+                    data->isEditingSize, data->sizeCaretPos, data->sizeSelAnchor
+                );
+
+                int pctVal = std::max(1, (int)std::round(data->scale * 100.0f));
+                std::wstring pctValStr = data->isEditingPct
+                    ? data->editingPctText
+                    : std::to_wstring(pctVal);
+                PepperSnapDaemon::DrawEditablePillText(
+                    g, data->pctBoxRect,
+                    pctValStr, L"%",
+                    data->isEditingPct, data->pctCaretPos, data->pctSelAnchor
+                );
+            }
         }
 
         POINT ptSrc = { 0, 0 };
@@ -4713,6 +5310,7 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     for (int i = 0; i < 6; ++i) {
         stripW += specs[i].w + (i > 0 ? gap : 0);
     }
+    int totalHudH = actBtnH * 2 + gap;
 
     int sImgL = data->screenImgX;
     int sImgT = data->screenImgY;
@@ -4726,22 +5324,22 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     int sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR));
     int sStripT = sImgB + hudGap;
 
-    bool hasSpaceBelow = (sImgB + hudGap + actBtnH <= rcScreen.bottom - 6) && (sImgB + hudGap >= rcScreen.top + 6);
-    bool hasSpaceAbove = (sImgT - hudGap - actBtnH >= rcScreen.top + 6) && (sImgT - hudGap <= rcScreen.bottom - 6);
+    bool hasSpaceBelow = (sImgB + hudGap + totalHudH <= rcScreen.bottom - 6) && (sImgB + hudGap >= rcScreen.top + 6);
+    bool hasSpaceAbove = (sImgT - hudGap - totalHudH >= rcScreen.top + 6) && (sImgT - hudGap <= rcScreen.bottom - 6);
 
     if (hasSpaceBelow) {
         // 1. Default: snap below bottom-right corner of pinned image
         sStripT = sImgB + hudGap;
     } else if (hasSpaceAbove) {
         // 2. No space below -> snap above top-right corner of pinned image
-        sStripT = sImgT - hudGap - actBtnH;
+        sStripT = sImgT - hudGap - totalHudH;
     } else {
         // 3. No space below or above -> place inside bottom-right of pinned image (clamped to screen bounds)
         sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR - 8));
-        sStripT = std::max((int)rcScreen.top + 6, std::min((int)rcScreen.bottom - actBtnH - 6, sImgB - actBtnH - 8));
+        sStripT = std::max((int)rcScreen.top + 6, std::min((int)rcScreen.bottom - totalHudH - 6, sImgB - totalHudH - 8));
     }
     int sStripL = sStripR - stripW;
-    int sStripB = sStripT + actBtnH;
+    int sStripB = sStripT + totalHudH;
 
     bool suppressToolbar = data->hideToolbar || (data->dragging && data->dragMoved);
     int winL = suppressToolbar ? sImgL : std::min(sImgL, sStripL);
@@ -4762,7 +5360,7 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     if (!suppressToolbar) {
         int bx = sStripL - winL;
         int by = sStripT - winT;
-        curStripRect = { bx, by, bx + stripW, by + actBtnH };
+        curStripRect = { bx, by, bx + stripW, by + totalHudH };
         for (int i = 0; i < 6; ++i) {
             DockButton b;
             b.id = specs[i].id;
@@ -4773,9 +5371,20 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
             data->buttons.push_back(b);
             bx += specs[i].w + gap;
         }
+        int rx = sStripL - winL;
+        int ry = by + actBtnH + gap;
+        int sizeBoxW = 158;
+        data->sizeRowRect = { rx, ry, rx + stripW, ry + actBtnH };
+        data->sizeBoxRect = { rx, ry, rx + sizeBoxW, ry + actBtnH };
+        data->pctBoxRect  = { rx + sizeBoxW, ry, rx + stripW, ry + actBtnH };
     } else {
+        data->sizeRowRect = { 0, 0, 0, 0 };
+        data->sizeBoxRect = { 0, 0, 0, 0 };
+        data->pctBoxRect  = { 0, 0, 0, 0 };
         data->hoveredBtnId = -1;
         data->pressedBtnId = -1;
+        data->hoveredSizeBox = false;
+        data->hoveredPctBox = false;
         HidePinnedBubbleTooltip();
     }
 
@@ -4798,18 +5407,18 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     }
 }
 
-static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float factor, bool resetToOriginal = false) {
+static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float targetScale) {
     if (!data || !data->bmp) return;
     int oldImgW = 32, oldImgH = 32;
     GetPinnedScaledDims(data, oldImgW, oldImgH);
 
-    int ow = std::max(1, data->origW);
-    int oh = std::max(1, data->origH);
-    float minScale = std::max(0.005f, std::min(4.0f / (float)ow, 4.0f / (float)oh));
-    float maxScale = std::max(10.0f, std::min(64.0f, std::min(8192.0f / (float)ow, 8192.0f / (float)oh)));
-    float targetScale = resetToOriginal ? 1.0f : (data->scale * factor);
+    float minScale = 0.01f, maxScale = 64.0f;
+    GetPinnedScaleBounds(data, minScale, maxScale);
     float nextScale = std::max(minScale, std::min(maxScale, targetScale));
-    if (std::abs(nextScale - data->scale) < 1e-6f) return;
+    if (std::abs(nextScale - data->scale) < 1e-6f) {
+        if (hWnd) RenderPinnedLayeredWindow(hWnd, data);
+        return;
+    }
     data->scale = nextScale;
 
     int imgW = 32, imgH = 32;
@@ -4858,7 +5467,9 @@ static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float facto
                 }
             }
             data->hoveredBtnId = newHover;
-            SetCursor(LoadCursorW(nullptr, (newHover != -1) ? IDC_HAND : IDC_SIZEALL));
+            data->hoveredSizeBox = (newHover == -1 && PtInRect(&data->sizeBoxRect, cur) != FALSE);
+            data->hoveredPctBox  = (newHover == -1 && !data->hoveredSizeBox && PtInRect(&data->pctBoxRect, cur) != FALSE);
+            SetCursor(LoadCursorW(nullptr, (data->hoveredSizeBox || data->hoveredPctBox) ? IDC_IBEAM : ((newHover != -1) ? IDC_HAND : IDC_SIZEALL)));
             if (newHover != -1) {
                 for (const auto& b : data->buttons) {
                     if (b.id == newHover) {
@@ -4874,12 +5485,122 @@ static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float facto
     }
 }
 
+static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float factor, bool resetToOriginal = false) {
+    if (!data || !data->bmp) return;
+    float targetScale = resetToOriginal ? 1.0f : (data->scale * factor);
+    SetPinnedWindowExactScale(hWnd, data, targetScale);
+}
+
+static void CancelPinnedInlineEdits(PinnedWindowData* data) {
+    if (!data) return;
+    data->isEditingSize = false;
+    data->isDraggingSizeText = false;
+    data->editingSizeText.clear();
+    data->sizeCaretPos = data->sizeSelAnchor = 0;
+    data->isEditingPct = false;
+    data->isDraggingPctText = false;
+    data->editingPctText.clear();
+    data->pctCaretPos = data->pctSelAnchor = 0;
+}
+
+static void CommitPinnedSizeInput(HWND hWnd, PinnedWindowData* data, bool applyToAll = false) {
+    if (!data || !data->isEditingSize) return;
+    std::wstring raw = data->editingSizeText;
+    data->isEditingSize = false;
+    data->isDraggingSizeText = false;
+    data->editingSizeText.clear();
+    data->sizeCaretPos = data->sizeSelAnchor = 0;
+
+    for (wchar_t& c : raw) {
+        if (c == L'x' || c == L'X' || c == L'*' || c == L',' || c == L'\x00D7') c = L' ';
+    }
+    std::wstringstream ss(raw);
+    int w = 0, h = 0;
+    if (ss >> w && w > 0) {
+        bool hasH = (bool)(ss >> h) && (h > 0);
+        int curW = 32, curH = 32;
+        GetPinnedScaledDims(data, curW, curH);
+
+        auto computeScaleForPin = [&](const PinnedWindowData* d) -> float {
+            int ow = std::max(1, d->origW);
+            int oh = std::max(1, d->origH);
+            if (!hasH) {
+                return (float)w / (float)ow;
+            }
+            if (w != curW && h == curH) {
+                return (float)w / (float)ow;
+            }
+            if (h != curH && w == curW) {
+                return (float)h / (float)oh;
+            }
+            // Fit inside W x H so the image keeps its exact aspect ratio and never distorts
+            return std::min((float)w / (float)ow, (float)h / (float)oh);
+        };
+
+        if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+            std::vector<HWND> pins = g_Daemon.pinnedWindows;
+            for (HWND hp : pins) {
+                if (hp && IsWindow(hp)) {
+                    PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+                    if (d && d->bmp) {
+                        CancelPinnedInlineEdits(d);
+                        SetPinnedWindowExactScale(hp, d, computeScaleForPin(d));
+                    }
+                }
+            }
+        } else {
+            SetPinnedWindowExactScale(hWnd, data, computeScaleForPin(data));
+        }
+    } else if (hWnd) {
+        RenderPinnedLayeredWindow(hWnd, data);
+    }
+}
+
+static void CommitPinnedPctInput(HWND hWnd, PinnedWindowData* data, bool applyToAll = false) {
+    if (!data || !data->isEditingPct) return;
+    std::wstring raw = data->editingPctText;
+    data->isEditingPct = false;
+    data->isDraggingPctText = false;
+    data->editingPctText.clear();
+    data->pctCaretPos = data->pctSelAnchor = 0;
+
+    std::wstring clean;
+    for (wchar_t c : raw) {
+        if ((c >= L'0' && c <= L'9') || c == L'.') clean.push_back(c);
+    }
+    if (!clean.empty()) {
+        wchar_t* endPtr = nullptr;
+        double val = std::wcstod(clean.c_str(), &endPtr);
+        if (endPtr != clean.c_str() && val > 0.0) {
+            float targetScale = (float)(val / 100.0);
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hp : pins) {
+                    if (hp && IsWindow(hp)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+                        if (d && d->bmp) {
+                            CancelPinnedInlineEdits(d);
+                            SetPinnedWindowExactScale(hp, d, targetScale);
+                        }
+                    }
+                }
+            } else {
+                SetPinnedWindowExactScale(hWnd, data, targetScale);
+            }
+            return;
+        }
+    }
+    if (hWnd) {
+        RenderPinnedLayeredWindow(hWnd, data);
+    }
+}
+
 static void UpdatePinnedDragPosition(HWND hWnd, PinnedWindowData* data) {
     if (!hWnd || !data || !data->dragging) return;
     POINT cur;
     GetCursorPos(&cur);
     if (!data->dragMoved) {
-        if (cur.x == data->dragStartMouse.x && cur.y == data->dragStartMouse.y) {
+        if (std::abs(cur.x - data->dragStartMouse.x) < 3 && std::abs(cur.y - data->dragStartMouse.y) < 3) {
             return;
         }
         data->dragMoved = true;
@@ -4927,30 +5648,177 @@ static void UpdatePinnedDragPosition(HWND hWnd, PinnedWindowData* data) {
     UpdatePinnedWindowLayout(hWnd, data, true);
 }
 
-static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btnId) {
+static bool IsPinShiftHeld() {
+    return ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+           ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+           ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+           ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+}
+
+static bool IsPinCtrlHeld() {
+    return ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
+           ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
+           ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
+           ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+}
+
+static void SetPinnedWindowPaused(HWND hPin, PinnedWindowData* d, bool paused) {
+    if (!hPin || !IsWindow(hPin) || !d || d->animFrames.size() <= 1) return;
+    d->animPaused = paused;
+    if (paused) {
+        KillTimer(hPin, 3);
+        // Keep the exact current frame (d->curFrameIdx), never reset to first frame
+        if (d->curFrameIdx < d->animFrames.size()) {
+            d->bmp = d->animFrames[d->curFrameIdx];
+        }
+    } else {
+        // Resume playing from the exact current frame (d->curFrameIdx)
+        if (d->curFrameIdx < d->animFrames.size()) {
+            d->bmp = d->animFrames[d->curFrameIdx];
+        }
+        int nextDelay = (d->curFrameIdx < d->animDelaysMs.size())
+            ? std::max(20, d->animDelaysMs[d->curFrameIdx])
+            : 80;
+        SetTimer(hPin, 3, (UINT)nextDelay, nullptr);
+    }
+    int imgW = 32, imgH = 32;
+    GetPinnedScaledDims(d, imgW, imgH);
+    EnsurePinnedWindowCache(d, imgW, imgH, true);
+    RenderPinnedLayeredWindow(hPin, d);
+}
+
+static void TogglePinnedWindowAnimation(HWND hWnd, PinnedWindowData* data, bool applyToAll) {
+    if (!hWnd || !data) return;
+    if (applyToAll) {
+        bool targetPaused = true;
+        if (data->animFrames.size() > 1) {
+            targetPaused = !data->animPaused;
+        } else {
+            for (HWND hPin : g_Daemon.pinnedWindows) {
+                if (hPin && IsWindow(hPin)) {
+                    PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                    if (d && d->animFrames.size() > 1) {
+                        targetPaused = !d->animPaused;
+                        break;
+                    }
+                }
+            }
+        }
+        std::vector<HWND> pins = g_Daemon.pinnedWindows;
+        for (HWND hPin : pins) {
+            if (hPin && IsWindow(hPin)) {
+                PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                if (d && d->animFrames.size() > 1) {
+                    SetPinnedWindowPaused(hPin, d, targetPaused);
+                }
+            }
+        }
+    } else if (data->animFrames.size() > 1) {
+        SetPinnedWindowPaused(hWnd, data, !data->animPaused);
+    }
+}
+
+static bool MatchesPinnedShortcutWithOptionalShift(const HotkeyBinding& hk, UINT vk, bool ctrl, bool shift, bool alt, bool* outApplyAll) {
+    if (hk.vk == 0 || vk == 0) return false;
+    bool reqCtrl  = (hk.modifiers & MOD_CONTROL) != 0;
+    bool reqShift = (hk.modifiers & MOD_SHIFT)   != 0;
+    bool reqAlt   = (hk.modifiers & MOD_ALT)     != 0;
+    if (ctrl != reqCtrl || alt != reqAlt) return false;
+    bool keyMatch = false;
+    if (vk == hk.vk) {
+        keyMatch = true;
+    } else if ((hk.vk == VK_OEM_PLUS  && vk == VK_ADD)      || (hk.vk == VK_ADD      && vk == VK_OEM_PLUS)) {
+        keyMatch = true;
+    } else if ((hk.vk == VK_OEM_MINUS && vk == VK_SUBTRACT) || (hk.vk == VK_SUBTRACT && vk == VK_OEM_MINUS)) {
+        keyMatch = true;
+    } else if ((hk.vk == '0'          && vk == VK_NUMPAD0)  || (hk.vk == VK_NUMPAD0  && vk == '0')) {
+        keyMatch = true;
+    }
+    if (!keyMatch) return false;
+    if (shift == reqShift) {
+        if (outApplyAll) *outApplyAll = reqShift;
+        return true;
+    }
+    if (shift && !reqShift) {
+        if (outApplyAll) *outApplyAll = true;
+        return true;
+    }
+    return false;
+}
+
+static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btnId, bool applyToAll = false) {
     if (!hWnd || !data) return;
     switch (btnId) {
         case DBTN_ACT_ZOOM_OUT:
             SetFocus(hWnd);
-            ApplyPinnedWindowZoom(hWnd, data, 1.0f / 1.15f, false);
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hPin : pins) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d) ApplyPinnedWindowZoom(hPin, d, 1.0f / 1.15f, false);
+                    }
+                }
+            } else {
+                ApplyPinnedWindowZoom(hWnd, data, 1.0f / 1.15f, false);
+            }
             return;
         case DBTN_ACT_ZOOM_IN:
             SetFocus(hWnd);
-            ApplyPinnedWindowZoom(hWnd, data, 1.15f, false);
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hPin : pins) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d) ApplyPinnedWindowZoom(hPin, d, 1.15f, false);
+                    }
+                }
+            } else {
+                ApplyPinnedWindowZoom(hWnd, data, 1.15f, false);
+            }
             return;
         case DBTN_ACT_ZOOM_RESET:
             SetFocus(hWnd);
-            ApplyPinnedWindowZoom(hWnd, data, 1.0f, true);
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hPin : pins) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d) ApplyPinnedWindowZoom(hPin, d, 1.0f, true);
+                    }
+                }
+            } else {
+                ApplyPinnedWindowZoom(hWnd, data, 1.0f, true);
+            }
             return;
         case DBTN_ACT_PIN_OUTLINE: {
             SetFocus(hWnd);
-            data->hideOutline = !data->hideOutline;
-            g_Daemon.hidePinnedOutline = data->hideOutline;
+            bool nextHideOutline = !data->hideOutline;
+            g_Daemon.hidePinnedOutline = nextHideOutline;
             g_Daemon.SaveSettings();
-            int imgW = 32, imgH = 32;
-            GetPinnedScaledDims(data, imgW, imgH);
-            EnsurePinnedWindowCache(data, imgW, imgH, true);
-            UpdatePinnedWindowLayout(hWnd, data, false);
+            if (applyToAll) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hPin : pins) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d && d->bmp) {
+                            d->hideOutline = nextHideOutline;
+                            int imgW = 32, imgH = 32;
+                            GetPinnedScaledDims(d, imgW, imgH);
+                            EnsurePinnedWindowCache(d, imgW, imgH, true);
+                            UpdatePinnedWindowLayout(hPin, d, false);
+                            RenderPinnedLayeredWindow(hPin, d);
+                        }
+                    }
+                }
+            } else {
+                data->hideOutline = nextHideOutline;
+                int imgW = 32, imgH = 32;
+                GetPinnedScaledDims(data, imgW, imgH);
+                EnsurePinnedWindowCache(data, imgW, imgH, true);
+                UpdatePinnedWindowLayout(hWnd, data, false);
+                RenderPinnedLayeredWindow(hWnd, data);
+            }
             if (data->hoveredBtnId == DBTN_ACT_PIN_OUTLINE) {
                 for (const auto& btn : data->buttons) {
                     if (btn.id == DBTN_ACT_PIN_OUTLINE) {
@@ -4959,37 +5827,97 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                     }
                 }
             }
-            RenderPinnedLayeredWindow(hWnd, data);
             return;
         }
         case DBTN_ACT_PIN_HIDE_TOOLBAR: {
             SetFocus(hWnd);
             HidePinnedBubbleTooltip();
-            data->hideToolbar = !data->hideToolbar;
-            g_Daemon.hidePinnedToolbar = data->hideToolbar;
+            bool nextHideToolbar = !data->hideToolbar;
+            g_Daemon.hidePinnedToolbar = nextHideToolbar;
             g_Daemon.SaveSettings();
-            UpdatePinnedWindowLayout(hWnd, data, true);
-            RenderPinnedLayeredWindow(hWnd, data);
+            if (applyToAll) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hPin : pins) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d && d->bmp) {
+                            d->hideToolbar = nextHideToolbar;
+                            UpdatePinnedWindowLayout(hPin, d, true);
+                            RenderPinnedLayeredWindow(hPin, d);
+                        }
+                    }
+                }
+            } else {
+                data->hideToolbar = nextHideToolbar;
+                UpdatePinnedWindowLayout(hWnd, data, true);
+                RenderPinnedLayeredWindow(hWnd, data);
+            }
             return;
         }
         case DBTN_ACT_PIN_UNFILTER: {
             SetFocus(hWnd);
-            data->smoothImage = !data->smoothImage;
-            g_Daemon.smoothPinnedImage = data->smoothImage;
+            bool nextSmooth = !data->smoothImage;
+            g_Daemon.smoothPinnedImage = nextSmooth;
             g_Daemon.SaveSettings();
-            int imgW = 32, imgH = 32;
-            GetPinnedScaledDims(data, imgW, imgH);
-            EnsurePinnedWindowCache(data, imgW, imgH, true);
-            RenderPinnedLayeredWindow(hWnd, data);
+            if (applyToAll) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hPin : pins) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d && d->bmp) {
+                            d->smoothImage = nextSmooth;
+                            int imgW = 32, imgH = 32;
+                            GetPinnedScaledDims(d, imgW, imgH);
+                            EnsurePinnedWindowCache(d, imgW, imgH, true);
+                            RenderPinnedLayeredWindow(hPin, d);
+                        }
+                    }
+                }
+            } else {
+                data->smoothImage = nextSmooth;
+                int imgW = 32, imgH = 32;
+                GetPinnedScaledDims(data, imgW, imgH);
+                EnsurePinnedWindowCache(data, imgW, imgH, true);
+                RenderPinnedLayeredWindow(hWnd, data);
+            }
             return;
         }
         case DBTN_ACT_CLOSE:
             HidePinnedBubbleTooltip();
-            DestroyWindow(hWnd);
+            if (applyToAll) {
+                std::vector<HWND> pinsToClose = g_Daemon.pinnedWindows;
+                g_Daemon.pinnedWindows.clear();
+                for (HWND hp : pinsToClose) {
+                    if (hp && IsWindow(hp)) {
+                        DestroyWindow(hp);
+                    }
+                }
+            } else {
+                DestroyWindow(hWnd);
+            }
             return;
         case DBTN_ACT_COPY:
             SetFocus(hWnd);
-            if (data->bmp) {
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+                std::vector<Bitmap*> allBmps;
+                for (HWND hPin : g_Daemon.pinnedWindows) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d && d->bmp) {
+                            allBmps.push_back(d->bmp);
+                        }
+                    }
+                }
+                if (!allBmps.empty()) {
+                    g_Daemon.CopyMultipleBitmapsToClipboard(allBmps);
+                    g_Daemon.ShowTrayToast(
+                        L"Copied " + std::to_wstring(allBmps.size()) + L" pinned image to clipboard",
+                        IsWindowsClipboardHistoryEnabled()
+                            ? L"Press Windows + V to select them."
+                            : L"Enable clipboard history to see each of them"
+                    );
+                }
+            } else if (data->bmp) {
                 g_Daemon.CopyBitmapToClipboard(data->bmp);
                 g_Daemon.ShowTrayToast(
                     L"Copied to clipboard (" + std::to_wstring(data->origW) + L"×" + std::to_wstring(data->origH) + L" px)",
@@ -4999,12 +5927,40 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
             return;
         case DBTN_ACT_SAVE:
             SetFocus(hWnd);
-            if (data->bmp) {
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
                 CreateDirectoryW(g_Daemon.saveFolder.c_str(), nullptr);
-                std::wstring fn = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
-                                  PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                int savedCount = 0;
+                std::wstring lastSaved;
+                int totalPins = (int)g_Daemon.pinnedWindows.size();
+                int idx = 1;
+                std::wstring ext = PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                for (HWND hPin : g_Daemon.pinnedWindows) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d && d->bmp) {
+                            std::wstring stem = g_Daemon.FormatFilename(g_Daemon.captureCounter++);
+                            std::wstring full = BuildUniqueSaveFilePath(g_Daemon.saveFolder, stem, ext, idx++, totalPins);
+                            if (g_Daemon.SaveBitmapToPath(d->bmp, full)) {
+                                lastSaved = full;
+                                savedCount++;
+                            }
+                        }
+                    }
+                }
                 g_Daemon.SaveSettings();
-                std::wstring full = g_Daemon.saveFolder + L"\\" + fn;
+                if (savedCount > 0) {
+                    g_Daemon.lastSavedFilePath = lastSaved;
+                    g_Daemon.ShowTrayToast(
+                        L"Saved " + std::to_wstring(savedCount) + L" pinned images",
+                        L"Saved to: " + g_Daemon.saveFolder + L"\n(click to reveal in Explorer)"
+                    );
+                }
+            } else if (data->bmp) {
+                CreateDirectoryW(g_Daemon.saveFolder.c_str(), nullptr);
+                std::wstring stem = g_Daemon.FormatFilename(g_Daemon.captureCounter++);
+                std::wstring ext = PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                g_Daemon.SaveSettings();
+                std::wstring full = BuildUniqueSaveFilePath(g_Daemon.saveFolder, stem, ext, 0, 1);
                 if (g_Daemon.SaveBitmapToPath(data->bmp, full)) {
                     g_Daemon.lastSavedFilePath = full;
                     g_Daemon.ShowTrayToast(
@@ -5015,7 +5971,83 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
             }
             return;
         case DBTN_ACT_SAVE_AS:
-            if (data->bmp) {
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+                WCHAR szFile[MAX_PATH] = {0};
+                std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
+                                       PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                g_Daemon.SaveSettings();
+                wcsncpy_s(szFile, defName.c_str(), _TRUNCATE);
+
+                OPENFILENAMEW ofn = {0};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = hWnd;
+                ofn.lpstrTitle = L"Save All Pinned Images As";
+                ofn.lpstrInitialDir = g_Daemon.saveFolder.c_str();
+                ofn.lpstrFile = szFile;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrFilter = L"JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0*.png\0WebP image (*.webp)\0*.webp\0BMP bitmap (*.bmp)\0*.bmp\0";
+                ofn.nFilterIndex = (DWORD)g_Daemon.regionFormat + 1;
+                const wchar_t* defExts[4] = { L"jpg", L"png", L"webp", L"bmp" };
+                ofn.lpstrDefExt = defExts[(int)g_Daemon.regionFormat & 3];
+                ofn.Flags = OFN_PATHMUSTEXIST;
+
+                if (GetSaveFileNameW(&ofn)) {
+                    std::wstring chosenPath(szFile);
+                    std::wstring chosenFolder = g_Daemon.saveFolder;
+                    std::wstring filePart = chosenPath;
+                    size_t slashPos = chosenPath.find_last_of(L"\\/");
+                    if (slashPos != std::wstring::npos) {
+                        chosenFolder = chosenPath.substr(0, slashPos);
+                        filePart = chosenPath.substr(slashPos + 1);
+                    }
+                    std::wstring chosenStem = filePart;
+                    std::wstring chosenExt;
+                    size_t dotPos = filePart.find_last_of(L'.');
+                    if (dotPos != std::wstring::npos && dotPos > 0) {
+                        chosenStem = filePart.substr(0, dotPos);
+                        chosenExt = filePart.substr(dotPos);
+                    } else {
+                        const wchar_t* filterExts[4] = { L".jpg", L".png", L".webp", L".bmp" };
+                        int fIdx = (ofn.nFilterIndex >= 1 && ofn.nFilterIndex <= 4)
+                            ? ((int)ofn.nFilterIndex - 1)
+                            : ((int)g_Daemon.regionFormat & 3);
+                        chosenExt = filterExts[fIdx];
+                    }
+
+                    std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                    int totalPins = 0;
+                    for (HWND hPin : pins) {
+                        if (hPin && IsWindow(hPin)) {
+                            PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                            if (d && d->bmp) totalPins++;
+                        }
+                    }
+
+                    int savedCount = 0;
+                    int idx = 1;
+                    std::wstring lastSaved;
+                    for (HWND hPin : pins) {
+                        if (hPin && IsWindow(hPin)) {
+                            PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                            if (d && d->bmp) {
+                                std::wstring full = BuildUniqueSaveFilePath(chosenFolder, chosenStem, chosenExt, idx++, totalPins);
+                                if (g_Daemon.SaveBitmapToPath(d->bmp, full)) {
+                                    lastSaved = full;
+                                    savedCount++;
+                                }
+                            }
+                        }
+                    }
+                    if (savedCount > 0) {
+                        g_Daemon.lastSavedFilePath = lastSaved;
+                        g_Daemon.ShowTrayToast(
+                            L"Saved " + std::to_wstring(savedCount) + L" pinned images",
+                            L"Saved to: " + chosenFolder + L"\n(click to reveal in Explorer)"
+                        );
+                    }
+                }
+                if (IsWindow(hWnd)) SetFocus(hWnd);
+            } else if (data->bmp) {
                 WCHAR szFile[MAX_PATH] = {0};
                 std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
                                        PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
@@ -5054,9 +6086,19 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     switch (msg) {
         case WM_ERASEBKGND:
             return 1;
+        case WM_KILLFOCUS:
+            if (data && (data->isEditingSize || data->isEditingPct)) {
+                if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                if (data->isEditingPct)  CommitPinnedPctInput(hWnd, data, false);
+            }
+            break;
         case WM_SETCURSOR:
             if (LOWORD(lParam) == HTCLIENT && data) {
-                SetCursor(LoadCursorW(nullptr, (data->hoveredBtnId != -1) ? IDC_HAND : IDC_SIZEALL));
+                if (data->hoveredSizeBox || data->hoveredPctBox || data->isDraggingSizeText || data->isDraggingPctText) {
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                } else {
+                    SetCursor(LoadCursorW(nullptr, (data->hoveredBtnId != -1) ? IDC_HAND : IDC_SIZEALL));
+                }
                 return TRUE;
             }
             break;
@@ -5065,9 +6107,57 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 KillTimer(hWnd, 2);
                 data->showingImgHoverTip = false;
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                bool shiftHeld = IsPinShiftHeld();
+
+                if (!data->hideToolbar && PtInRect(&data->sizeBoxRect, pt)) {
+                    HidePinnedBubbleTooltip();
+                    if (data->isEditingPct) CommitPinnedPctInput(hWnd, data, false);
+                    if (!data->isEditingSize) {
+                        int curW = 32, curH = 32;
+                        GetPinnedScaledDims(data, curW, curH);
+                        data->isEditingSize = true;
+                        data->editingSizeText = std::to_wstring(curW) + L"x" + std::to_wstring(curH);
+                    }
+                    size_t idx = PepperSnapDaemon::HitTestMonoIndex(pt.x, data->sizeBoxRect, data->editingSizeText, L" px");
+                    data->sizeCaretPos = idx;
+                    if (!shiftHeld) data->sizeSelAnchor = idx;
+                    data->isDraggingSizeText = true;
+                    SetCapture(hWnd);
+                    SetFocus(hWnd);
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+                if (data->isEditingSize) {
+                    CommitPinnedSizeInput(hWnd, data, false);
+                }
+
+                if (!data->hideToolbar && PtInRect(&data->pctBoxRect, pt)) {
+                    HidePinnedBubbleTooltip();
+                    if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                    if (!data->isEditingPct) {
+                        int pctVal = std::max(1, (int)std::round(data->scale * 100.0f));
+                        data->isEditingPct = true;
+                        data->editingPctText = std::to_wstring(pctVal);
+                    }
+                    size_t idx = PepperSnapDaemon::HitTestMonoIndex(pt.x, data->pctBoxRect, data->editingPctText, L"%");
+                    data->pctCaretPos = idx;
+                    if (!shiftHeld) data->pctSelAnchor = idx;
+                    data->isDraggingPctText = true;
+                    SetCapture(hWnd);
+                    SetFocus(hWnd);
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+                if (data->isEditingPct) {
+                    CommitPinnedPctInput(hWnd, data, false);
+                }
+
                 for (const auto& b : data->buttons) {
                     if (PtInRect(&b.rect, pt)) {
                         data->pressedBtnId = b.id;
+                        data->pressedBtnShift = shiftHeld;
                         data->hoveredBtnId = b.id;
                         SetCapture(hWnd);
                         SetFocus(hWnd);
@@ -5076,6 +6166,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     }
                 }
                 data->pressedBtnId = -1;
+                data->pressedBtnShift = false;
                 HidePinnedBubbleTooltip();
                 data->dragging = true;
                 data->dragMoved = false;
@@ -5090,9 +6181,54 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 KillTimer(hWnd, 2);
                 data->showingImgHoverTip = false;
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+                if (!data->hideToolbar && PtInRect(&data->sizeBoxRect, pt)) {
+                    HidePinnedBubbleTooltip();
+                    if (data->isEditingPct) CommitPinnedPctInput(hWnd, data, false);
+                    if (!data->isEditingSize) {
+                        int curW = 32, curH = 32;
+                        GetPinnedScaledDims(data, curW, curH);
+                        data->isEditingSize = true;
+                        data->editingSizeText = std::to_wstring(curW) + L"x" + std::to_wstring(curH);
+                    }
+                    size_t idx = PepperSnapDaemon::HitTestMonoIndex(pt.x, data->sizeBoxRect, data->editingSizeText, L" px");
+                    const std::wstring& s = data->editingSizeText;
+                    if (idx < s.size() && (s[idx] >= L'0' && s[idx] <= L'9')) {
+                        size_t l = idx, r = idx;
+                        while (l > 0 && s[l - 1] >= L'0' && s[l - 1] <= L'9') l--;
+                        while (r < s.size() && s[r] >= L'0' && s[r] <= L'9') r++;
+                        data->sizeSelAnchor = l;
+                        data->sizeCaretPos = r;
+                    } else {
+                        data->sizeSelAnchor = 0;
+                        data->sizeCaretPos = s.size();
+                    }
+                    data->isDraggingSizeText = false;
+                    SetFocus(hWnd);
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+
+                if (!data->hideToolbar && PtInRect(&data->pctBoxRect, pt)) {
+                    HidePinnedBubbleTooltip();
+                    if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                    if (!data->isEditingPct) {
+                        int pctVal = std::max(1, (int)std::round(data->scale * 100.0f));
+                        data->isEditingPct = true;
+                        data->editingPctText = std::to_wstring(pctVal);
+                    }
+                    data->pctSelAnchor = 0;
+                    data->pctCaretPos = data->editingPctText.size();
+                    data->isDraggingPctText = false;
+                    SetFocus(hWnd);
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+
                 for (const auto& b : data->buttons) {
                     if (PtInRect(&b.rect, pt)) {
                         data->pressedBtnId = b.id;
+                        data->pressedBtnShift = IsPinShiftHeld();
                         data->hoveredBtnId = b.id;
                         SetCapture(hWnd);
                         SetFocus(hWnd);
@@ -5100,11 +6236,22 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         return 0;
                     }
                 }
+                HidePinnedBubbleTooltip();
+                if (IsPinCtrlHeld()) {
+                    // Rapid Ctrl + click (or Ctrl + Shift + click) toggles pause/play on release instead of toggling toolbar
+                    data->pendingLeftDblClickToggleToolbar = false;
+                    data->dragging = true;
+                    data->dragMoved = false;
+                    GetCursorPos(&data->dragStartMouse);
+                    data->dragStartWnd = { data->screenImgX, data->screenImgY };
+                    SetCapture(hWnd);
+                    SetFocus(hWnd);
+                    return 0;
+                }
                 if (data->dragging) {
                     data->dragging = false;
                     data->dragMoved = false;
                 }
-                HidePinnedBubbleTooltip();
                 data->pendingLeftDblClickToggleToolbar = true;
                 SetCapture(hWnd);
                 SetFocus(hWnd);
@@ -5118,8 +6265,10 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     data->showingImgHoverTip = false;
                     HidePinnedBubbleTooltip();
                 }
+                if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                if (data->isEditingPct)  CommitPinnedPctInput(hWnd, data, false);
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-                bool onBtn = false;
+                bool onBtn = (PtInRect(&data->sizeRowRect, pt) != FALSE);
                 for (const auto& b : data->buttons) {
                     if (PtInRect(&b.rect, pt)) {
                         onBtn = true;
@@ -5141,8 +6290,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 if (PtInRect(&data->imgRect, pt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_RESET);
-                    if (PtInRect(&data->imgRect, pt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_RESET, IsPinShiftHeld());
+                    if (IsWindow(hWnd) && PtInRect(&data->imgRect, pt)) {
                         SetTimer(hWnd, 2, 500, nullptr);
                     }
                 }
@@ -5155,6 +6304,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     data->showingImgHoverTip = false;
                     HidePinnedBubbleTooltip();
                 }
+                if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                if (data->isEditingPct)  CommitPinnedPctInput(hWnd, data, false);
                 data->pendingRightDblClickClose = false;
             }
             return 0;
@@ -5172,11 +6323,39 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 if (PtInRect(&data->imgRect, pt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE);
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE, IsPinShiftHeld());
                 }
                 return 0;
             }
             return 0;
+        case WM_CHAR: {
+            if (data && data->isEditingSize) {
+                wchar_t ch = (wchar_t)wParam;
+                if (ch == L'\r') {
+                    CommitPinnedSizeInput(hWnd, data, IsPinShiftHeld());
+                } else if ((ch >= L'0' && ch <= L'9') || ch == L'x' || ch == L'X' || ch == L'*' || ch == L',' || ch == L' ') {
+                    PepperSnapDaemon::ApplyInlineEditChar(
+                        ch == L'X' ? L'x' : ch,
+                        data->editingSizeText, data->sizeCaretPos, data->sizeSelAnchor, 15
+                    );
+                    RenderPinnedLayeredWindow(hWnd, data);
+                }
+                return 0;
+            }
+            if (data && data->isEditingPct) {
+                wchar_t ch = (wchar_t)wParam;
+                if (ch == L'\r') {
+                    CommitPinnedPctInput(hWnd, data, IsPinShiftHeld());
+                } else if ((ch >= L'0' && ch <= L'9') || ch == L'.') {
+                    PepperSnapDaemon::ApplyInlineEditChar(
+                        ch, data->editingPctText, data->pctCaretPos, data->pctSelAnchor, 6
+                    );
+                    RenderPinnedLayeredWindow(hWnd, data);
+                }
+                return 0;
+            }
+            break;
+        }
         case WM_KEYDOWN: {
             if (data && data->dragging && (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
                 UpdatePinnedDragPosition(hWnd, data);
@@ -5184,48 +6363,100 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             if (data) {
                 bool ctrl  = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) || ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
-                bool shift = ((GetKeyState(VK_SHIFT)   & 0x8000) != 0) || ((GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0);
+                bool shift = IsPinShiftHeld();
                 bool alt   = ((GetKeyState(VK_MENU)    & 0x8000) != 0) || ((GetAsyncKeyState(VK_MENU)    & 0x8000) != 0);
+
+                if (data->isEditingSize) {
+                    if (wParam == VK_ESCAPE) {
+                        CancelPinnedInlineEdits(data);
+                        RenderPinnedLayeredWindow(hWnd, data);
+                        return 0;
+                    }
+                    if (wParam == VK_RETURN) {
+                        CommitPinnedSizeInput(hWnd, data, shift);
+                        return 0;
+                    }
+                    PepperSnapDaemon::ApplyInlineEditKeyDown(
+                        wParam, ctrl, shift,
+                        data->editingSizeText, data->sizeCaretPos, data->sizeSelAnchor,
+                        15, true, hWnd
+                    );
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+
+                if (data->isEditingPct) {
+                    if (wParam == VK_ESCAPE) {
+                        CancelPinnedInlineEdits(data);
+                        RenderPinnedLayeredWindow(hWnd, data);
+                        return 0;
+                    }
+                    if (wParam == VK_RETURN) {
+                        CommitPinnedPctInput(hWnd, data, shift);
+                        return 0;
+                    }
+                    PepperSnapDaemon::ApplyInlineEditKeyDown(
+                        wParam, ctrl, shift,
+                        data->editingPctText, data->pctCaretPos, data->pctSelAnchor,
+                        6, false, hWnd
+                    );
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+
                 UINT vk = (UINT)wParam;
-                if ((vk == VK_ESCAPE && !ctrl && !shift && !alt) ||
-                    MatchesOverlayShortcut(g_Daemon.hkPinClose, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE);
+                bool applyAll = false;
+                if (vk == VK_ESCAPE && !ctrl && !alt) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE, shift);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinZoomOut, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_OUT);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinClose, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_CLOSE, applyAll);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinZoomIn, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_IN);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinZoomOut, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_OUT, applyAll);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinZoomReset, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_RESET);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinZoomIn, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_IN, applyAll);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinOutline, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_OUTLINE);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinZoomReset, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_ZOOM_RESET, applyAll);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinHideToolbar, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_HIDE_TOOLBAR);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinOutline, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_OUTLINE, applyAll);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinSmooth, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_UNFILTER);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinHideToolbar, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_HIDE_TOOLBAR, applyAll);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinSaveAs, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE_AS);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinSmooth, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_UNFILTER, applyAll);
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinSave, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE);
+                // Check Quick Save (including Shift + Quick Save when multiple pinned images are open,
+                // or Save As when Save As is explicitly invoked on a single pinned image)
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinSaveAs, vk, ctrl, shift, alt, &applyAll)) {
+                    bool alsoMatchesShiftQuickSave = shift &&
+                        ((g_Daemon.hkPinSave.modifiers & MOD_SHIFT) == 0) &&
+                        MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinSave, vk, ctrl, shift, alt, nullptr);
+                    if (alsoMatchesShiftQuickSave && g_Daemon.pinnedWindows.size() > 1) {
+                        ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE, true);
+                    } else {
+                        ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE_AS, applyAll);
+                    }
                     return 0;
                 }
-                if (MatchesOverlayShortcut(g_Daemon.hkPinCopy, vk, ctrl, shift, alt)) {
-                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_COPY);
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinSave, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE, applyAll);
+                    return 0;
+                }
+                if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinCopy, vk, ctrl, shift, alt, &applyAll)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_COPY, applyAll);
                     return 0;
                 }
             }
@@ -5250,7 +6481,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             if (wParam == 2 && data) {
                 KillTimer(hWnd, 2);
-                if (!data->dragging && data->hoveredBtnId == -1 && data->pressedBtnId == -1) {
+                if (!data->dragging && data->hoveredBtnId == -1 && data->pressedBtnId == -1 &&
+                    !data->hoveredSizeBox && !data->hoveredPctBox) {
                     POINT ptScreen;
                     if (GetCursorPos(&ptScreen)) {
                         POINT ptClient = ptScreen;
@@ -5262,7 +6494,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 return 0;
             }
-            if (wParam == 3 && data && data->animFrames.size() > 1) {
+            if (wParam == 3 && data && data->animFrames.size() > 1 && !data->animPaused) {
                 data->curFrameIdx = (data->curFrameIdx + 1) % data->animFrames.size();
                 data->bmp = data->animFrames[data->curFrameIdx];
                 int nextDelay = (data->curFrameIdx < data->animDelaysMs.size())
@@ -5279,13 +6511,25 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             break;
         case WM_MOUSEMOVE:
             if (data) {
+                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                if (data->isDraggingSizeText && data->isEditingSize) {
+                    data->sizeCaretPos = PepperSnapDaemon::HitTestMonoIndex(pt.x, data->sizeBoxRect, data->editingSizeText, L" px");
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+                if (data->isDraggingPctText && data->isEditingPct) {
+                    data->pctCaretPos = PepperSnapDaemon::HitTestMonoIndex(pt.x, data->pctBoxRect, data->editingPctText, L"%");
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
                 if (data->pressedBtnId != -1) {
                     KillTimer(hWnd, 2);
                     if (data->showingImgHoverTip) {
                         data->showingImgHoverTip = false;
                         HidePinnedBubbleTooltip();
                     }
-                    POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                     int newHover = -1;
                     for (const auto& b : data->buttons) {
                         if (b.id == data->pressedBtnId && PtInRect(&b.rect, pt)) {
@@ -5324,7 +6568,6 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     TrackMouseEvent(&tme);
                     data->trackingMouseLeave = true;
                 }
-                POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 int newHover = -1;
                 for (const auto& b : data->buttons) {
                     if (PtInRect(&b.rect, pt)) {
@@ -5332,7 +6575,10 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         break;
                     }
                 }
-                if (newHover != -1) {
+                bool newSizeHov = (newHover == -1 && !data->hideToolbar && PtInRect(&data->sizeBoxRect, pt) != FALSE);
+                bool newPctHov  = (newHover == -1 && !newSizeHov && !data->hideToolbar && PtInRect(&data->pctBoxRect, pt) != FALSE);
+
+                if (newHover != -1 || newSizeHov || newPctHov) {
                     KillTimer(hWnd, 2);
                     data->showingImgHoverTip = false;
                     data->lastHoverMouse = { -10000, -10000 };
@@ -5350,9 +6596,11 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         HidePinnedBubbleTooltip();
                     }
                 }
-                if (newHover != data->hoveredBtnId) {
+                if (newHover != data->hoveredBtnId || newSizeHov != data->hoveredSizeBox || newPctHov != data->hoveredPctBox) {
                     data->hoveredBtnId = newHover;
-                    SetCursor(LoadCursorW(nullptr, (newHover != -1) ? IDC_HAND : IDC_SIZEALL));
+                    data->hoveredSizeBox = newSizeHov;
+                    data->hoveredPctBox = newPctHov;
+                    SetCursor(LoadCursorW(nullptr, (newSizeHov || newPctHov) ? IDC_IBEAM : ((newHover != -1) ? IDC_HAND : IDC_SIZEALL)));
                     if (newHover != -1) {
                         for (const auto& b : data->buttons) {
                             if (b.id == newHover) {
@@ -5360,6 +6608,16 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                 break;
                             }
                         }
+                    } else if (newSizeHov && !data->isEditingSize) {
+                        DockButton fakeTip;
+                        fakeTip.rect = data->sizeBoxRect;
+                        fakeTip.tooltip = L"Image size \x2014 click to type custom size (px)";
+                        ShowPinnedBubbleTooltip(hWnd, fakeTip);
+                    } else if (newPctHov && !data->isEditingPct) {
+                        DockButton fakeTip;
+                        fakeTip.rect = data->pctBoxRect;
+                        fakeTip.tooltip = L"Zoom scale \x2014 click to type percentage (%)";
+                        ShowPinnedBubbleTooltip(hWnd, fakeTip);
                     } else if (!data->showingImgHoverTip) {
                         HidePinnedBubbleTooltip();
                     }
@@ -5374,14 +6632,28 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 data->showingImgHoverTip = false;
                 data->lastHoverMouse = { -10000, -10000 };
                 HidePinnedBubbleTooltip();
-                if (data->hoveredBtnId != -1) {
+                if (data->hoveredBtnId != -1 || data->hoveredSizeBox || data->hoveredPctBox) {
                     data->hoveredBtnId = -1;
+                    data->hoveredSizeBox = false;
+                    data->hoveredPctBox = false;
                     RenderPinnedLayeredWindow(hWnd, data);
                 }
             }
             return 0;
         case WM_LBUTTONUP:
             if (data) {
+                if (data->isDraggingSizeText) {
+                    data->isDraggingSizeText = false;
+                    if (GetCapture() == hWnd) ReleaseCapture();
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+                if (data->isDraggingPctText) {
+                    data->isDraggingPctText = false;
+                    if (GetCapture() == hWnd) ReleaseCapture();
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
                 if (data->pendingLeftDblClickToggleToolbar) {
                     data->pendingLeftDblClickToggleToolbar = false;
                     if (GetCapture() == hWnd) {
@@ -5389,13 +6661,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     }
                     POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                     if (PtInRect(&data->imgRect, pt)) {
-                        HidePinnedBubbleTooltip();
-                        data->hideToolbar = !data->hideToolbar;
-                        g_Daemon.hidePinnedToolbar = data->hideToolbar;
-                        g_Daemon.SaveSettings();
-                        UpdatePinnedWindowLayout(hWnd, data, true);
-                        RenderPinnedLayeredWindow(hWnd, data);
-                        if (PtInRect(&data->imgRect, pt)) {
+                        ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_HIDE_TOOLBAR, IsPinShiftHeld());
+                        if (IsWindow(hWnd) && PtInRect(&data->imgRect, pt)) {
                             SetTimer(hWnd, 2, 500, nullptr);
                         }
                     }
@@ -5403,7 +6670,9 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 if (data->pressedBtnId != -1) {
                     int releasedBtnId = data->pressedBtnId;
+                    bool releasedWithShift = data->pressedBtnShift || IsPinShiftHeld();
                     data->pressedBtnId = -1;
+                    data->pressedBtnShift = false;
                     ReleaseCapture();
                     POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                     bool hit = false;
@@ -5420,7 +6689,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     data->hoveredBtnId = newHover;
                     RenderPinnedLayeredWindow(hWnd, data);
                     if (hit) {
-                        ExecutePinnedWindowAction(hWnd, data, releasedBtnId);
+                        ExecutePinnedWindowAction(hWnd, data, releasedBtnId, releasedWithShift);
                     }
                     return 0;
                 }
@@ -5429,11 +6698,13 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     data->dragging = false;
                     data->dragMoved = false;
                     ReleaseCapture();
+                    POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                     if (wasMoved) {
                         UpdatePinnedWindowLayout(hWnd, data, true);
                         RenderPinnedLayeredWindow(hWnd, data);
+                    } else if (PtInRect(&data->imgRect, pt) && IsPinCtrlHeld()) {
+                        TogglePinnedWindowAnimation(hWnd, data, IsPinShiftHeld());
                     }
-                    POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                     if (PtInRect(&data->imgRect, pt)) {
                         SetTimer(hWnd, 2, 500, nullptr);
                     }
@@ -5447,11 +6718,23 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     data->showingImgHoverTip = false;
                     HidePinnedBubbleTooltip();
                 }
+                if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                if (data->isEditingPct)  CommitPinnedPctInput(hWnd, data, false);
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 if (delta != 0) {
                     float steps = (float)delta / (float)WHEEL_DELTA;
                     float factor = std::pow(1.15f, steps);
-                    ApplyPinnedWindowZoom(hWnd, data, factor);
+                    if (IsPinShiftHeld() && g_Daemon.pinnedWindows.size() > 1) {
+                        std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                        for (HWND hPin : pins) {
+                            if (hPin && IsWindow(hPin)) {
+                                PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                                if (d) ApplyPinnedWindowZoom(hPin, d, factor);
+                            }
+                        }
+                    } else {
+                        ApplyPinnedWindowZoom(hWnd, data, factor);
+                    }
                 }
             }
             return 0;
@@ -5605,8 +6888,8 @@ struct OptionsDlgState {
     HotkeyBinding hkPinOutline{ 0, 'O' };
     HotkeyBinding hkPinHideToolbar{ 0, 'H' };
     HotkeyBinding hkPinSmooth{ 0, 'S' };
-    HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
-    HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
+    HotkeyBinding hkPinSaveAs{ 0, 0 };
+    HotkeyBinding hkPinSave{ 0, 0 };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
     HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
     bool confirmed = false;
@@ -7045,8 +8328,8 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addActRow(DBTN_ACT_PIN_OUTLINE,      false, L"Show / Hide outline",           &ck.hkPinOutline,       { 0, 'O' });
     addActRow(DBTN_ACT_PIN_HIDE_TOOLBAR, false, L"Hide / Show toolbar",           &ck.hkPinHideToolbar,   { 0, 'H' });
     addActRow(DBTN_ACT_PIN_UNFILTER,     false, L"Smooth the image",              &ck.hkPinSmooth,        { 0, 'S' });
-    addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkPinSaveAs,        { MOD_CONTROL | MOD_SHIFT, 'S' });
-    addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkPinSave,          { MOD_CONTROL, 'S' });
+    addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkPinSaveAs,        { 0, 0 });
+    addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkPinSave,          { 0, 0 });
     addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkPinCopy,          { MOD_CONTROL, 'C' });
     addActRow(DBTN_ACT_CLOSE,            false, L"Close pinned image",            &ck.hkPinClose,         { 0, VK_ESCAPE });
 
@@ -7820,8 +9103,8 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkPinOutline     = { 0, 'O' };
                 st->hkPinHideToolbar = { 0, 'H' };
                 st->hkPinSmooth      = { 0, 'S' };
-                st->hkPinSaveAs     = { MOD_CONTROL | MOD_SHIFT, 'S' };
-                st->hkPinSave       = { MOD_CONTROL, 'S' };
+                st->hkPinSaveAs     = { 0, 0 };
+                st->hkPinSave       = { 0, 0 };
                 st->hkPinCopy       = { MOD_CONTROL, 'C' };
                 st->hkPinClose      = { 0, VK_ESCAPE };
 
@@ -8711,7 +9994,8 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Click W × H px indicator",      L"Type custom width×height, then press Enter (Esc cancels)");
 
     addSection(L"Custom area — Row 1: annotation tools");
-    addToolRow(OverlayTool::SelectMove,     FormatLabelWithShortcut(L"Select mode",         hkToolSelect),    L"Select, move, resize, or recolor annotations, or move selection");
+    addToolRow(OverlayTool::SelectMove,     FormatLabelWithShortcut(L"Select mode",         hkToolSelect),    L"Select, multi-select, move, resize, or recolor annotations, or move selection");
+    addRow(L"Multi-select annotations (Select mode)", L"Hold Shift + click (or Ctrl + click) annotations, Shift + drag a selection box, or press Ctrl + A to select multiple annotations at once (move, recolor, resize stroke, or delete together)");
     addToolRow(OverlayTool::Pen,            FormatLabelWithShortcut(L"Pen",                 hkToolPen),       L"Freehand pen (hold Shift while drawing for 15° straight lines)");
     addToolRow(OverlayTool::Highlighter,    FormatLabelWithShortcut(L"Stabilo highlighter", hkToolStabilo),   L"Chisel-tip marker (hold Shift while drawing for 15° straight lines)");
     addToolRow(OverlayTool::Line,           FormatLabelWithShortcut(L"Line",                hkToolLine),      L"Straight line (hold Shift for 15° angle snapping)");
@@ -8725,11 +10009,11 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addToolRow(OverlayTool::MosaicCircle,   FormatLabelWithShortcut(L"Mosaic circle",       hkToolMosaicCir), L"Pixelate elliptical area (hold Shift for 1:1 circle)");
 
     addSection(L"Custom area — Row 2: colors & stroke sizes");
-    addRow(L"5 color swatches",              L"Set active tool color or recolor selected annotation");
+    addRow(L"5 color swatches",              L"Set active tool color or recolor selected annotation(s)");
     addRow(L"S / M / L / XL buttons",        L"Preset stroke / text / mosaic sizes (2px, 4px, 8px, 14px)");
     addRow(L"Click custom size box (px)",    L"Type exact size (1–120 px) right of XL, then press Enter");
-    addRow(L"Mouse scroll wheel",            L"Adjust active or selected annotation stroke size (1–120 px)");
-    addRow(L"Delete / Backspace",            L"Delete currently selected annotation (in Select mode)");
+    addRow(L"Mouse scroll wheel",            L"Adjust active or selected annotation(s) stroke size (1–120 px)");
+    addRow(L"Delete / Backspace",            L"Delete currently selected annotation(s) (in Select mode)");
 
     addSection(L"Custom area — Row 3: toolbar actions & export shortcuts");
     addActionRow(DBTN_ACT_DRAG_HUD, false,  L"Drag toolbar handle",                                                     L"Drag 4-way arrow button to move toolbar (resets when selection moves)");
@@ -8746,28 +10030,29 @@ void PepperSnapDaemon::ShowShortcutsModal() {
 
     addSection(L"Pin on top — floating window toolbar & mechanisms");
     addRow(L"You can pin multiple image at once", L"Pin multiple captures, multi-select images in \"Open image to pin on top...\", or multi-select images in Explorer and click \"Pin on top\"");
+    addRow(L"Hold Shift + any action / key / button", L"Apply any pinned image button, mouse action, or shortcut key (except Save As) to all pinned images at once (e.g. Shift + Copy copies all pinned images to clipboard; Shift + double right-click closes all)");
     addRow(L"Animated GIF & WebP support",   L"Pinned .gif (and animated .webp) images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
-    addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", and \"Middle-click to reset size\"");
+    addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", \"Middle-click to reset size\", and Shift multi-pin hint");
     addRow(L"Drag pinned image",             L"Move floating window (temporarily hides toolbar while dragging, snaps to screen edges; image can overflow screen)");
     addRow(L"Hold Shift + drag",             L"Temporarily disable screen-edge snapping while moving");
-    addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar (status persists; default: shown)");
-    addRow(L"Double right-click pinned image", L"Close pinned image");
-    addRow(L"Scroll / Ctrl + Scroll",        L"Zoom in or out (anchored to bottom-right corner or visible screen edge)");
-    addRow(L"Middle-click pinned image",     L"Reset pinned image to 100% original pixel size (anchored to bottom-right corner)");
-    addRow(FormatLabelWithShortcut(L"Zoom out",               hkPinZoomOut),     L"Scale pinned image down via shortcut key or scroll down (anchored to bottom-right corner)");
-    addRow(FormatLabelWithShortcut(L"Zoom in",                hkPinZoomIn),      L"Scale pinned image up via shortcut key or scroll up (anchored to bottom-right corner)");
-    addRow(FormatLabelWithShortcut(L"Reset to original size", hkPinZoomReset),   L"Restore 100% original pixel size via shortcut key or middle-click (anchored to bottom-right corner)");
-    addRow(FormatLabelWithShortcut(L"Hide / Show toolbar",    hkPinHideToolbar), L"Hide or show floating toolbar on pinned image via shortcut key or double-click");
+    addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar (hold Shift to apply to all pinned images; status persists; default: shown)");
+    addRow(L"Double right-click pinned image", L"Close pinned image (hold Shift + double right-click to close all pinned images)");
+    addRow(L"Scroll / Shift + Scroll",       L"Zoom in or out (hold Shift + scroll to zoom all pinned images; anchored to bottom-right corner)");
+    addRow(L"Middle-click pinned image",     L"Reset pinned image to 100% original pixel size on click release (hold Shift + middle-click to reset all pinned images)");
+    addRow(FormatLabelWithShortcut(L"Zoom out",               hkPinZoomOut),     L"Scale pinned image down via shortcut key or scroll down (hold Shift to apply to all pinned images)");
+    addRow(FormatLabelWithShortcut(L"Zoom in",                hkPinZoomIn),      L"Scale pinned image up via shortcut key or scroll up (hold Shift to apply to all pinned images)");
+    addRow(FormatLabelWithShortcut(L"Reset to original size", hkPinZoomReset),   L"Restore 100% original pixel size via shortcut key or middle-click (hold Shift to apply to all pinned images)");
+    addRow(FormatLabelWithShortcut(L"Hide / Show toolbar",    hkPinHideToolbar), L"Hide or show floating toolbar on pinned image via shortcut key or double-click (hold Shift to apply to all pinned images)");
     addRow(L"Smooth / Unsmooth all pinned image", L"Tray menu button that cycles smoothing or unsmoothing the image filter across all pinned images (keeps tray menu open)");
     addRow(L"Show / Hide toolbar on all pinned image", L"Tray menu button that cycles showing or hiding the toolbar across all pinned images (keeps tray menu open)");
     addRow(L"Show / Hide outline on all pinned image", L"Tray menu button that cycles showing or hiding the red outline across all pinned images (keeps tray menu open)");
     addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
-    addActionRow(DBTN_ACT_PIN_OUTLINE,      false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),     L"Toggle red border outline around pinned image (status persists; default: on)");
-    addActionRow(DBTN_ACT_PIN_UNFILTER,     false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),      L"Smooth image with filter when on; unfiltered (pixelated) when off (status persists; default: off)");
-    addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image");
-    addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder");
-    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),      L"Copy pinned image to clipboard");
-    addActionRow(DBTN_ACT_CLOSE,        false, FormatLabelWithShortcut(L"Close pinned image",       hkPinClose),     L"Close pinned image (or double right-click, or click \"Close all pinned image\" in tray menu)");
+    addActionRow(DBTN_ACT_PIN_OUTLINE,      false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),     L"Toggle red border outline around pinned image (hold Shift to apply to all pinned images; default: on)");
+    addActionRow(DBTN_ACT_PIN_UNFILTER,     false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),      L"Smooth image with filter when on; unfiltered (pixelated) when off (hold Shift to apply to all pinned images; default: off)");
+    addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image (applies to single pinned image)");
+    addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder (hold Shift to quick-save all pinned images)");
+    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),      L"Copy pinned image to clipboard (hold Shift to copy all pinned images to clipboard)");
+    addActionRow(DBTN_ACT_CLOSE,        false, FormatLabelWithShortcut(L"Close pinned image",       hkPinClose),     L"Close pinned image (hold Shift to close all pinned images, or double right-click, or use tray menu)");
 
     int maxKeyW = 220;
     int maxDescW = 360;
@@ -8918,7 +10203,7 @@ void PepperSnapDaemon::Undo() {
     annotations = undoStack.back();
     undoStack.pop_back();
     RecalcNextStepNum();
-    selectedAnnotationId = -1;
+    ClearAnnotationSelection();
     if (hOverlayWnd) InvalidateRect(hOverlayWnd, nullptr, FALSE);
 }
 
@@ -8929,7 +10214,7 @@ void PepperSnapDaemon::Redo() {
     annotations = redoStack.back();
     redoStack.pop_back();
     RecalcNextStepNum();
-    selectedAnnotationId = -1;
+    ClearAnnotationSelection();
     if (hOverlayWnd) InvalidateRect(hOverlayWnd, nullptr, FALSE);
 }
 
@@ -9534,8 +10819,9 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 );
 
             for (const auto& ann : g_Daemon.annotations) {
+                bool isSel = g_Daemon.IsAnnotationSelected(ann.id);
                 if (ann.tool == OverlayTool::Highlighter) {
-                    if (ann.id == g_Daemon.selectedAnnotationId) {
+                    if (isSel) {
                         Pen selPen(Color(255, 56, 189, 248), 1.5f);
                         selPen.SetDashStyle(DashStyleDash);
                         float x = std::min(ann.startPt.x, ann.endPt.x) - 6.0f;
@@ -9545,14 +10831,13 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                         g.DrawRectangle(&selPen, x, y, w, h);
                     }
                 } else if (ann.tool != OverlayTool::MosaicSquare && ann.tool != OverlayTool::MosaicCircle) {
-                    PepperSnapDaemon::DrawVectorAnnotation(g, ann, 0, 0, ann.id == g_Daemon.selectedAnnotationId, false);
+                    PepperSnapDaemon::DrawVectorAnnotation(g, ann, 0, 0, isSel, false);
                 } else {
                     // 1. Keep the temporary outline for Mosaic Rectangle & Mosaic Circle until save so it stays as an indicator!
                     float mx0 = std::min(ann.startPt.x, ann.endPt.x);
                     float my0 = std::min(ann.startPt.y, ann.endPt.y);
                     float mw  = std::abs(ann.endPt.x - ann.startPt.x);
                     float mh  = std::abs(ann.endPt.y - ann.startPt.y);
-                    bool isSel = (ann.id == g_Daemon.selectedAnnotationId);
                     Pen whiteGuide(Color(230, 255, 255, 255), isSel ? 2.0f : 1.6f);
                     Pen dashGuide(isSel ? Color(255, 56, 189, 248) : Color(255, 239, 68, 68), isSel ? 2.0f : 1.6f);
                     dashGuide.SetDashStyle(DashStyleDash);
@@ -9571,6 +10856,19 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                         g.FillRectangle(&hFill, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
                         g.DrawRectangle(&hBorder, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
                     }
+                }
+            }
+            if (g_Daemon.dragMode == DragMode::MarqueeSelectingAnnotations && g_Daemon.hasMarqueeBox) {
+                int mx0 = std::min(g_Daemon.marqueeRect.left, g_Daemon.marqueeRect.right);
+                int my0 = std::min(g_Daemon.marqueeRect.top, g_Daemon.marqueeRect.bottom);
+                int mw0 = std::abs(g_Daemon.marqueeRect.right - g_Daemon.marqueeRect.left);
+                int mh0 = std::abs(g_Daemon.marqueeRect.bottom - g_Daemon.marqueeRect.top);
+                if (mw0 >= 2 || mh0 >= 2) {
+                    SolidBrush mqFill(Color(42, 56, 189, 248));
+                    Pen mqBorder(Color(235, 56, 189, 248), 1.5f);
+                    mqBorder.SetDashStyle(DashStyleDash);
+                    g.FillRectangle(&mqFill, mx0, my0, mw0, mh0);
+                    g.DrawRectangle(&mqBorder, mx0, my0, mw0, mh0);
                 }
             }
             if (g_Daemon.dragMode == DragMode::DrawingAnnotation) {
@@ -9627,10 +10925,12 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             // 5. Typeable Dimension Pill — anchored to the stationary (non-moving) corner when resizing!
             //    Uses the same 8px distance to the selection outline as the toolbar, and +5px horizontal offset
             //    so above-selection and inside-selection positions align identically.
+            //    Sized equal to 3 toolbar buttons (3 * 32 + 2 * 3 = 102px wide, 28px high).
             bool pillRight = false, pillBottom = false;
             g_Daemon.GetDimensionPillAnchor(pillRight, pillBottom);
-            int pillW = g_Daemon.isEditingSize ? 146 : 140;
-            int pillH = 23;
+            const int pillBtnW = 32, pillBtnH = 28, pillBtnGap = 3;
+            int pillW = pillBtnW * 3 + pillBtnGap * 2;
+            int pillH = pillBtnH;
             const int outlineGap = 8; // Same distance to selected window outline as the toolbar (8px)
             int pillX = pillRight ? (sx + sw - pillW - 5) : (sx + 5);
             pillX = std::max(5, std::min(W - pillW - 5, pillX));
@@ -9662,9 +10962,9 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
 
             std::wstring dimValStr = g_Daemon.isEditingSize
                 ? g_Daemon.editingSizeText
-                : (std::to_wstring(sw) + L" × " + std::to_wstring(sh));
+                : (std::to_wstring(sw) + L"\x00D7" + std::to_wstring(sh));
             PepperSnapDaemon::DrawEditablePillText(
-                g, monoFont, pillX + 7, pillY + 4, pillY, pillH,
+                g, g_Daemon.dimPillRect,
                 dimValStr, L" px",
                 g_Daemon.isEditingSize, g_Daemon.sizeCaretPos, g_Daemon.sizeSelAnchor
             );
@@ -9736,11 +11036,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 ? g_Daemon.editingStrokeText
                 : std::to_wstring((int)std::round(g_Daemon.activeStroke));
             PepperSnapDaemon::DrawEditablePillText(
-                g, monoFont,
-                g_Daemon.customStrokeRect.left + 6,
-                g_Daemon.customStrokeRect.top + 6,
-                g_Daemon.customStrokeRect.top,
-                g_Daemon.customStrokeRect.bottom - g_Daemon.customStrokeRect.top,
+                g, g_Daemon.customStrokeRect,
                 cValStr, L" px",
                 g_Daemon.isEditingStroke, g_Daemon.strokeCaretPos, g_Daemon.strokeSelAnchor
             );
@@ -9778,8 +11074,9 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 int drawB = std::min(H - 1, wy + wh);
                 g.DrawRectangle(&winBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
 
-                int pillW = 140;
-                int pillH = 23;
+                const int pillBtnW = 32, pillBtnH = 28, pillBtnGap = 3;
+                int pillW = pillBtnW * 3 + pillBtnGap * 2;
+                int pillH = pillBtnH;
                 const int outlineGap = 8;
                 int pillX = std::max(5, std::min(W - pillW - 5, wx + 5));
                 int pillY = (wy >= pillH + outlineGap + 4) ? (wy - outlineGap - pillH) : (wy + 6);
@@ -9790,9 +11087,10 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 Pen pillBorder(Color(160, 71, 85, 105), 1.4f);
                 g.DrawRectangle(&pillBorder, pillX, pillY, pillW, pillH);
 
-                std::wstring dimValStr = std::to_wstring(ww) + L" × " + std::to_wstring(wh);
+                RECT hoverPillRect = { pillX, pillY, pillX + pillW, pillY + pillH };
+                std::wstring dimValStr = std::to_wstring(ww) + L"\x00D7" + std::to_wstring(wh);
                 PepperSnapDaemon::DrawEditablePillText(
-                    g, monoFont, pillX + 7, pillY + 4, pillY, pillH,
+                    g, hoverPillRect,
                     dimValStr, L" px", false, 0, 0
                 );
             }
@@ -9903,10 +11201,16 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
     if (b.isColor) {
         g_Daemon.activeColor = b.swatchColor;
         g_Daemon.SaveSettings();
-        if (g_Daemon.selectedAnnotationId != -1) {
-            g_Daemon.PushUndo();
+        if (g_Daemon.HasSelectedAnnotations()) {
+            bool pushed = false;
             for (auto& a : g_Daemon.annotations) {
-                if (a.id == g_Daemon.selectedAnnotationId) a.color = b.swatchColor;
+                if (g_Daemon.IsAnnotationSelected(a.id)) {
+                    if (!pushed && a.color.GetValue() != b.swatchColor.GetValue()) {
+                        g_Daemon.PushUndo();
+                        pushed = true;
+                    }
+                    a.color = b.swatchColor;
+                }
             }
         }
         if (g_Daemon.isEditingText) {
@@ -9941,7 +11245,7 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
             g_Daemon.PushUndo();
             g_Daemon.annotations.clear();
             g_Daemon.nextStepNum = 1;
-            g_Daemon.selectedAnnotationId = -1;
+            g_Daemon.ClearAnnotationSelection();
             if (IsWindow(hWnd)) InvalidateRect(hWnd, nullptr, FALSE);
             return;
         case DBTN_ACT_CLOSE:     g_Daemon.CloseRegionSnipOverlay(); return;
@@ -10121,7 +11425,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.isEditingSize = true;
                     g_Daemon.editingSizeText = std::to_wstring(sw) + L"x" + std::to_wstring(sh);
                 }
-                size_t idx = PepperSnapDaemon::HitTestMonoIndex(mx, g_Daemon.dimPillRect.left + 7, g_Daemon.editingSizeText);
+                size_t idx = PepperSnapDaemon::HitTestMonoIndex(mx, g_Daemon.dimPillRect, g_Daemon.editingSizeText, L" px");
                 const std::wstring& s = g_Daemon.editingSizeText;
                 if (idx < s.size() && (s[idx] >= L'0' && s[idx] <= L'9')) {
                     size_t l = idx, r = idx;
@@ -10267,7 +11571,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.isEditingStroke = true;
                     g_Daemon.editingStrokeText = std::to_wstring((int)std::round(g_Daemon.activeStroke));
                 }
-                size_t idx = PepperSnapDaemon::HitTestMonoIndex(mx, g_Daemon.customStrokeRect.left + 6, g_Daemon.editingStrokeText);
+                size_t idx = PepperSnapDaemon::HitTestMonoIndex(mx, g_Daemon.customStrokeRect, g_Daemon.editingStrokeText, L" px");
                 g_Daemon.strokeCaretPos = idx;
                 if (!shiftHeld) g_Daemon.strokeSelAnchor = idx;
                 g_Daemon.isDraggingStrokeText = true;
@@ -10291,7 +11595,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.isEditingSize = true;
                     g_Daemon.editingSizeText = std::to_wstring(sw) + L"x" + std::to_wstring(sh);
                 }
-                size_t idx = PepperSnapDaemon::HitTestMonoIndex(mx, g_Daemon.dimPillRect.left + 7, g_Daemon.editingSizeText);
+                size_t idx = PepperSnapDaemon::HitTestMonoIndex(mx, g_Daemon.dimPillRect, g_Daemon.editingSizeText, L" px");
                 g_Daemon.sizeCaretPos = idx;
                 if (!shiftHeld) g_Daemon.sizeSelAnchor = idx;
                 g_Daemon.isDraggingSizeText = true;
@@ -10377,21 +11681,60 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 if (PtInRect(&normSel, pt)) {
                     autoHideFrameStripOnFocus();
                     if (g_Daemon.activeTool == OverlayTool::SelectMove) {
+                        bool ctrlHeld = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) || ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
+                        bool multiMod = shiftHeld || ctrlHeld;
                         DragMode annDragMode = DragMode::MovingAnnotation;
                         int hitId = g_Daemon.HitTestAnnotation((float)mx, (float)my, &annDragMode);
-                        g_Daemon.selectedAnnotationId = hitId;
+                        g_Daemon.moveAnnUndoPushed = false;
+                        g_Daemon.clickedAlreadySelectedAnn = false;
+                        g_Daemon.clickedAlreadySelectedAnnId = -1;
                         if (hitId != -1) {
-                            g_Daemon.PushUndo();
-                            g_Daemon.dragMode = annDragMode;
-                            for (const auto& a : g_Daemon.annotations) {
-                                if (a.id == hitId) {
-                                    g_Daemon.activeStroke = a.strokeWidth;
-                                    g_Daemon.activeColor = a.color;
-                                    g_Daemon.moveAnnOffset = { (float)mx - a.startPt.x, (float)my - a.startPt.y };
-                                    break;
+                            if (multiMod) {
+                                g_Daemon.ToggleAnnotationSelection(hitId);
+                                if (g_Daemon.IsAnnotationSelected(hitId)) {
+                                    g_Daemon.dragMode = DragMode::MovingAnnotation;
+                                    g_Daemon.dragStartPt = pt;
+                                    for (const auto& a : g_Daemon.annotations) {
+                                        if (a.id == hitId) {
+                                            g_Daemon.activeStroke = a.strokeWidth;
+                                            g_Daemon.activeColor = a.color;
+                                            g_Daemon.moveAnnOffset = { (float)mx - a.startPt.x, (float)my - a.startPt.y };
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    g_Daemon.dragMode = DragMode::None;
+                                }
+                            } else {
+                                if (g_Daemon.IsAnnotationSelected(hitId) && g_Daemon.selectedAnnotationIds.size() > 1) {
+                                    // Keep the multi-selection intact so dragging moves all selected annotations together;
+                                    // if the user releases without dragging, select only this clicked annotation.
+                                    g_Daemon.selectedAnnotationId = hitId;
+                                    g_Daemon.clickedAlreadySelectedAnn = true;
+                                    g_Daemon.clickedAlreadySelectedAnnId = hitId;
+                                    g_Daemon.dragMode = DragMode::MovingAnnotation;
+                                } else {
+                                    g_Daemon.SelectSingleAnnotation(hitId);
+                                    g_Daemon.dragMode = annDragMode;
+                                }
+                                g_Daemon.dragStartPt = pt;
+                                for (const auto& a : g_Daemon.annotations) {
+                                    if (a.id == hitId) {
+                                        g_Daemon.activeStroke = a.strokeWidth;
+                                        g_Daemon.activeColor = a.color;
+                                        g_Daemon.moveAnnOffset = { (float)mx - a.startPt.x, (float)my - a.startPt.y };
+                                        break;
+                                    }
                                 }
                             }
+                        } else if (multiMod) {
+                            // Shift + drag (or Ctrl + drag) on empty space inside custom area starts marquee multi-selection!
+                            g_Daemon.dragMode = DragMode::MarqueeSelectingAnnotations;
+                            g_Daemon.marqueeStartPt = pt;
+                            g_Daemon.marqueeRect = { pt.x, pt.y, pt.x, pt.y };
+                            g_Daemon.hasMarqueeBox = true;
                         } else {
+                            g_Daemon.ClearAnnotationSelection();
                             g_Daemon.dragMode = DragMode::MovingSelection;
                             g_Daemon.dragStartPt = pt;
                             g_Daemon.dragOrigRect = normSel;
@@ -10440,7 +11783,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     }
 
                     // Start drawing shape / Pen / Arrow / NumberArrow / Pixelate
-                    g_Daemon.selectedAnnotationId = -1;
+                    g_Daemon.ClearAnnotationSelection();
                     g_Daemon.dragMode = DragMode::DrawingAnnotation;
                     g_Daemon.draftAnn = Annotation();
                     g_Daemon.draftAnn.id = g_Daemon.nextAnnotationId++;
@@ -10464,7 +11807,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             // 4. Outside Selection Box -> Enter PendingOutsideSelection
             // (Ctrl + click automatic window selection executes on WM_LBUTTONUP release if not dragged;
             //  manual region creation starts in WM_MOUSEMOVE only if dragged >= 5px)
-            g_Daemon.selectedAnnotationId = -1;
+            g_Daemon.ClearAnnotationSelection();
             g_Daemon.dragMode = DragMode::PendingOutsideSelection;
             g_Daemon.dragStartPt = pt;
             SetCapture(hWnd);
@@ -10512,14 +11855,14 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             }
             if (g_Daemon.isDraggingStrokeText) {
                 g_Daemon.strokeCaretPos = PepperSnapDaemon::HitTestMonoIndex(
-                    mx, g_Daemon.customStrokeRect.left + 6, g_Daemon.editingStrokeText
+                    mx, g_Daemon.customStrokeRect, g_Daemon.editingStrokeText, L" px"
                 );
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
             if (g_Daemon.isDraggingSizeText) {
                 g_Daemon.sizeCaretPos = PepperSnapDaemon::HitTestMonoIndex(
-                    mx, g_Daemon.dimPillRect.left + 7, g_Daemon.editingSizeText
+                    mx, g_Daemon.dimPillRect, g_Daemon.editingSizeText, L" px"
                 );
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
@@ -10655,7 +11998,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         g_Daemon.undoStack.clear();
                         g_Daemon.redoStack.clear();
                         g_Daemon.nextStepNum = 1;
-                        g_Daemon.selectedAnnotationId = -1;
+                        g_Daemon.ClearAnnotationSelection();
                         g_Daemon.dragMode = DragMode::CreatingSelection;
                         int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
                         int startY = std::max(0, std::min(g_Daemon.vScreenH, (int)g_Daemon.dragStartPt.y));
@@ -10855,14 +12198,41 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.draftAnn.endPt = { targetX, targetY };
                     break;
                 }
+                case DragMode::MarqueeSelectingAnnotations: {
+                    g_Daemon.marqueeRect = {
+                        std::min((LONG)g_Daemon.marqueeStartPt.x, (LONG)clampedMx),
+                        std::min((LONG)g_Daemon.marqueeStartPt.y, (LONG)clampedMy),
+                        std::max((LONG)g_Daemon.marqueeStartPt.x, (LONG)clampedMx),
+                        std::max((LONG)g_Daemon.marqueeStartPt.y, (LONG)clampedMy)
+                    };
+                    g_Daemon.hasMarqueeBox = true;
+                    g_Daemon.selectedAnnotationIds.clear();
+                    g_Daemon.selectedAnnotationId = -1;
+                    for (const auto& a : g_Daemon.annotations) {
+                        if (PepperSnapDaemon::AnnotationIntersectsRect(a, g_Daemon.marqueeRect)) {
+                            g_Daemon.selectedAnnotationIds.push_back(a.id);
+                            g_Daemon.selectedAnnotationId = a.id;
+                        }
+                    }
+                    break;
+                }
                 case DragMode::MovingAnnotation:
                 case DragMode::DraggingAnnotationStart:
                 case DragMode::DraggingAnnotationEnd: {
                     bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    for (auto& a : g_Daemon.annotations) {
-                        if (a.id == g_Daemon.selectedAnnotationId) {
-                            if (g_Daemon.dragMode == DragMode::DraggingAnnotationStart ||
-                                g_Daemon.dragMode == DragMode::DraggingAnnotationEnd) {
+                    if (!g_Daemon.moveAnnUndoPushed) {
+                        if (std::abs(mx - g_Daemon.dragStartPt.x) >= 1 || std::abs(my - g_Daemon.dragStartPt.y) >= 1) {
+                            g_Daemon.PushUndo();
+                            g_Daemon.moveAnnUndoPushed = true;
+                            g_Daemon.clickedAlreadySelectedAnn = false;
+                        } else {
+                            break;
+                        }
+                    }
+                    if (g_Daemon.dragMode == DragMode::DraggingAnnotationStart ||
+                        g_Daemon.dragMode == DragMode::DraggingAnnotationEnd) {
+                        for (auto& a : g_Daemon.annotations) {
+                            if (a.id == g_Daemon.selectedAnnotationId) {
                                 PointF2D anchor = (g_Daemon.dragMode == DragMode::DraggingAnnotationStart) ? a.endPt : a.startPt;
                                 float tx = (float)mx, ty = (float)my;
                                 if (shiftHeld) {
@@ -10882,16 +12252,30 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                 }
                                 if (g_Daemon.dragMode == DragMode::DraggingAnnotationStart) a.startPt = { tx, ty };
                                 else a.endPt = { tx, ty };
-                            } else {
-                                float adx = ((float)mx - g_Daemon.moveAnnOffset.x) - a.startPt.x;
-                                float ady = ((float)my - g_Daemon.moveAnnOffset.y) - a.startPt.y;
-                                a.startPt.x += adx;
-                                a.startPt.y += ady;
-                                a.endPt.x   += adx;
-                                a.endPt.y   += ady;
-                                for (auto& p : a.points) { p.x += adx; p.y += ady; }
+                                break;
                             }
-                            break;
+                        }
+                    } else {
+                        float adx = 0.0f, ady = 0.0f;
+                        bool foundPrimary = false;
+                        for (const auto& a : g_Daemon.annotations) {
+                            if (a.id == g_Daemon.selectedAnnotationId) {
+                                adx = ((float)mx - g_Daemon.moveAnnOffset.x) - a.startPt.x;
+                                ady = ((float)my - g_Daemon.moveAnnOffset.y) - a.startPt.y;
+                                foundPrimary = true;
+                                break;
+                            }
+                        }
+                        if (foundPrimary) {
+                            for (auto& a : g_Daemon.annotations) {
+                                if (g_Daemon.IsAnnotationSelected(a.id)) {
+                                    a.startPt.x += adx;
+                                    a.startPt.y += ady;
+                                    a.endPt.x   += adx;
+                                    a.endPt.y   += ady;
+                                    for (auto& p : a.points) { p.x += adx; p.y += ady; }
+                                }
+                            }
                         }
                     }
                     break;
@@ -11041,13 +12425,22 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                             g_Daemon.undoStack.clear();
                             g_Daemon.redoStack.clear();
                             g_Daemon.nextStepNum = 1;
-                            g_Daemon.selectedAnnotationId = -1;
+                            g_Daemon.ClearAnnotationSelection();
                         }
                     }
                     g_Daemon.UpdateOverlayCursor(mx, my);
+                } else if (g_Daemon.dragMode == DragMode::MarqueeSelectingAnnotations) {
+                    g_Daemon.hasMarqueeBox = false;
+                } else if (g_Daemon.dragMode == DragMode::MovingAnnotation &&
+                           g_Daemon.clickedAlreadySelectedAnn && !g_Daemon.moveAnnUndoPushed) {
+                    g_Daemon.SelectSingleAnnotation(g_Daemon.clickedAlreadySelectedAnnId);
+                    g_Daemon.clickedAlreadySelectedAnn = false;
+                    g_Daemon.clickedAlreadySelectedAnnId = -1;
                 } else if (g_Daemon.dragMode == DragMode::ResizingFrameStrip) {
                     g_Daemon.SaveSettings();
                 }
+                g_Daemon.moveAnnUndoPushed = false;
+                g_Daemon.clickedAlreadySelectedAnn = false;
                 g_Daemon.dragMode = DragMode::None;
                 ReleaseCapture();
                 InvalidateRect(hWnd, nullptr, FALSE);
@@ -11186,15 +12579,25 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 g_Daemon.CloseRegionSnipOverlay();
                 return 0;
             }
-            if ((wParam == VK_DELETE || wParam == VK_BACK) && g_Daemon.selectedAnnotationId != -1) {
+            if ((wParam == VK_DELETE || wParam == VK_BACK) && g_Daemon.HasSelectedAnnotations()) {
                 g_Daemon.PushUndo();
                 g_Daemon.annotations.erase(
                     std::remove_if(g_Daemon.annotations.begin(), g_Daemon.annotations.end(),
-                                   [](const Annotation& a) { return a.id == g_Daemon.selectedAnnotationId; }),
+                                   [](const Annotation& a) { return g_Daemon.IsAnnotationSelected(a.id); }),
                     g_Daemon.annotations.end()
                 );
                 g_Daemon.RecalcNextStepNum();
+                g_Daemon.ClearAnnotationSelection();
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            if (ctrl && !shift && wParam == 'A' && g_Daemon.hasSelection && g_Daemon.activeTool == OverlayTool::SelectMove) {
+                g_Daemon.selectedAnnotationIds.clear();
                 g_Daemon.selectedAnnotationId = -1;
+                for (const auto& a : g_Daemon.annotations) {
+                    g_Daemon.selectedAnnotationIds.push_back(a.id);
+                    g_Daemon.selectedAnnotationId = a.id;
+                }
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
@@ -12066,9 +13469,78 @@ static Bitmap* DecodePepperSnapLosslessWebP(const std::wstring& filePath) {
     return nullptr;
 }
 
+struct WebPAnimFrameInfo {
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    int durationMs = 80;
+    bool disposeBg = false;
+    bool noBlend = false;
+};
+
+static bool ParseWebPAnimationHeader(const std::wstring& filePath, int& outCanvasW, int& outCanvasH, std::vector<WebPAnimFrameInfo>& outAnmfList) {
+    outCanvasW = 0;
+    outCanvasH = 0;
+    outAnmfList.clear();
+
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+    DWORD fileSize = GetFileSize(hFile, nullptr);
+    if (fileSize < 30 || fileSize == INVALID_FILE_SIZE || fileSize > 256 * 1024 * 1024) {
+        CloseHandle(hFile);
+        return false;
+    }
+    std::vector<BYTE> buf(fileSize);
+    DWORD bytesRead = 0;
+    bool ok = ReadFile(hFile, buf.data(), fileSize, &bytesRead, nullptr) && (bytesRead == fileSize);
+    CloseHandle(hFile);
+    if (!ok) return false;
+
+    if (memcmp(buf.data(), "RIFF", 4) != 0 || memcmp(buf.data() + 8, "WEBP", 4) != 0) return false;
+
+    auto readU24LE = [](const BYTE* p) -> int {
+        return (int)p[0] | ((int)p[1] << 8) | ((int)p[2] << 16);
+    };
+
+    size_t pos = 12;
+    while (pos + 8 <= buf.size()) {
+        uint32_t chunkSize = 0;
+        memcpy(&chunkSize, buf.data() + pos + 4, 4);
+        size_t payloadPos = pos + 8;
+        if (payloadPos + chunkSize > buf.size()) break;
+
+        if (memcmp(buf.data() + pos, "VP8X", 4) == 0 && chunkSize >= 10) {
+            const BYTE* p = buf.data() + payloadPos;
+            outCanvasW = readU24LE(p + 4) + 1;
+            outCanvasH = readU24LE(p + 7) + 1;
+        } else if (memcmp(buf.data() + pos, "ANMF", 4) == 0 && chunkSize >= 16) {
+            const BYTE* p = buf.data() + payloadPos;
+            WebPAnimFrameInfo info;
+            info.x = readU24LE(p + 0) * 2;
+            info.y = readU24LE(p + 3) * 2;
+            info.w = readU24LE(p + 6) + 1;
+            info.h = readU24LE(p + 9) + 1;
+            info.durationMs = readU24LE(p + 12);
+            if (info.durationMs <= 10) info.durationMs = 80;
+            info.durationMs = std::max(20, std::min(60000, info.durationMs));
+            BYTE flags = p[15];
+            info.disposeBg = (flags & 0x01) != 0;
+            info.noBlend   = (flags & 0x02) != 0;
+            outAnmfList.push_back(info);
+        }
+        pos += 8 + (size_t)chunkSize + ((size_t)chunkSize & 1u);
+    }
+    return (outCanvasW > 0 && outCanvasH > 0);
+}
+
 static bool LoadImageFramesWithWIC(const std::wstring& filePath, std::vector<Bitmap*>& outFrames, std::vector<int>& outDelaysMs) {
     HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     bool needCoUninit = SUCCEEDED(hrCo);
+
+    int webpCanvasW = 0, webpCanvasH = 0;
+    std::vector<WebPAnimFrameInfo> webpAnmf;
+    ParseWebPAnimationHeader(filePath, webpCanvasW, webpCanvasH, webpAnmf);
 
     const CLSID clsidWicFactory2  = { 0x317d06e8, 0x5f24, 0x433d, { 0xbd, 0xf7, 0x79, 0xce, 0x68, 0xd8, 0xab, 0xc2 } };
     const CLSID clsidWicFactory1  = { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
@@ -12105,12 +13577,33 @@ static bool LoadImageFramesWithWIC(const std::wstring& filePath, std::vector<Bit
         if (pDecoder) {
             UINT frameCount = 0;
             if (FAILED(pDecoder->GetFrameCount(&frameCount)) || frameCount < 1) frameCount = 1;
+
+            int canvasW = (webpCanvasW > 0) ? webpCanvasW : 0;
+            int canvasH = (webpCanvasH > 0) ? webpCanvasH : 0;
+            std::vector<DWORD> accumCanvas;
+            if (frameCount > 1 && canvasW > 0 && canvasH > 0) {
+                accumCanvas.assign((size_t)canvasW * (size_t)canvasH, 0u);
+            }
+
             for (UINT i = 0; i < frameCount; ++i) {
                 IWICBitmapFrameDecode* pFrame = nullptr;
                 if (SUCCEEDED(pDecoder->GetFrame(i, &pFrame)) && pFrame) {
                     UINT w = 0, h = 0;
                     if (SUCCEEDED(pFrame->GetSize(&w, &h)) && w > 0 && h > 0) {
-                        int delayMs = 80;
+                        if (canvasW <= 0 || canvasH <= 0) {
+                            canvasW = (int)w;
+                            canvasH = (int)h;
+                            if (frameCount > 1) {
+                                accumCanvas.assign((size_t)canvasW * (size_t)canvasH, 0u);
+                            }
+                        }
+
+                        int delayMs = (i < webpAnmf.size()) ? webpAnmf[i].durationMs : 80;
+                        int frameX  = (i < webpAnmf.size()) ? webpAnmf[i].x : 0;
+                        int frameY  = (i < webpAnmf.size()) ? webpAnmf[i].y : 0;
+                        bool disposeBg = (i < webpAnmf.size()) ? webpAnmf[i].disposeBg : false;
+                        bool noBlend   = (i < webpAnmf.size()) ? webpAnmf[i].noBlend   : false;
+
                         if (frameCount > 1) {
                             IWICMetadataQueryReader* pMeta = nullptr;
                             if (SUCCEEDED(pFrame->GetMetadataQueryReader(&pMeta)) && pMeta) {
@@ -12132,20 +13625,99 @@ static bool LoadImageFramesWithWIC(const std::wstring& filePath, std::vector<Bit
                         IWICFormatConverter* pConv = nullptr;
                         if (SUCCEEDED(pFactory->CreateFormatConverter(&pConv)) && pConv) {
                             if (SUCCEEDED(pConv->Initialize(pFrame, fmt32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
-                                Bitmap* frameBmp = new Bitmap((INT)w, (INT)h, PixelFormat32bppARGB);
-                                Rect lockRc(0, 0, (INT)w, (INT)h);
-                                BitmapData bd = {};
-                                if (frameBmp->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Ok) {
-                                    HRESULT hrCopy = pConv->CopyPixels(nullptr, (UINT)bd.Stride, (UINT)((size_t)bd.Stride * h), (BYTE*)bd.Scan0);
-                                    frameBmp->UnlockBits(&bd);
+                                bool useCanvasComp = (frameCount > 1 && !accumCanvas.empty() && canvasW > 0 && canvasH > 0 &&
+                                                      (!webpAnmf.empty() || (int)w != canvasW || (int)h != canvasH));
+                                if (useCanvasComp) {
+                                    std::vector<DWORD> rawPx((size_t)w * (size_t)h, 0u);
+                                    HRESULT hrCopy = pConv->CopyPixels(nullptr, w * 4u, (UINT)(rawPx.size() * 4u), (BYTE*)rawPx.data());
                                     if (SUCCEEDED(hrCopy)) {
-                                        outFrames.push_back(frameBmp);
-                                        outDelaysMs.push_back(delayMs);
+                                        // If WIC already returned a full-canvas frame while ANMF had an offset, place at (0,0)
+                                        int dstOffX = ((int)w == canvasW && (int)h == canvasH) ? 0 : frameX;
+                                        int dstOffY = ((int)w == canvasW && (int)h == canvasH) ? 0 : frameY;
+                                        for (UINT sy = 0; sy < h; ++sy) {
+                                            int dy = dstOffY + (int)sy;
+                                            if (dy < 0 || dy >= canvasH) continue;
+                                            const DWORD* srcRow = rawPx.data() + (size_t)sy * w;
+                                            DWORD* dstRow = accumCanvas.data() + (size_t)dy * canvasW;
+                                            for (UINT sx = 0; sx < w; ++sx) {
+                                                int dx = dstOffX + (int)sx;
+                                                if (dx < 0 || dx >= canvasW) continue;
+                                                DWORD sp = srcRow[sx];
+                                                if (noBlend || i == 0) {
+                                                    dstRow[dx] = sp;
+                                                } else {
+                                                    DWORD sa = (sp >> 24) & 0xFFu;
+                                                    if (sa == 255u) {
+                                                        dstRow[dx] = sp;
+                                                    } else if (sa > 0u) {
+                                                        DWORD dp = dstRow[dx];
+                                                        DWORD da = (dp >> 24) & 0xFFu;
+                                                        if (da == 0u) {
+                                                            dstRow[dx] = sp;
+                                                        } else {
+                                                            DWORD invSa = 255u - sa;
+                                                            DWORD outA = sa + (da * invSa + 127u) / 255u;
+                                                            if (outA > 0u) {
+                                                                DWORD sr = (sp >> 16) & 0xFFu, sg = (sp >> 8) & 0xFFu, sb = sp & 0xFFu;
+                                                                DWORD dr = (dp >> 16) & 0xFFu, dg = (dp >> 8) & 0xFFu, db = dp & 0xFFu;
+                                                                DWORD outR = (sr * sa * 255u + dr * da * invSa + (outA * 255u) / 2u) / (outA * 255u);
+                                                                DWORD outG = (sg * sa * 255u + dg * da * invSa + (outA * 255u) / 2u) / (outA * 255u);
+                                                                DWORD outB = (sb * sa * 255u + db * da * invSa + (outA * 255u) / 2u) / (outA * 255u);
+                                                                dstRow[dx] = (std::min((DWORD)255, outA) << 24) |
+                                                                             (std::min((DWORD)255, outR) << 16) |
+                                                                             (std::min((DWORD)255, outG) << 8)  |
+                                                                             std::min((DWORD)255, outB);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Bitmap* frameBmp = new Bitmap(canvasW, canvasH, PixelFormat32bppARGB);
+                                        Rect lockRc(0, 0, canvasW, canvasH);
+                                        BitmapData bd = {};
+                                        if (frameBmp->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Ok) {
+                                            for (int y = 0; y < canvasH; ++y) {
+                                                memcpy((BYTE*)bd.Scan0 + (size_t)y * bd.Stride,
+                                                       accumCanvas.data() + (size_t)y * canvasW,
+                                                       (size_t)canvasW * 4u);
+                                            }
+                                            frameBmp->UnlockBits(&bd);
+                                            outFrames.push_back(frameBmp);
+                                            outDelaysMs.push_back(delayMs);
+                                        } else {
+                                            delete frameBmp;
+                                        }
+
+                                        if (disposeBg) {
+                                            for (UINT sy = 0; sy < h; ++sy) {
+                                                int dy = dstOffY + (int)sy;
+                                                if (dy < 0 || dy >= canvasH) continue;
+                                                DWORD* dstRow = accumCanvas.data() + (size_t)dy * canvasW;
+                                                for (UINT sx = 0; sx < w; ++sx) {
+                                                    int dx = dstOffX + (int)sx;
+                                                    if (dx >= 0 && dx < canvasW) dstRow[dx] = 0u;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Bitmap* frameBmp = new Bitmap((INT)w, (INT)h, PixelFormat32bppARGB);
+                                    Rect lockRc(0, 0, (INT)w, (INT)h);
+                                    BitmapData bd = {};
+                                    if (frameBmp->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Ok) {
+                                        HRESULT hrCopy = pConv->CopyPixels(nullptr, (UINT)bd.Stride, (UINT)((size_t)bd.Stride * h), (BYTE*)bd.Scan0);
+                                        frameBmp->UnlockBits(&bd);
+                                        if (SUCCEEDED(hrCopy)) {
+                                            outFrames.push_back(frameBmp);
+                                            outDelaysMs.push_back(delayMs);
+                                        } else {
+                                            delete frameBmp;
+                                        }
                                     } else {
                                         delete frameBmp;
                                     }
-                                } else {
-                                    delete frameBmp;
                                 }
                             }
                             pConv->Release();
@@ -12409,7 +13981,12 @@ void PepperSnapDaemon::SelectOverlayFrame(size_t frameIdx) {
         g.FillRectangle(&bg, drawX, drawY, drawW, drawH);
         ImageAttributes ia;
         ia.SetWrapMode(WrapModeTileFlipXY);
-        g.DrawImage(frameBmp, Rect(drawX, drawY, drawW, drawH), 0, 0, imgW, imgH, UnitPixel, &ia);
+        double fitScale = std::min((double)drawW / (double)imgW, (double)drawH / (double)imgH);
+        int fitW = std::max(1, std::min(drawW, (int)std::round(imgW * fitScale)));
+        int fitH = std::max(1, std::min(drawH, (int)std::round(imgH * fitScale)));
+        int fitX = drawX + (drawW - fitW) / 2;
+        int fitY = drawY + (drawH - fitH) / 2;
+        g.DrawImage(frameBmp, Rect(fitX, fitY, fitW, fitH), 0, 0, imgW, imgH, UnitPixel, &ia);
         BuildOverlaySurfaceCache();
     }
     if (hOverlayWnd && IsWindow(hOverlayWnd)) {
@@ -12729,67 +14306,309 @@ void PepperSnapDaemon::OpenImageIntoOverlay() {
     }
 }
 
-void PepperSnapDaemon::OpenImageFileToPinOnTop(const std::wstring& filePath) {
-    if (filePath.empty()) return;
-    std::vector<Bitmap*> frames;
-    std::vector<int> delays;
-    if (!LoadImageFramesFromFile(filePath, frames, delays) || frames.empty()) return;
+static RECT GetPinnedSlotScreenBounds(int imgX, int imgY, int dispW, int dispH, bool hideToolbar, const RECT& rcScreen) {
+    const int stripW = 242;
+    const int totalHudH = 28 * 2 + 3;
+    const int hudGap = 8;
+    int sImgL = imgX;
+    int sImgT = imgY;
+    int sImgR = sImgL + dispW;
+    int sImgB = sImgT + dispH;
+    if (hideToolbar) {
+        return { sImgL, sImgT, sImgR, sImgB };
+    }
+    int sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR));
+    int sStripT = sImgB + hudGap;
+    bool hasSpaceBelow = (sImgB + hudGap + totalHudH <= rcScreen.bottom - 6) && (sImgB + hudGap >= rcScreen.top + 6);
+    bool hasSpaceAbove = (sImgT - hudGap - totalHudH >= rcScreen.top + 6) && (sImgT - hudGap <= rcScreen.bottom - 6);
+    if (hasSpaceBelow) {
+        sStripT = sImgB + hudGap;
+    } else if (hasSpaceAbove) {
+        sStripT = sImgT - hudGap - totalHudH;
+    } else {
+        sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR - 8));
+        sStripT = std::max((int)rcScreen.top + 6, std::min((int)rcScreen.bottom - totalHudH - 6, sImgB - totalHudH - 8));
+    }
+    int sStripL = sStripR - stripW;
+    int sStripB = sStripT + totalHudH;
+    return {
+        std::min(sImgL, sStripL),
+        std::min(sImgT, sStripT),
+        std::max(sImgR, sStripR),
+        std::max(sImgB, sStripB)
+    };
+}
 
-    Bitmap* memBmp = frames[0];
-    int imgW = (int)memBmp->GetWidth();
-    int imgH = (int)memBmp->GetHeight();
-    if (imgW <= 0 || imgH <= 0) {
-        for (Bitmap* f : frames) delete f;
+static void FindNonOverlappingPinPosition(
+    const std::vector<HWND>& existingPins,
+    int dispW,
+    int dispH,
+    bool hideToolbar,
+    const RECT& rcScreen,
+    int& outImgX,
+    int& outImgY
+) {
+    const int stripW = 242;
+    const int hudExtraH = hideToolbar ? 0 : (8 + 28 * 2 + 3);
+    const int pad = 14;
+
+    int leftOverhang = hideToolbar ? 0 : std::max(0, stripW - dispW);
+    int minImgX = rcScreen.left + 12 + leftOverhang;
+    int maxImgX = std::max(minImgX, (int)rcScreen.right - 12 - dispW);
+    int minImgY = rcScreen.top + 12;
+    int maxImgY = std::max(minImgY, (int)rcScreen.bottom - 12 - dispH - hudExtraH);
+
+    int centerImgX = std::max(minImgX, std::min(maxImgX, (int)(rcScreen.left + ((rcScreen.right - rcScreen.left) - dispW) / 2)));
+    int centerImgY = std::max(minImgY, std::min(maxImgY, (int)(rcScreen.top + ((rcScreen.bottom - rcScreen.top) - (dispH + hudExtraH)) / 2)));
+
+    std::vector<RECT> occupied;
+    for (HWND hp : existingPins) {
+        if (!hp || !IsWindow(hp)) continue;
+        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+        if (!pData || !pData->bmp) continue;
+        int pW = 32, pH = 32;
+        GetPinnedScaledDims(pData, pW, pH);
+        RECT r = GetPinnedSlotScreenBounds(pData->screenImgX, pData->screenImgY, pW, pH, pData->hideToolbar, rcScreen);
+        r.left   -= pad;
+        r.top    -= pad;
+        r.right  += pad;
+        r.bottom += pad;
+        occupied.push_back(r);
+    }
+
+    if (occupied.empty()) {
+        outImgX = centerImgX;
+        outImgY = centerImgY;
         return;
     }
 
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
-    float initScale = 1.0f;
-    int maxW = (int)(sw * 0.85);
-    int maxH = (int)(sh * 0.80);
-    if (imgW > maxW || imgH > maxH) {
-        initScale = (float)std::min((double)maxW / (double)imgW, (double)maxH / (double)imgH);
-        initScale = std::max(0.25f, initScale);
-    }
-
-    int dispW = (int)std::round(imgW * initScale);
-    int dispH = (int)std::round(imgH * initScale);
-    int px = (sw - dispW) / 2;
-    int py = std::max(20, (sh - (dispH + 36)) / 2);
-
-    for (int step = 0; step < 32; ++step) {
-        bool collision = false;
-        int cx = px + dispW / 2;
-        int cy = py + dispH / 2;
-        for (HWND hp : pinnedWindows) {
-            if (!hp || !IsWindow(hp)) continue;
-            PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
-            if (!pData) continue;
-            int pW = 32, pH = 32;
-            GetPinnedScaledDims(pData, pW, pH);
-            int pcx = pData->screenImgX + pW / 2;
-            int pcy = pData->screenImgY + pH / 2;
-            if ((std::abs(pData->screenImgX - px) < 20 && std::abs(pData->screenImgY - py) < 20) ||
-                (std::abs(pcx - cx) < 20 && std::abs(pcy - cy) < 20)) {
-                collision = true;
-                break;
+    auto calcOverlapArea = [&](int candX, int candY) -> long long {
+        RECT cand = GetPinnedSlotScreenBounds(candX, candY, dispW, dispH, hideToolbar, rcScreen);
+        long long totalOverlap = 0;
+        for (const RECT& occ : occupied) {
+            RECT inter = {0};
+            if (IntersectRect(&inter, &cand, &occ)) {
+                totalOverlap += (long long)(inter.right - inter.left) * (long long)(inter.bottom - inter.top);
             }
         }
-        if (!collision) break;
-        px += 28;
-        py += 28;
-        if (px + 64 > sw || py + 64 > sh) {
-            px = std::max(20, (sw - dispW) / 4 + (step % 5) * 24);
-            py = std::max(20, (sh - (dispH + 36)) / 4 + (step % 5) * 24);
+        return totalOverlap;
+    };
+
+    // 1. Try smart relative positions adjacent to existing pinned windows (right, left, below, above)
+    std::vector<POINT> candidates;
+    candidates.push_back({ centerImgX, centerImgY });
+    for (auto it = existingPins.rbegin(); it != existingPins.rend(); ++it) {
+        HWND hp = *it;
+        if (!hp || !IsWindow(hp)) continue;
+        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+        if (!pData || !pData->bmp) continue;
+        int pW = 32, pH = 32;
+        GetPinnedScaledDims(pData, pW, pH);
+        RECT pb = GetPinnedSlotScreenBounds(pData->screenImgX, pData->screenImgY, pW, pH, pData->hideToolbar, rcScreen);
+        int rightX = pb.right + pad + leftOverhang;
+        int leftX  = pb.left - pad - dispW;
+        int belowY = pb.bottom + pad;
+        int aboveY = pb.top - pad - dispH - hudExtraH;
+        if (rightX >= minImgX && rightX <= maxImgX) {
+            candidates.push_back({ rightX, std::max(minImgY, std::min(maxImgY, pData->screenImgY)) });
+        }
+        if (leftX >= minImgX && leftX <= maxImgX) {
+            candidates.push_back({ leftX, std::max(minImgY, std::min(maxImgY, pData->screenImgY)) });
+        }
+        if (belowY >= minImgY && belowY <= maxImgY) {
+            candidates.push_back({ std::max(minImgX, std::min(maxImgX, pData->screenImgX)), belowY });
+        }
+        if (aboveY >= minImgY && aboveY <= maxImgY) {
+            candidates.push_back({ std::max(minImgX, std::min(maxImgX, pData->screenImgX)), aboveY });
         }
     }
 
-    if (frames.size() > 1) {
-        CreatePinnedWindow(memBmp, px, py, initScale, std::move(frames), std::move(delays));
-    } else {
-        CreatePinnedWindow(memBmp, px, py, initScale);
+    for (const POINT& pt : candidates) {
+        if (calcOverlapArea(pt.x, pt.y) == 0) {
+            outImgX = pt.x;
+            outImgY = pt.y;
+            return;
+        }
     }
+
+    // 2. Scan work area grid for a zero-overlap spot (or minimum overlap if screen is completely packed)
+    int bestX = centerImgX;
+    int bestY = centerImgY;
+    long long bestOverlap = calcOverlapArea(bestX, bestY);
+    const int step = 20;
+    for (int y = minImgY; y <= maxImgY; y += step) {
+        for (int x = minImgX; x <= maxImgX; x += step) {
+            long long ov = calcOverlapArea(x, y);
+            if (ov == 0) {
+                outImgX = x;
+                outImgY = y;
+                return;
+            }
+            if (ov < bestOverlap) {
+                bestOverlap = ov;
+                bestX = x;
+                bestY = y;
+            }
+        }
+    }
+    outImgX = bestX;
+    outImgY = bestY;
+}
+
+void PepperSnapDaemon::OpenImageFilesToPinOnTop(const std::vector<std::wstring>& filePaths) {
+    struct LoadedPinItem {
+        std::vector<Bitmap*> frames;
+        std::vector<int> delays;
+        int origW = 0;
+        int origH = 0;
+        float scale = 1.0f;
+        int dispW = 32;
+        int dispH = 32;
+    };
+
+    std::vector<LoadedPinItem> items;
+    for (const auto& path : filePaths) {
+        if (path.empty()) continue;
+        LoadedPinItem item;
+        if (LoadImageFramesFromFile(path, item.frames, item.delays) && !item.frames.empty() && item.frames[0]) {
+            item.origW = (int)item.frames[0]->GetWidth();
+            item.origH = (int)item.frames[0]->GetHeight();
+            if (item.origW > 0 && item.origH > 0) {
+                items.push_back(std::move(item));
+            } else {
+                for (Bitmap* f : item.frames) delete f;
+            }
+        }
+    }
+    if (items.empty()) return;
+
+    POINT ptCur = { 0, 0 };
+    GetCursorPos(&ptCur);
+    HMONITOR hMon = MonitorFromPoint(ptCur, MONITOR_DEFAULTTOPRIMARY);
+    RECT rcScreen = GetPinnedMonitorWorkArea(hMon);
+    MONITORINFO mi = { sizeof(mi) };
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    if (hMon && GetMonitorInfoW(hMon, &mi)) {
+        sw = std::max(1, (int)(mi.rcMonitor.right - mi.rcMonitor.left));
+        sh = std::max(1, (int)(mi.rcMonitor.bottom - mi.rcMonitor.top));
+    }
+
+    // Limit pinned image size on open to 0.4 of screen size, fitting proportionally so aspect ratio is never distorted
+    int maxOpenW = std::max(64, (int)std::round(sw * 0.40));
+    int maxOpenH = std::max(64, (int)std::round(sh * 0.40));
+
+    int n = (int)items.size();
+    bool hasExistingPins = false;
+    for (HWND hp : pinnedWindows) {
+        if (hp && IsWindow(hp)) {
+            hasExistingPins = true;
+            break;
+        }
+    }
+
+    const int stripW = 242;
+    const int hudExtraH = hidePinnedToolbar ? 0 : (8 + 28 * 2 + 3);
+    const int gap = 16;
+
+    if (n > 1 && !hasExistingPins) {
+        int cols = (int)std::ceil(std::sqrt((double)n));
+        if (n == 2) cols = 2;
+        else if (n == 3) cols = 3;
+        int rows = (n + cols - 1) / cols;
+
+        int workW = std::max(320, (int)(rcScreen.right - rcScreen.left) - 24);
+        int workH = std::max(240, (int)(rcScreen.bottom - rcScreen.top) - 24);
+        if (cols == 3 && workW < cols * (stripW + gap)) {
+            cols = 2;
+            rows = (n + cols - 1) / cols;
+        }
+
+        int cellMaxW = std::min(maxOpenW, std::max(64, (workW - (cols - 1) * gap) / cols));
+        int cellMaxH = std::min(maxOpenH, std::max(64, (workH - (rows - 1) * gap) / rows - hudExtraH));
+
+        for (auto& it : items) {
+            float sc = 1.0f;
+            if (it.origW > cellMaxW || it.origH > cellMaxH) {
+                sc = (float)std::min((double)cellMaxW / (double)it.origW, (double)cellMaxH / (double)it.origH);
+            }
+            sc = std::max(0.01f, sc);
+            it.scale = sc;
+            it.dispW = std::max(1, (int)std::round(it.origW * sc));
+            it.dispH = std::max(1, (int)std::round(it.origH * sc));
+        }
+
+        std::vector<int> rowHeights(rows, 0);
+        std::vector<int> rowWidths(rows, 0);
+        for (int r = 0; r < rows; ++r) {
+            int firstIdx = r * cols;
+            int lastIdx = std::min(n, firstIdx + cols);
+            int rW = 0;
+            int rH = 0;
+            for (int idx = firstIdx; idx < lastIdx; ++idx) {
+                int slotW = hidePinnedToolbar ? items[idx].dispW : std::max(items[idx].dispW, stripW);
+                int slotH = items[idx].dispH + hudExtraH;
+                rW += slotW + (idx > firstIdx ? gap : 0);
+                rH = std::max(rH, slotH);
+            }
+            rowWidths[r] = rW;
+            rowHeights[r] = rH;
+        }
+
+        int totalGridH = 0;
+        for (int r = 0; r < rows; ++r) {
+            totalGridH += rowHeights[r] + (r > 0 ? gap : 0);
+        }
+
+        int curY = std::max((int)rcScreen.top + 12, (int)(rcScreen.top + ((rcScreen.bottom - rcScreen.top) - totalGridH) / 2));
+        for (int r = 0; r < rows; ++r) {
+            int firstIdx = r * cols;
+            int lastIdx = std::min(n, firstIdx + cols);
+            int curX = std::max((int)rcScreen.left + 12, (int)(rcScreen.left + ((rcScreen.right - rcScreen.left) - rowWidths[r]) / 2));
+            for (int idx = firstIdx; idx < lastIdx; ++idx) {
+                auto& it = items[idx];
+                int slotW = hidePinnedToolbar ? it.dispW : std::max(it.dispW, stripW);
+                // When dispW < stripW, the toolbar extends to the left of the image's right edge
+                int imgX = curX + (slotW - it.dispW);
+                int imgY = curY + (rowHeights[r] - hudExtraH - it.dispH) / 2;
+                Bitmap* firstBmp = it.frames[0];
+                if (it.frames.size() > 1) {
+                    CreatePinnedWindow(firstBmp, imgX, imgY, it.scale, std::move(it.frames), std::move(it.delays));
+                } else {
+                    CreatePinnedWindow(firstBmp, imgX, imgY, it.scale);
+                }
+                curX += slotW + gap;
+            }
+            curY += rowHeights[r] + gap;
+        }
+        return;
+    }
+
+    for (auto& it : items) {
+        float initScale = 1.0f;
+        if (it.origW > maxOpenW || it.origH > maxOpenH) {
+            initScale = (float)std::min((double)maxOpenW / (double)it.origW, (double)maxOpenH / (double)it.origH);
+        }
+        initScale = std::max(0.01f, initScale);
+        it.scale = initScale;
+        it.dispW = std::max(1, (int)std::round(it.origW * initScale));
+        it.dispH = std::max(1, (int)std::round(it.origH * initScale));
+
+        int px = 0, py = 0;
+        FindNonOverlappingPinPosition(pinnedWindows, it.dispW, it.dispH, hidePinnedToolbar, rcScreen, px, py);
+
+        Bitmap* firstBmp = it.frames[0];
+        if (it.frames.size() > 1) {
+            CreatePinnedWindow(firstBmp, px, py, it.scale, std::move(it.frames), std::move(it.delays));
+        } else {
+            CreatePinnedWindow(firstBmp, px, py, it.scale);
+        }
+    }
+}
+
+void PepperSnapDaemon::OpenImageFileToPinOnTop(const std::wstring& filePath) {
+    if (filePath.empty()) return;
+    OpenImageFilesToPinOnTop({ filePath });
 }
 
 void PepperSnapDaemon::OpenImageToPinOnTop() {
@@ -12804,11 +14623,12 @@ void PepperSnapDaemon::OpenImageToPinOnTop() {
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
 
     if (GetOpenFileNameW(&ofn)) {
+        std::vector<std::wstring> selectedFiles;
         const WCHAR* p = szFileBuf.data();
         std::wstring firstPart(p);
         p += firstPart.size() + 1;
         if (*p == L'\0') {
-            OpenImageFileToPinOnTop(firstPart);
+            if (!firstPart.empty()) selectedFiles.push_back(firstPart);
         } else {
             std::wstring dir = firstPart;
             if (!dir.empty() && dir.back() != L'\\' && dir.back() != L'/') {
@@ -12818,9 +14638,12 @@ void PepperSnapDaemon::OpenImageToPinOnTop() {
                 std::wstring fileName(p);
                 p += fileName.size() + 1;
                 if (!fileName.empty()) {
-                    OpenImageFileToPinOnTop(dir + fileName);
+                    selectedFiles.push_back(dir + fileName);
                 }
             }
+        }
+        if (!selectedFiles.empty()) {
+            OpenImageFilesToPinOnTop(selectedFiles);
         }
     }
 }
@@ -13183,6 +15006,9 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 KillTimer(hWnd, TIMER_TRAY_DELAY_PREV);
                 DwmFlush();
                 g_Daemon.InstantPreviousRegionCapture();
+            } else if (wParam == TIMER_PROCESS_PIN_QUEUE) {
+                KillTimer(hWnd, TIMER_PROCESS_PIN_QUEUE);
+                PostMessageW(hWnd, WM_PROCESS_PIN_QUEUE, 0, 0);
             }
             return 0;
         case WM_UPDATE_CHECK_RESULT: {
@@ -13246,7 +15072,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 if (!path.empty()) {
                     if (cds->dwData == COPYDATA_PIN_IMAGE) {
                         g_Daemon.pendingPinFiles.push_back(path);
-                        PostMessageW(hWnd, WM_PROCESS_PIN_QUEUE, 0, 0);
+                        SetTimer(hWnd, TIMER_PROCESS_PIN_QUEUE, 65, nullptr);
                     } else {
                         g_Daemon.pendingEditFile = path;
                         PostMessageW(hWnd, WM_PROCESS_PIN_QUEUE, 0, 0);
@@ -13257,12 +15083,11 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             break;
         }
         case WM_PROCESS_PIN_QUEUE: {
+            KillTimer(hWnd, TIMER_PROCESS_PIN_QUEUE);
             std::vector<std::wstring> toPin;
             toPin.swap(g_Daemon.pendingPinFiles);
-            for (const auto& p : toPin) {
-                if (!p.empty()) {
-                    g_Daemon.OpenImageFileToPinOnTop(p);
-                }
+            if (!toPin.empty()) {
+                g_Daemon.OpenImageFilesToPinOnTop(toPin);
             }
             if (!g_Daemon.pendingEditFile.empty()) {
                 std::wstring editPath = g_Daemon.pendingEditFile;
@@ -13714,11 +15539,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     releaseCliForwardMutex();
 
     if (!cliPinFilePaths.empty()) {
-        for (const auto& pinPath : cliPinFilePaths) {
-            if (!pinPath.empty()) {
-                g_Daemon.OpenImageFileToPinOnTop(pinPath);
-            }
-        }
+        g_Daemon.OpenImageFilesToPinOnTop(cliPinFilePaths);
     } else if (!cliEditFilePath.empty()) {
         g_Daemon.OpenImageFileIntoOverlay(cliEditFilePath);
     } else if (cliMsg != 0) {
