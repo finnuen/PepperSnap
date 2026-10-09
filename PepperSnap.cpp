@@ -19,7 +19,7 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.8.1";
+    static constexpr const wchar_t* APP_VERSION = L"3.8.2";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -144,6 +144,8 @@ public:
     // Active Tool & Annotations
     OverlayTool activeTool = OverlayTool::SelectMove;
     bool lastCtrlTempSelect = false;
+    bool lastShiftColorPick = false;
+    bool pendingShiftColorPick = false;
     bool pendingCtrlWindowSelect = false;
     RECT pendingCtrlWindowRect{0, 0, 0, 0};
 
@@ -1484,6 +1486,10 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                     PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, VK_CONTROL, 0);
                 } else if (isKeyUp && (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL)) {
                     PostMessageW(g_Daemon.hOverlayWnd, WM_KEYUP, VK_CONTROL, 0);
+                } else if (isKeyDown && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) {
+                    PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, VK_SHIFT, 0);
+                } else if (isKeyUp && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) {
+                    PostMessageW(g_Daemon.hOverlayWnd, WM_KEYUP, VK_SHIFT, 0);
                 }
             }
         } else if ((!g_Daemon.hOverlayWnd || !IsWindow(g_Daemon.hOverlayWnd)) &&
@@ -10094,10 +10100,10 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Resize this info window",       L"Drag any window edge or corner to adjust width and height (text wraps & size persists)");
 
     addSection(L"Custom area — window selection, aiming & size input");
-    addRow(L"Hold Ctrl (before selecting)",  L"Auto-detect & highlight any window, notification pop-up, or sidebar");
+    addRow(L"Hold Shift then click (before selecting)", L"Copy pixel RGB hex code (#RRGGBB) under 5× magnifier & close");
+    addRow(L"Hold Ctrl then click (before selecting)",  L"Auto-detect, highlight & select any window, notification pop-up, or sidebar");
     addRow(L"Hold Ctrl (after selecting)",   L"Temporarily switch active tool to Select mode while Ctrl is held");
     addRow(L"Hold Shift + drag selection",   L"Constrain selection or resize to a 1:1 square");
-    addRow(L"Ctrl + C (before selecting)",   L"Copy pixel RGB hex code (#RRGGBB) under 5× magnifier & close");
     addRow(L"Click W × H px indicator",      L"Type custom W×H, width only (200 or 200x), or height only (xx200 or x200), then press Enter (Esc cancels)");
 
     addSection(L"Custom area — Row 1: annotation tools");
@@ -11215,15 +11221,38 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
     // 5x Magnifier Loupe when aiming
     if (!g_Daemon.hasSelection || g_Daemon.dragMode == DragMode::CreatingSelection) {
         int mx = g_Daemon.mousePt.x, my = g_Daemon.mousePt.y;
-        const wchar_t* ctrlHintText = L"Hold Ctrl to select window";
-        RectF hintBounds;
-        g.MeasureString(ctrlHintText, -1, &smallFont, PointF(0.0f, 0.0f), &hintBounds);
-        int hintPillW = (int)std::ceil(hintBounds.Width) + 6;
-        int hintPillH = 18;
-        int imgW = std::max(120, ((hintPillW + 2) + 1) & ~1);
+        int cMx = std::max(0, std::min(W - 1, mx));
+        int cMy = std::max(0, std::min(H - 1, my));
+        BYTE pr = 0, pg = 0, pb = 0;
+        if (g_Daemon.brightDibPixels) {
+            DWORD raw = g_Daemon.brightDibPixels[(size_t)cMy * W + cMx];
+            pb = (BYTE)(raw & 0xFF);
+            pg = (BYTE)((raw >> 8) & 0xFF);
+            pr = (BYTE)((raw >> 16) & 0xFF);
+        } else if (g_Daemon.frozenDesktopBmp) {
+            Color pxCol;
+            g_Daemon.frozenDesktopBmp->GetPixel(cMx, cMy, &pxCol);
+            pr = pxCol.GetR();
+            pg = pxCol.GetG();
+            pb = pxCol.GetB();
+        }
+        wchar_t hexBuf[64];
+        swprintf_s(hexBuf, L"(%d,%d) #%02X%02X%02X", mx, my, pr, pg, pb);
+
+        const wchar_t* hintRow1 = L"Hold Shift then click to pick color";
+        const wchar_t* hintRow2 = L"Hold Ctrl then click to select window";
+        const wchar_t* hintRow3 = L"Press Esc to exit";
+        RectF bHex, b1, b2, b3;
+        g.MeasureString(hexBuf, -1, &monoFont, PointF(0.0f, 0.0f), &bHex);
+        g.MeasureString(hintRow1, -1, &smallFont, PointF(0.0f, 0.0f), &b1);
+        g.MeasureString(hintRow2, -1, &smallFont, PointF(0.0f, 0.0f), &b2);
+        g.MeasureString(hintRow3, -1, &smallFont, PointF(0.0f, 0.0f), &b3);
+        int maxHintW = (int)std::ceil(std::max(b1.Width, std::max(b2.Width, b3.Width))) + 4;
+        int minHexRowW = (int)std::ceil(bHex.Width) + 44;
+        int imgW = std::max(120, ((std::max(maxHintW, minHexRowW) + 2) + 1) & ~1);
         int imgH = 90;
         int loupeW = imgW + 12;
-        int loupeH = 135 + hintPillH + 6;
+        int loupeH = 170;
 
         int lx = (mx + 24 + loupeW < W) ? (mx + 24) : (mx - loupeW - 24);
         int ly = (my + 24 + loupeH < H) ? (my + 24) : (my - loupeH - 24);
@@ -11233,17 +11262,52 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
         g.FillRectangle(&loupeBg, lx, ly, loupeW, loupeH);
 
         if (g_Daemon.frozenDesktopBmp) {
-            if (g_Daemon.hBrightDesktopDC) {
+            bool ctrlHeldNow = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
+                               ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
+                               ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
+                               ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+            bool shiftHeldNow = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+            bool overrideGridSnap = (!g_Daemon.hasSelection && shiftHeldNow && !ctrlHeldNow);
+
+            if (g_Daemon.brightDibPixels && g_Daemon.backBufferPixels && !tempBackBuffer) {
                 g.Flush(FlushIntentionSync);
-                int srcX = std::max(0, std::min(W - 22, mx - 11));
-                int srcY = std::max(0, std::min(H - 16, my - 8));
-                SetStretchBltMode(memDC, COLORONCOLOR);
-                StretchBlt(memDC, lx + 6, ly + 6, imgW, imgH, g_Daemon.hBrightDesktopDC, srcX, srcY, 22, 16, SRCCOPY);
+                int dstX0 = lx + 6;
+                int dstY0 = ly + 6;
+                double halfW = (double)(imgW / 2);
+                double halfH = (double)(imgH / 2);
+                double scaleX = 22.0 / (double)imgW;
+                double scaleY = 16.0 / (double)imgH;
+                for (int dy = 0; dy < imgH; ++dy) {
+                    int dstY = dstY0 + dy;
+                    if (dstY < 0 || dstY >= H) continue;
+                    double relY = overrideGridSnap
+                        ? (((double)dy + 0.5 - halfH) * scaleY)
+                        : (((double)dy - halfH) * scaleY);
+                    double srcYf = overrideGridSnap ? ((double)my + 0.5 + relY) : ((double)my + relY);
+                    int sy = std::max(0, std::min(H - 1, (int)std::floor(srcYf)));
+                    const DWORD* srcRow = g_Daemon.brightDibPixels + (size_t)sy * W;
+                    DWORD* dstRow = g_Daemon.backBufferPixels + (size_t)dstY * W;
+                    for (int dx = 0; dx < imgW; ++dx) {
+                        int dstX = dstX0 + dx;
+                        if (dstX < 0 || dstX >= W) continue;
+                        double relX = overrideGridSnap
+                            ? (((double)dx + 0.5 - halfW) * scaleX)
+                            : (((double)dx - halfW) * scaleX);
+                        double srcXf = overrideGridSnap ? ((double)mx + 0.5 + relX) : ((double)mx + relX);
+                        int sx = std::max(0, std::min(W - 1, (int)std::floor(srcXf)));
+                        dstRow[dstX] = srcRow[sx];
+                    }
+                }
             } else {
                 GraphicsState st = g.Save();
                 g.SetInterpolationMode(InterpolationModeNearestNeighbor);
                 g.SetPixelOffsetMode(PixelOffsetModeHalf);
-                g.DrawImage(g_Daemon.frozenDesktopBmp, Rect(lx + 6, ly + 6, imgW, imgH), mx - 11, my - 8, 22, 16, UnitPixel);
+                float srcXf = overrideGridSnap ? ((float)mx - 10.5f) : (float)(mx - 11);
+                float srcYf = overrideGridSnap ? ((float)my - 7.5f) : (float)(my - 8);
+                g.DrawImage(g_Daemon.frozenDesktopBmp, RectF((float)(lx + 6), (float)(ly + 6), (float)imgW, (float)imgH), srcXf, srcYf, 22.0f, 16.0f, UnitPixel);
                 g.Restore(st);
             }
 
@@ -11253,36 +11317,23 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             g.DrawLine(&centerCross, crossX, ly + 6, crossX, ly + 6 + imgH);
             g.DrawLine(&centerCross, lx + 6, crossY, lx + 6 + imgW, crossY);
 
-            int cMx = std::max(0, std::min(W - 1, mx));
-            int cMy = std::max(0, std::min(H - 1, my));
-            BYTE pr = 0, pg = 0, pb = 0;
-            if (g_Daemon.brightDibPixels) {
-                DWORD raw = g_Daemon.brightDibPixels[(size_t)cMy * W + cMx];
-                pb = (BYTE)(raw & 0xFF);
-                pg = (BYTE)((raw >> 8) & 0xFF);
-                pr = (BYTE)((raw >> 16) & 0xFF);
-            } else {
-                Color pxCol;
-                g_Daemon.frozenDesktopBmp->GetPixel(cMx, cMy, &pxCol);
-                pr = pxCol.GetR();
-                pg = pxCol.GetG();
-                pb = pxCol.GetB();
-            }
-            wchar_t hexBuf[64];
-            swprintf_s(hexBuf, L"(%d,%d) #%02X%02X%02X", mx, my, pr, pg, pb);
             g.DrawString(hexBuf, -1, &monoFont, PointF((float)(lx + 7), (float)(ly + 101)), &whiteBrush);
-            g.DrawString(L"Ctrl+C copy RGB · Esc", -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 117)), &mutedBrush);
-
-            // White font with red highlighted background inside the magnifier box below 'Ctrl+C copy RGB · Esc'
-            int hintX = lx + 7;
-            int hintY = ly + 135;
-            SolidBrush redHighlightBg(Color(255, 239, 68, 68));
-            g.FillRectangle(&redHighlightBg, hintX, hintY, hintPillW, hintPillH);
-            StringFormat hintSf;
-            hintSf.SetAlignment(StringAlignmentCenter);
-            hintSf.SetLineAlignment(StringAlignmentCenter);
-            RectF hintRc((float)hintX, (float)hintY, (float)hintPillW, (float)hintPillH);
-            g.DrawString(ctrlHintText, -1, &smallFont, hintRc, &hintSf, &whiteBrush);
+            int stripX = lx + 7 + (int)std::ceil(bHex.Width) + 3;
+            int stripRight = lx + 6 + imgW;
+            if (stripRight > stripX + 4) {
+                int stripW = stripRight - stripX;
+                int stripY = ly + 102;
+                int stripH = 12;
+                GraphicsState stStrip = g.Save();
+                g.SetSmoothingMode(SmoothingModeNone);
+                g.SetPixelOffsetMode(PixelOffsetModeHalf);
+                SolidBrush pickColorBrush(Color(255, pr, pg, pb));
+                g.FillRectangle(&pickColorBrush, stripX, stripY, stripW, stripH);
+                g.Restore(stStrip);
+            }
+            g.DrawString(hintRow1, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 118)), &mutedBrush);
+            g.DrawString(hintRow2, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 134)), &mutedBrush);
+            g.DrawString(hintRow3, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 150)), &mutedBrush);
         }
         g.DrawRectangle(&loupeBorder, lx, ly, loupeW, loupeH);
     }
@@ -11398,7 +11449,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 if (!g_Daemon.hasSelection && (g_Daemon.dragMode == DragMode::None || g_Daemon.dragMode == DragMode::PendingOutsideSelection)) {
                     g_Daemon.lastCtrlTempSelect = false;
-                    if (g_Daemon.UpdateCtrlWindowHover()) {
+                    bool curShiftColorPick = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                             ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                             ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                             ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+                    bool shiftChanged = (curShiftColorPick != g_Daemon.lastShiftColorPick);
+                    g_Daemon.lastShiftColorPick = curShiftColorPick;
+                    if (g_Daemon.UpdateCtrlWindowHover() || shiftChanged) {
                         g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
                         InvalidateRect(hWnd, nullptr, FALSE);
                     }
@@ -11923,7 +11980,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             }
 
             // 4. Outside Selection Box -> Enter PendingOutsideSelection
-            // (Ctrl + click automatic window selection executes on WM_LBUTTONUP release if not dragged;
+            // (Shift + click picks pixel RGB color; Ctrl + click selects window on WM_LBUTTONUP release if not dragged;
             //  manual region creation starts in WM_MOUSEMOVE only if dragged >= 5px)
             g_Daemon.ClearAnnotationSelection();
             g_Daemon.dragMode = DragMode::PendingOutsideSelection;
@@ -11932,11 +11989,20 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                   ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                   ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
                                   ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
-            if (!g_Daemon.hasSelection && ctrlHeldOnDown) {
+            bool shiftHeldOnDown = ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                   ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                   ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                   ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+            if (!g_Daemon.hasSelection && shiftHeldOnDown && !ctrlHeldOnDown) {
+                g_Daemon.pendingShiftColorPick = true;
+                g_Daemon.pendingCtrlWindowSelect = false;
+            } else if (!g_Daemon.hasSelection && ctrlHeldOnDown) {
+                g_Daemon.pendingShiftColorPick = false;
                 g_Daemon.UpdateCtrlWindowHover();
                 g_Daemon.pendingCtrlWindowSelect = g_Daemon.hasCtrlHoverWindow;
                 g_Daemon.pendingCtrlWindowRect = g_Daemon.ctrlHoverWindowRect;
             } else {
+                g_Daemon.pendingShiftColorPick = false;
                 g_Daemon.pendingCtrlWindowSelect = false;
             }
             SetCapture(hWnd);
@@ -12119,6 +12185,14 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                         ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                         ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
                                         ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+                    bool shiftHeldMove = ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                         ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                         ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                         ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+                    if (!g_Daemon.hasSelection && (shiftHeldMove || g_Daemon.pendingShiftColorPick) && !ctrlHeldMove) {
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                        return 0;
+                    }
                     if (!g_Daemon.hasSelection && ctrlHeldMove) {
                         if (g_Daemon.UpdateCtrlWindowHover()) {
                             g_Daemon.pendingCtrlWindowSelect = g_Daemon.hasCtrlHoverWindow;
@@ -12129,6 +12203,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         return 0;
                     }
                     if (std::abs(dx) >= 5 || std::abs(dy) >= 5) {
+                        g_Daemon.pendingShiftColorPick = false;
                         g_Daemon.pendingCtrlWindowSelect = false;
                         if (g_Daemon.autoHideFrameList && g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed) {
                             g_Daemon.overlayFrameStripCollapsed = true;
@@ -12561,6 +12636,17 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                     ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                     ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
                                     ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+                    bool shiftHeld = ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                     ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                     ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                     ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+                    if (!g_Daemon.hasSelection && (shiftHeld || g_Daemon.pendingShiftColorPick) && !ctrlHeld) {
+                        g_Daemon.pendingShiftColorPick = false;
+                        g_Daemon.pendingCtrlWindowSelect = false;
+                        ReleaseCapture();
+                        g_Daemon.ActionCopyPixelColorAndClose();
+                        return 0;
+                    }
                     if (!g_Daemon.hasSelection && (ctrlHeld || g_Daemon.pendingCtrlWindowSelect)) {
                         if (ctrlHeld) {
                             g_Daemon.UpdateCtrlWindowHover();
@@ -12584,6 +12670,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                             g_Daemon.ClearAnnotationSelection();
                         }
                     }
+                    g_Daemon.pendingShiftColorPick = false;
                     g_Daemon.pendingCtrlWindowSelect = false;
                     g_Daemon.UpdateOverlayCursor(mx, my);
                 } else if (g_Daemon.dragMode == DragMode::MarqueeSelectingAnnotations) {
@@ -12795,11 +12882,9 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             }
 
             if (MatchesOverlayShortcut(g_Daemon.hkActCopy, vk, ctrl, shift, alt)) {
-                if (!g_Daemon.hasSelection ||
-                    g_Daemon.dragMode == DragMode::CreatingSelection ||
-                    g_Daemon.dragMode == DragMode::PendingOutsideSelection) {
-                    g_Daemon.ActionCopyPixelColorAndClose();
-                } else {
+                if (g_Daemon.hasSelection &&
+                    g_Daemon.dragMode != DragMode::CreatingSelection &&
+                    g_Daemon.dragMode != DragMode::PendingOutsideSelection) {
                     g_Daemon.ActionCopyAndClose();
                 }
                 return 0;
@@ -12873,6 +12958,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_KEYUP: {
+            if (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT) {
+                g_Daemon.lastShiftColorPick = false;
+                if (!g_Daemon.hasSelection) {
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
             if (wParam == VK_CONTROL) {
                 bool changed = g_Daemon.UpdateCtrlWindowHover();
                 if (g_Daemon.HasCreatedCustomArea()) {
@@ -13454,6 +13546,8 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     lastStrokeHover = false;
     activeTool = OverlayTool::SelectMove;
     lastCtrlTempSelect = false;
+    lastShiftColorPick = false;
+    pendingShiftColorPick = false;
     pendingCtrlWindowSelect = false;
     pendingCtrlWindowRect = { 0, 0, 0, 0 };
     isEditingText = false;
@@ -13558,6 +13652,8 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
     hasCustomHudPos = false;
     activeTool = OverlayTool::SelectMove;
     lastCtrlTempSelect = false;
+    lastShiftColorPick = false;
+    pendingShiftColorPick = false;
     pendingCtrlWindowSelect = false;
     pendingCtrlWindowRect = { 0, 0, 0, 0 };
     isEditingText = false;
