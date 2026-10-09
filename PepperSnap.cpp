@@ -19,7 +19,7 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.8.2";
+    static constexpr const wchar_t* APP_VERSION = L"3.8.3";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -148,6 +148,7 @@ public:
     bool pendingShiftColorPick = false;
     bool pendingCtrlWindowSelect = false;
     RECT pendingCtrlWindowRect{0, 0, 0, 0};
+    int loupeMagnification = 5;
 
     bool HasCreatedCustomArea() const {
         if (!hasSelection) return false;
@@ -10100,8 +10101,10 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Resize this info window",       L"Drag any window edge or corner to adjust width and height (text wraps & size persists)");
 
     addSection(L"Custom area — window selection, aiming & size input");
-    addRow(L"Hold Shift then click (before selecting)", L"Copy pixel RGB hex code (#RRGGBB) under 5× magnifier & close");
-    addRow(L"Hold Ctrl then click (before selecting)",  L"Auto-detect, highlight & select any window, notification pop-up, or sidebar");
+    addRow(L"Hold Shift then click (before selecting)",  L"Override pixel-grid snapping, copy pixel RGB hex code (#RRGGBB) under magnifier & close");
+    addRow(L"Hold Shift then scroll (before selecting)", L"Increase or decrease magnifier zoom (default 5×, minimum 100% / 1×, up to maximum zoom)");
+    addRow(L"Hold Shift + Arrow keys (before selecting)", L"Jump 1 pixel up, down, left, or right from the currently selected pixel");
+    addRow(L"Hold Ctrl then click (before selecting)",   L"Auto-detect, highlight & select any window, notification pop-up, or sidebar");
     addRow(L"Hold Ctrl (after selecting)",   L"Temporarily switch active tool to Select mode while Ctrl is held");
     addRow(L"Hold Shift + drag selection",   L"Constrain selection or resize to a 1:1 square");
     addRow(L"Click W × H px indicator",      L"Type custom W×H, width only (200 or 200x), or height only (xx200 or x200), then press Enter (Esc cancels)");
@@ -11213,12 +11216,28 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
         } else {
             Pen crossPen(Color(150, 239, 68, 68), 1.0f);
             crossPen.SetDashStyle(DashStyleDash);
-            g.DrawLine(&crossPen, g_Daemon.mousePt.x, 0, g_Daemon.mousePt.x, H);
-            g.DrawLine(&crossPen, 0, g_Daemon.mousePt.y, W, g_Daemon.mousePt.y);
+            bool shiftHeldCross = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                  ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                  ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                  ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+            if (shiftHeldCross) {
+                const int screenCrossGap = 5;
+                if (g_Daemon.mousePt.y - screenCrossGap > 0)
+                    g.DrawLine(&crossPen, g_Daemon.mousePt.x, 0, g_Daemon.mousePt.x, g_Daemon.mousePt.y - screenCrossGap);
+                if (g_Daemon.mousePt.y + screenCrossGap < H)
+                    g.DrawLine(&crossPen, g_Daemon.mousePt.x, g_Daemon.mousePt.y + screenCrossGap, g_Daemon.mousePt.x, H);
+                if (g_Daemon.mousePt.x - screenCrossGap > 0)
+                    g.DrawLine(&crossPen, 0, g_Daemon.mousePt.y, g_Daemon.mousePt.x - screenCrossGap, g_Daemon.mousePt.y);
+                if (g_Daemon.mousePt.x + screenCrossGap < W)
+                    g.DrawLine(&crossPen, g_Daemon.mousePt.x + screenCrossGap, g_Daemon.mousePt.y, W, g_Daemon.mousePt.y);
+            } else {
+                g.DrawLine(&crossPen, g_Daemon.mousePt.x, 0, g_Daemon.mousePt.x, H);
+                g.DrawLine(&crossPen, 0, g_Daemon.mousePt.y, W, g_Daemon.mousePt.y);
+            }
         }
     }
 
-    // 5x Magnifier Loupe when aiming
+    // Magnifier Loupe when aiming (default 5x, Shift+Scroll 1x..max)
     if (!g_Daemon.hasSelection || g_Daemon.dragMode == DragMode::CreatingSelection) {
         int mx = g_Daemon.mousePt.x, my = g_Daemon.mousePt.y;
         int cMx = std::max(0, std::min(W - 1, mx));
@@ -11271,6 +11290,10 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                                 ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
                                 ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
             bool overrideGridSnap = (!g_Daemon.hasSelection && shiftHeldNow && !ctrlHeldNow);
+            int mag = g_Daemon.hasSelection ? 5 : std::max(1, std::min(210, g_Daemon.loupeMagnification));
+            double scaleX = 1.0 / (double)mag;
+            double scaleY = 1.0 / (double)mag;
+            double subShift = (mag & 1) ? 0.0 : 0.5;
 
             if (g_Daemon.brightDibPixels && g_Daemon.backBufferPixels && !tempBackBuffer) {
                 g.Flush(FlushIntentionSync);
@@ -11278,15 +11301,13 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 int dstY0 = ly + 6;
                 double halfW = (double)(imgW / 2);
                 double halfH = (double)(imgH / 2);
-                double scaleX = 22.0 / (double)imgW;
-                double scaleY = 16.0 / (double)imgH;
                 for (int dy = 0; dy < imgH; ++dy) {
                     int dstY = dstY0 + dy;
                     if (dstY < 0 || dstY >= H) continue;
                     double relY = overrideGridSnap
-                        ? (((double)dy + 0.5 - halfH) * scaleY)
+                        ? (((double)dy + subShift - halfH) * scaleY)
                         : (((double)dy - halfH) * scaleY);
-                    double srcYf = overrideGridSnap ? ((double)my + 0.5 + relY) : ((double)my + relY);
+                    double srcYf = (overrideGridSnap || mag <= 1) ? ((double)my + 0.5 + relY) : ((double)my + relY);
                     int sy = std::max(0, std::min(H - 1, (int)std::floor(srcYf)));
                     const DWORD* srcRow = g_Daemon.brightDibPixels + (size_t)sy * W;
                     DWORD* dstRow = g_Daemon.backBufferPixels + (size_t)dstY * W;
@@ -11294,9 +11315,9 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                         int dstX = dstX0 + dx;
                         if (dstX < 0 || dstX >= W) continue;
                         double relX = overrideGridSnap
-                            ? (((double)dx + 0.5 - halfW) * scaleX)
+                            ? (((double)dx + subShift - halfW) * scaleX)
                             : (((double)dx - halfW) * scaleX);
-                        double srcXf = overrideGridSnap ? ((double)mx + 0.5 + relX) : ((double)mx + relX);
+                        double srcXf = (overrideGridSnap || mag <= 1) ? ((double)mx + 0.5 + relX) : ((double)mx + relX);
                         int sx = std::max(0, std::min(W - 1, (int)std::floor(srcXf)));
                         dstRow[dstX] = srcRow[sx];
                     }
@@ -11305,17 +11326,27 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 GraphicsState st = g.Save();
                 g.SetInterpolationMode(InterpolationModeNearestNeighbor);
                 g.SetPixelOffsetMode(PixelOffsetModeHalf);
-                float srcXf = overrideGridSnap ? ((float)mx - 10.5f) : (float)(mx - 11);
-                float srcYf = overrideGridSnap ? ((float)my - 7.5f) : (float)(my - 8);
-                g.DrawImage(g_Daemon.frozenDesktopBmp, RectF((float)(lx + 6), (float)(ly + 6), (float)imgW, (float)imgH), srcXf, srcYf, 22.0f, 16.0f, UnitPixel);
+                float srcW = (float)imgW / (float)mag;
+                float srcH = (float)imgH / (float)mag;
+                float srcXf = (overrideGridSnap || mag <= 1) ? ((float)mx + 0.5f - srcW * 0.5f) : ((float)mx - srcW * 0.5f);
+                float srcYf = (overrideGridSnap || mag <= 1) ? ((float)my + 0.5f - srcH * 0.5f) : ((float)my - srcH * 0.5f);
+                g.DrawImage(g_Daemon.frozenDesktopBmp, RectF((float)(lx + 6), (float)(ly + 6), (float)imgW, (float)imgH), srcXf, srcYf, srcW, srcH, UnitPixel);
                 g.Restore(st);
             }
 
             Pen centerCross(Color(200, 239, 68, 68), 1.5f);
             int crossX = lx + 6 + imgW / 2;
             int crossY = ly + 6 + imgH / 2;
-            g.DrawLine(&centerCross, crossX, ly + 6, crossX, ly + 6 + imgH);
-            g.DrawLine(&centerCross, lx + 6, crossY, lx + 6 + imgW, crossY);
+            if (overrideGridSnap) {
+                const int crossGap = 5;
+                g.DrawLine(&centerCross, crossX, ly + 6, crossX, crossY - crossGap);
+                g.DrawLine(&centerCross, crossX, crossY + crossGap, crossX, ly + 6 + imgH);
+                g.DrawLine(&centerCross, lx + 6, crossY, crossX - crossGap, crossY);
+                g.DrawLine(&centerCross, crossX + crossGap, crossY, lx + 6 + imgW, crossY);
+            } else {
+                g.DrawLine(&centerCross, crossX, ly + 6, crossX, ly + 6 + imgH);
+                g.DrawLine(&centerCross, lx + 6, crossY, lx + 6 + imgW, crossY);
+            }
 
             g.DrawString(hexBuf, -1, &monoFont, PointF((float)(lx + 7), (float)(ly + 101)), &whiteBrush);
             int stripX = lx + 7 + (int)std::ceil(bHex.Width) + 3;
@@ -11514,6 +11545,37 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 g_Daemon.overlayFrameScrollX = std::max(0.0f, std::min(g_Daemon.overlayFrameMaxScrollX, g_Daemon.overlayFrameScrollX + step));
                 g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
                 InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            bool shiftHeld = ((GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT) != 0) ||
+                             ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                             ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                             ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                             ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+            if (!g_Daemon.hasSelection && shiftHeld && delta != 0) {
+                int mag = g_Daemon.loupeMagnification;
+                if (delta > 0) {
+                    if (mag < 10) mag += 1;
+                    else if (mag < 20) mag += 2;
+                    else if (mag < 50) mag += 5;
+                    else if (mag < 90) mag += 10;
+                    else mag += 30;
+                    mag = std::min(210, mag);
+                } else {
+                    if (mag > 90) mag -= 30;
+                    else if (mag > 50) mag -= 10;
+                    else if (mag > 20) mag -= 5;
+                    else if (mag > 10) mag -= 2;
+                    else mag -= 1;
+                    mag = std::max(1, mag);
+                }
+                if (mag != g_Daemon.loupeMagnification) {
+                    g_Daemon.loupeMagnification = mag;
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            if (!g_Daemon.hasSelection) {
                 return 0;
             }
             float nextS = std::max(1.0f, std::min(120.0f, g_Daemon.activeStroke + (delta > 0 ? 1.5f : -1.5f)));
@@ -12862,6 +12924,19 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 return 0;
             }
+            if (!g_Daemon.hasSelection && shift && !ctrl &&
+                (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT)) {
+                int dx = (wParam == VK_LEFT) ? -1 : ((wParam == VK_RIGHT) ? 1 : 0);
+                int dy = (wParam == VK_UP)   ? -1 : ((wParam == VK_DOWN)  ? 1 : 0);
+                int nextX = std::max(0, std::min(g_Daemon.vScreenW - 1, (int)g_Daemon.mousePt.x + dx));
+                int nextY = std::max(0, std::min(g_Daemon.vScreenH - 1, (int)g_Daemon.mousePt.y + dy));
+                g_Daemon.mousePt.x = nextX;
+                g_Daemon.mousePt.y = nextY;
+                SetCursorPos(g_Daemon.vScreenX + nextX, g_Daemon.vScreenY + nextY);
+                g_Daemon.UpdateOverlayCursor(nextX, nextY);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
             bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0 || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             UINT vk = (UINT)wParam;
 
@@ -13550,6 +13625,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     pendingShiftColorPick = false;
     pendingCtrlWindowSelect = false;
     pendingCtrlWindowRect = { 0, 0, 0, 0 };
+    loupeMagnification = 5;
     isEditingText = false;
     isEditingSize = false;
     isDraggingSizeText = false;
@@ -13656,6 +13732,7 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
     pendingShiftColorPick = false;
     pendingCtrlWindowSelect = false;
     pendingCtrlWindowRect = { 0, 0, 0, 0 };
+    loupeMagnification = 5;
     isEditingText = false;
     isEditingSize = false;
     isDraggingSizeText = false;
