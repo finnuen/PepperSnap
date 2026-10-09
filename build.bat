@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================================
-echo  PepperSnap v3.7.1 — Pure Standalone Win32 / GDI+ C++17 Build Script
+echo  PepperSnap v3.8.1 — Pure Standalone Win32 / GDI+ C++17 Build Script
 echo ============================================================================
 
 where cl.exe >nul 2>nul

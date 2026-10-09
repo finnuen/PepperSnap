@@ -1,7 +1,7 @@
 {
   "name": "peppersnap-win32-cpp",
   "private": true,
-  "version": "3.7.5",
+  "version": "3.8.1",
   "description": "Standalone Native Win32/GDI+ C++17 Screenshot & Annotation Application for Windows",
   "scripts": {
     "dev": "sh build.sh --serve",
