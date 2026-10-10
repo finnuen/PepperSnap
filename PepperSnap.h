@@ -107,6 +107,7 @@ enum TrayMenuID {
     IDM_TRAY_OPEN_IMAGE,
     IDM_TRAY_OPEN_PIN_IMAGE,
     IDM_TRAY_PIN_CLIPBOARD,
+    IDM_TRAY_PIN_ABOVE_EDIT,
     IDM_TRAY_OPEN_FOLDER,
     IDM_TRAY_OPTIONS,
     IDM_TRAY_STARTUP_RUN,
@@ -220,6 +221,7 @@ struct PinnedWindowData {
     int origW = 0;
     int origH = 0;
     float scale = 1.0f;
+    float initialScale = 1.0f;
     int screenImgX = 0;
     int screenImgY = 0;
     int initialScreenImgX = 0;

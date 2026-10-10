@@ -19,7 +19,7 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.9.3";
+    static constexpr const wchar_t* APP_VERSION = L"3.9.4";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -45,6 +45,7 @@ public:
     bool hidePinnedToolbar = false;
     bool hidePinnedOutline = false;
     bool smoothPinnedImage = false;
+    bool pinnedImageAboveEdit = false;
     int optionsWindowHeight = 772;
     int customizeKeysWindowHeight = 560;
     int shortcutsWindowWidth = 880;
@@ -412,6 +413,38 @@ public:
     bool lastPillHover = false;
     bool lastStrokeHover = false;
 
+    struct SavedEditOverlaySession {
+        bool active = false;
+        Bitmap* frozenDesktopBmp = nullptr;
+        Bitmap* overlaySingleImageBmp = nullptr;
+        std::vector<Bitmap*> overlayFrames;
+        std::vector<int> overlayFrameDelaysMs;
+        size_t overlayActiveFrameIdx = 0;
+        RECT overlayImgDrawRect{0, 0, 0, 0};
+        bool overlayFrameStripCollapsed = false;
+        int overlayFrameStripHeight = 142;
+        float overlayFrameScrollX = 0.0f;
+        float overlayFrameMaxScrollX = 0.0f;
+        bool overlayFramesPlaying = false;
+        bool hasSelection = false;
+        RECT selRect{0, 0, 0, 0};
+        std::vector<Annotation> annotations;
+        std::vector<std::vector<Annotation>> undoStack;
+        std::vector<std::vector<Annotation>> redoStack;
+        int nextStepNum = 1;
+        int nextAnnotationId = 1;
+        int selectedAnnotationId = -1;
+        std::vector<int> selectedAnnotationIds;
+        OverlayTool activeTool = OverlayTool::SelectMove;
+        bool hasCustomHudPos = false;
+        POINT customHudPos{0, 0};
+        bool hasCustomRatio = false;
+        int customRatioW = 0;
+        int customRatioH = 0;
+    };
+    SavedEditOverlaySession savedEditSession;
+    void DiscardSavedEditSession();
+
     // Methods
     void InitPaths();
     static std::wstring GetDefaultDesktopFolder();
@@ -452,6 +485,10 @@ public:
     void CloseRegionSnipOverlay();
     void OpenImageIntoOverlay();
     void OpenImageFileIntoOverlay(const std::wstring& filePath);
+    bool IsEditingOpenedImage() const { return overlaySingleImageBmp != nullptr || !overlayFrames.empty(); }
+    bool IsPinnedWindow(HWND hWnd) const;
+    HWND GetLowestPinnedWindow() const;
+    void RaisePinnedWindowsAboveOverlay();
     bool HasOverlayMultiFrames() const { return overlayFrames.size() > 1; }
     void ClearOverlayFrames();
     void SelectOverlayFrame(size_t frameIdx);
@@ -592,6 +629,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"HidePinnedToolbar", hidePinnedToolbar ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"HidePinnedOutline", hidePinnedOutline ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"SmoothPinnedImage", smoothPinnedImage ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"PinnedImageAboveEdit", pinnedImageAboveEdit ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowWidth", std::to_wstring(shortcutsWindowWidth).c_str(), iniPath.c_str());
@@ -692,6 +730,7 @@ void PepperSnapDaemon::LoadSettings() {
     hidePinnedToolbar = (GetPrivateProfileIntW(L"PepperSnap", L"HidePinnedToolbar", 0, iniPath.c_str()) != 0);
     hidePinnedOutline = (GetPrivateProfileIntW(L"PepperSnap", L"HidePinnedOutline", 0, iniPath.c_str()) != 0);
     smoothPinnedImage = (GetPrivateProfileIntW(L"PepperSnap", L"SmoothPinnedImage", 0, iniPath.c_str()) != 0);
+    pinnedImageAboveEdit = (GetPrivateProfileIntW(L"PepperSnap", L"PinnedImageAboveEdit", 0, iniPath.c_str()) != 0);
     int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 772, iniPath.c_str());
     if (optWinH == 716 || optWinH == 744) optWinH = 772;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
@@ -1576,13 +1615,88 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
         }
 
-        // If the Custom Area overlay is active (with no modal child window open), ensure Esc and overlay keys
-        // reach hOverlayWnd immediately even if a higher-band shell flyout (Notification Sidebar) held focus
-        if (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd) &&
+        bool noModalOpen =
             (!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
             (!g_Daemon.hCustomizeKeysWnd || !IsWindow(g_Daemon.hCustomizeKeysWnd)) &&
             (!g_Daemon.hNamingSyntaxWnd || !IsWindow(g_Daemon.hNamingSyntaxWnd)) &&
-            (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd))) {
+            (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd)) &&
+            !g_Daemon.isSavingAsModalOpen;
+
+        // Handle key-down for all global capture hotkeys, plus key-up fallback for VK_SNAPSHOT
+        // (Many keyboards/games swallow WM_KEYDOWN for Shift+PrintScreen and only emit WM_KEYUP).
+        // Evaluated before overlay key forwarding so capture shortcuts also execute in "Edit with PepperSnap" window!
+        if (noModalOpen && (isKeyDown || (isKeyUp && vk == VK_SNAPSHOT)) && !IsModifierVk(vk)) {
+            UINT curMods = GetCurrentHardwareModifiers();
+            if (kb->flags & LLKHF_ALTDOWN) curMods |= MOD_ALT;
+
+            auto matchHk = [&](const HotkeyBinding& hk) {
+                return hk.vk != 0 && vk == hk.vk && curMods == hk.modifiers;
+            };
+
+            bool overlayActive = (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd));
+            bool canCaptureNow = !overlayActive || g_Daemon.IsEditingOpenedImage();
+            bool inlineEditActive = overlayActive &&
+                (g_Daemon.isEditingText || g_Daemon.isEditingSize || g_Daemon.isEditingRatio || g_Daemon.isEditingStroke);
+            if (!inlineEditActive && !g_Daemon.pinnedWindows.empty()) {
+                HWND hFg = GetForegroundWindow();
+                if (g_Daemon.IsPinnedWindow(hFg)) {
+                    PinnedWindowData* fgData = (PinnedWindowData*)GetWindowLongPtrW(hFg, GWLP_USERDATA);
+                    if (fgData && (fgData->isEditingSize || fgData->isEditingPct)) {
+                        inlineEditActive = true;
+                    }
+                }
+            }
+
+            if (matchHk(g_Daemon.hkPrevRegion)) {
+                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PREV_REGION, 0, 0);
+                return 1;
+            }
+            if (canCaptureNow && matchHk(g_Daemon.hkRegionSnip)) {
+                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_REGION_SNIP, 0, 0);
+                return 1;
+            }
+            if (matchHk(g_Daemon.hkFullSnap)) {
+                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
+                return 1;
+            }
+            if (canCaptureNow && !inlineEditActive && matchHk(g_Daemon.hkPinClipboard)) {
+                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PIN_CLIPBOARD, 0, 0);
+                return 1;
+            }
+        }
+
+        // If the Custom Area overlay is active (with no modal child window open), ensure Esc and overlay keys
+        // reach hOverlayWnd immediately even if a higher-band shell flyout (Notification Sidebar) held focus
+        if (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd) && noModalOpen) {
+            // When "Edit with PepperSnap" is active and pinned images overlay it, let pinned windows handle
+            // inline size/percentage typing or pinned shortcuts when the cursor is over a pinned image
+            if (g_Daemon.IsEditingOpenedImage() && g_Daemon.pinnedImageAboveEdit && !g_Daemon.pinnedWindows.empty()) {
+                HWND hFg = GetForegroundWindow();
+                if (g_Daemon.IsPinnedWindow(hFg)) {
+                    PinnedWindowData* fgData = (PinnedWindowData*)GetWindowLongPtrW(hFg, GWLP_USERDATA);
+                    if (fgData && (fgData->isEditingSize || fgData->isEditingPct)) {
+                        return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
+                    }
+                }
+                POINT curPt = { 0, 0 };
+                if (GetCursorPos(&curPt)) {
+                    HWND hAtPt = WindowFromPoint(curPt);
+                    if (g_Daemon.IsPinnedWindow(hAtPt) && isKeyDown && !IsModifierVk(vk)) {
+                        UINT curMods = GetCurrentHardwareModifiers();
+                        if (kb->flags & LLKHF_ALTDOWN) curMods |= MOD_ALT;
+                        bool ctrl  = (curMods & MOD_CONTROL) != 0;
+                        bool shift = (curMods & MOD_SHIFT) != 0;
+                        bool alt   = (curMods & MOD_ALT) != 0;
+                        if (MatchesAnyPinnedShortcut(vk, ctrl, shift, alt)) {
+                            if (hFg != hAtPt) {
+                                PostMessageW(hAtPt, WM_KEYDOWN, vk, 0);
+                                return 1;
+                            }
+                            return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
+                        }
+                    }
+                }
+            }
             if (isKeyDown && vk == VK_ESCAPE) {
                 PostMessageW(g_Daemon.hOverlayWnd, WM_KEYDOWN, VK_ESCAPE, 0);
                 return 1;
@@ -1602,10 +1716,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 }
             }
         } else if ((!g_Daemon.hOverlayWnd || !IsWindow(g_Daemon.hOverlayWnd)) &&
-                   (!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
-                   (!g_Daemon.hCustomizeKeysWnd || !IsWindow(g_Daemon.hCustomizeKeysWnd)) &&
-                   (!g_Daemon.hNamingSyntaxWnd || !IsWindow(g_Daemon.hNamingSyntaxWnd)) &&
-                   (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd)) &&
+                   noModalOpen &&
                    !g_Daemon.pinnedWindows.empty() && isKeyDown && !IsModifierVk(vk)) {
             HWND hFg = GetForegroundWindow();
             bool fgIsPin = (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hFg) != g_Daemon.pinnedWindows.end());
@@ -1625,34 +1736,6 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                         }
                     }
                 }
-            }
-        }
-
-        // Handle key-down for all hotkeys, plus key-up fallback for VK_SNAPSHOT
-        // (Many keyboards/games swallow WM_KEYDOWN for Shift+PrintScreen and only emit WM_KEYUP)
-        if ((isKeyDown || (isKeyUp && vk == VK_SNAPSHOT)) && !IsModifierVk(vk)) {
-            UINT curMods = GetCurrentHardwareModifiers();
-            if (kb->flags & LLKHF_ALTDOWN) curMods |= MOD_ALT;
-
-            auto matchHk = [&](const HotkeyBinding& hk) {
-                return hk.vk != 0 && vk == hk.vk && curMods == hk.modifiers;
-            };
-
-            if (matchHk(g_Daemon.hkPrevRegion)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PREV_REGION, 0, 0);
-                return 1;
-            }
-            if (matchHk(g_Daemon.hkRegionSnip)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_REGION_SNIP, 0, 0);
-                return 1;
-            }
-            if (matchHk(g_Daemon.hkFullSnap)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
-                return 1;
-            }
-            if (matchHk(g_Daemon.hkPinClipboard)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PIN_CLIPBOARD, 0, 0);
-                return 1;
             }
         }
     }
@@ -1785,6 +1868,10 @@ Bitmap* PepperSnapDaemon::CaptureVirtualDesktop() {
         vScreenH = GetSystemMetrics(SM_CYSCREEN);
     }
 
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        UpdateWindow(hOverlayWnd);
+        GdiFlush();
+    }
     // Flush DWM composition so borderless DirectFlip / DXGI swapchains are up to date
     DwmFlush();
 
@@ -2485,7 +2572,20 @@ bool PepperSnapDaemon::CopyMultipleBitmapsToClipboard(const std::vector<Bitmap*>
 }
 
 void PepperSnapDaemon::InstantFullscreenCapture() {
-    if (hOverlayWnd) CloseRegionSnipOverlay();
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        if (!IsEditingOpenedImage()) {
+            CloseRegionSnipOverlay();
+        }
+        if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+            CommitActiveTextBox();
+            CommitActiveSizeInput();
+            CommitActiveRatioInput();
+            CommitActiveStrokeInput();
+            InvalidateRect(hOverlayWnd, nullptr, FALSE);
+            UpdateWindow(hOverlayWnd);
+            GdiFlush();
+        }
+    }
 
     Bitmap* fullBmp = CaptureVirtualDesktop();
     if (!fullBmp) return;
@@ -2512,7 +2612,7 @@ void PepperSnapDaemon::InstantFullscreenCapture() {
 }
 
 void PepperSnapDaemon::RecordLastCustomSelection() {
-    if (!hasSelection) return;
+    if (!hasSelection || IsEditingOpenedImage()) return;
     int sx0 = std::max(0, (int)std::min(selRect.left, selRect.right));
     int sy0 = std::max(0, (int)std::min(selRect.top, selRect.bottom));
     int sx1 = std::min(vScreenW, (int)std::max(selRect.left, selRect.right));
@@ -2525,9 +2625,20 @@ void PepperSnapDaemon::RecordLastCustomSelection() {
 }
 
 void PepperSnapDaemon::InstantPreviousRegionCapture() {
-    if (hOverlayWnd) {
-        RecordLastCustomSelection();
-        CloseRegionSnipOverlay();
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        if (!IsEditingOpenedImage()) {
+            RecordLastCustomSelection();
+            CloseRegionSnipOverlay();
+        }
+        if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+            CommitActiveTextBox();
+            CommitActiveSizeInput();
+            CommitActiveRatioInput();
+            CommitActiveStrokeInput();
+            InvalidateRect(hOverlayWnd, nullptr, FALSE);
+            UpdateWindow(hOverlayWnd);
+            GdiFlush();
+        }
     }
     if (!hasLastCustomSel ||
         lastCustomSelRect.right <= lastCustomSelRect.left ||
@@ -4195,6 +4306,8 @@ int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMod
     return -1;
 }
 
+static void GetPinnedScaledDims(const PinnedWindowData* data, int& outW, int& outH);
+
 Bitmap* PepperSnapDaemon::RenderCroppedRegionBitmap() {
     CommitActiveTextBox();
     CommitActiveSizeInput();
@@ -4228,6 +4341,48 @@ Bitmap* PepperSnapDaemon::RenderCroppedRegionBitmap() {
             ia.SetWrapMode(WrapModeTileFlipXY);
             gOut.DrawImage(activeImageSource, Rect(drawX, drawY, drawW, drawH),
                            0, 0, (INT)activeImageSource->GetWidth(), (INT)activeImageSource->GetHeight(), UnitPixel, &ia);
+
+            if (pinnedImageAboveEdit) {
+                RECT selOverlayRc = { rx, ry, rx + rw, ry + rh };
+                std::vector<HWND> zOrderedPins;
+                HWND hPinCur = nullptr;
+                while ((hPinCur = FindWindowExW(nullptr, hPinCur, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+                    if (IsWindow(hPinCur) && IsWindowVisible(hPinCur) &&
+                        std::find(pinnedWindows.begin(), pinnedWindows.end(), hPinCur) != pinnedWindows.end()) {
+                        zOrderedPins.push_back(hPinCur);
+                    }
+                }
+                for (HWND hp : pinnedWindows) {
+                    if (hp && IsWindow(hp) && IsWindowVisible(hp) &&
+                        std::find(zOrderedPins.begin(), zOrderedPins.end(), hp) == zOrderedPins.end()) {
+                        zOrderedPins.push_back(hp);
+                    }
+                }
+                for (auto it = zOrderedPins.rbegin(); it != zOrderedPins.rend(); ++it) {
+                    HWND hp = *it;
+                    PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hp, GWLP_USERDATA);
+                    if (!pData || !pData->bmp) continue;
+                    int pinW = 32, pinH = 32;
+                    GetPinnedScaledDims(pData, pinW, pinH);
+                    int pinOverlayX = pData->screenImgX - vScreenX;
+                    int pinOverlayY = pData->screenImgY - vScreenY;
+                    RECT pinOverlayRc = { pinOverlayX, pinOverlayY, pinOverlayX + pinW, pinOverlayY + pinH };
+                    RECT interRc = {0};
+                    if (!IntersectRect(&interRc, &selOverlayRc, &pinOverlayRc)) continue;
+
+                    int srcW = std::max(1, (int)pData->bmp->GetWidth());
+                    int srcH = std::max(1, (int)pData->bmp->GetHeight());
+                    double fitScale = std::min((double)pinW / (double)srcW, (double)pinH / (double)srcH);
+                    int fitW = std::max(1, std::min(pinW, (int)std::round(srcW * fitScale)));
+                    int fitH = std::max(1, std::min(pinH, (int)std::round(srcH * fitScale)));
+                    int fitX = (pinOverlayX - rx) + (pinW - fitW) / 2;
+                    int fitY = (pinOverlayY - ry) + (pinH - fitH) / 2;
+
+                    gOut.SetInterpolationMode(pData->smoothImage ? InterpolationModeHighQualityBicubic : InterpolationModeNearestNeighbor);
+                    gOut.SetPixelOffsetMode(PixelOffsetModeHalf);
+                    gOut.DrawImage(pData->bmp, Rect(fitX, fitY, fitW, fitH), 0, 0, srcW, srcH, UnitPixel, &ia);
+                }
+            }
         }
     }
     if (!out) {
@@ -5884,7 +6039,7 @@ static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float t
 
 static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float factor, bool resetToOriginal = false) {
     if (!data || !data->bmp) return;
-    float targetScale = 1.0f;
+    float targetScale = (data->initialScale > 0.0f) ? data->initialScale : 1.0f;
     if (!resetToOriginal) {
         float curScale = data->scale;
         targetScale = curScale * factor;
@@ -5951,7 +6106,8 @@ static void ResetPinnedWindowSizeAndPosition(HWND hWnd, PinnedWindowData* data) 
     if (!data || !data->bmp) return;
     float minScale = 0.01f, maxScale = 64.0f;
     GetPinnedScaleBounds(data, minScale, maxScale);
-    data->scale = std::max(minScale, std::min(maxScale, 1.0f));
+    float initScale = (data->initialScale > 0.0f) ? data->initialScale : 1.0f;
+    data->scale = std::max(minScale, std::min(maxScale, initScale));
     data->screenImgX = data->initialScreenImgX;
     data->screenImgY = data->initialScreenImgY;
     data->zoomAnchorCorner = 0;
@@ -7469,6 +7625,7 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
     data->origW = sw;
     data->origH = sh;
     data->scale = initialScale;
+    data->initialScale = initialScale;
     data->screenImgX = x;
     data->screenImgY = y;
     data->initialScreenImgX = x;
@@ -7500,6 +7657,15 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
         SetTimer(hPin, 3, (UINT)firstDelay, nullptr);
     }
     pinnedWindows.push_back(hPin);
+    if (hOverlayWnd && IsWindow(hOverlayWnd) && IsEditingOpenedImage()) {
+        if (pinnedImageAboveEdit) {
+            RaisePinnedWindowsAboveOverlay();
+        } else {
+            SetWindowPos(hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetForegroundWindow(hOverlayWnd);
+            SetFocus(hOverlayWnd);
+        }
+    }
     return hPin;
 }
 
@@ -10137,6 +10303,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         SaveSettings();
     }
     if (st.openedAppData) {
+        DiscardSavedEditSession();
         CloseRegionSnipOverlay();
         std::wstring appDataDir = PepperSnapDaemon::GetAppDataSettingsDir();
         CreateDirectoryW(appDataDir.c_str(), nullptr);
@@ -10203,6 +10370,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
             hidePinnedToolbar = false;
             hidePinnedOutline = false;
             smoothPinnedImage = false;
+            pinnedImageAboveEdit = false;
             activeColor = Color(255, 239, 68, 68);
             activeStroke = 4.0f;
         }
@@ -10700,8 +10868,8 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Options \x2192 Naming pattern (\x24D8)",   L"Click \x24D8 beside Restore default for acceptable syntax ({YYYY}, {MMMM}, {DDDD}, etc. — click or select any syntax to copy)");
     addRow(L"Options \x2192 Restore everything to default", L"Reset all Options settings and shortcut keys back to factory defaults (with confirmation)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
-    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin (supports multi-select), Pin the image in clipboard on top, Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
-    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image; shows selectable bottom frame list for multi-frame .gif / .webp) or \"Pin on top\" (single or multi-selected images)");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin (supports multi-select), Pin the image in clipboard on top, Put pinned image above / below edit, Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
+    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit\" is active, pinned images overlay the edit window and any pinned image in the selected area is included when saving/copying) or \"Pin on top\" (single or multi-selected images)");
     addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
     addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
     addActionRow(DBTN_ACT_FRAME_TOGGLE,     false, FormatLabelWithShortcut(L"Hide / Show frames (GIF/WebP)",  hkFrameToggleStrip), L"Collapse or expand the bottom frame list in \"Edit with PepperSnap\" (or click the Hide / Show frames dropdown button)");
@@ -10771,13 +10939,14 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar (hold Shift to apply to all pinned images; status persists; default: shown)");
     addRow(L"Double right-click pinned image", L"Close pinned image (hold Shift + double right-click to close all pinned images)");
     addRow(L"Scroll / Shift + Scroll",       L"Zoom in or out (hits vertical & horizontal screen-fit resolutions; anchored to bottom-right corner by default, or to the snapped screen corner when snapped to bottom-left, top-left, or top-right; hold Shift + scroll to zoom all pinned images)");
-    addRow(L"Middle-click pinned image",     L"Reset pinned image to 100% original pixel size on click release (hold Shift + middle-click to reset all pinned images)");
-    addRow(L"Ctrl + Middle-click pinned image", L"Reset pinned image to 100% original pixel size and initial pinned position (hold Ctrl + Shift + middle-click to reset size and position of all pinned images)");
+    addRow(L"Middle-click pinned image",     L"Reset pinned image to its original size when first pinned on click release (hold Shift + middle-click to reset all pinned images)");
+    addRow(L"Ctrl + Middle-click pinned image", L"Reset pinned image to its original coordinate and size when first pinned (hold Ctrl + Shift + middle-click to reset coordinate and size of all pinned images)");
     addRow(FormatLabelWithShortcut(L"Zoom out",                   hkPinZoomOut),     L"Scale pinned image down via shortcut key or scroll down (hold Shift to apply to all pinned images)");
     addRow(FormatLabelWithShortcut(L"Zoom in",                    hkPinZoomIn),      L"Scale pinned image up via shortcut key or scroll up (hold Shift to apply to all pinned images)");
-    addRow(FormatLabelWithShortcut(L"Reset to original size",     hkPinZoomReset),   L"Restore 100% original pixel size via shortcut key or middle-click (hold Shift to apply to all pinned images)");
-    addRow(FormatLabelWithShortcut(L"Reset to original position", hkPinPosReset),    L"Restore 100% original pixel size and initial pinned position via shortcut key or Ctrl + middle-click (hold Shift to apply to all pinned images)");
+    addRow(FormatLabelWithShortcut(L"Reset to original size",     hkPinZoomReset),   L"Restore original size when first pinned via shortcut key or middle-click (hold Shift to apply to all pinned images)");
+    addRow(FormatLabelWithShortcut(L"Reset to original position", hkPinPosReset),    L"Restore original coordinate and size when first pinned via shortcut key or Ctrl + middle-click (hold Shift to apply to all pinned images)");
     addRow(FormatLabelWithShortcut(L"Hide / Show toolbar",        hkPinHideToolbar), L"Hide or show floating toolbar on pinned image via shortcut key or double-click (hold Shift to apply to all pinned images)");
+    addRow(L"Put pinned image above / below edit", L"Tray menu button that cycles putting pinned images above or below the \"Edit with PepperSnap\" window (when above edit, pinned images in the selected area are included when saving/copying \"Edit with PepperSnap\" image; keeps tray menu open; default: below edit)");
     addRow(L"Smooth / Unsmooth all pinned image", L"Tray menu button that cycles smoothing or unsmoothing the image filter across all pinned images (keeps tray menu open)");
     addRow(L"Show / Hide toolbar on all pinned image", L"Tray menu button that cycles showing or hiding the toolbar across all pinned images (keeps tray menu open)");
     addRow(L"Show / Hide outline on all pinned image", L"Tray menu button that cycles showing or hiding the red outline across all pinned images (keeps tray menu open)");
@@ -12182,9 +12351,33 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             SetFocus(hWnd);
             return 0;
 
+        case WM_WINDOWPOSCHANGING: {
+            if (g_Daemon.IsEditingOpenedImage() &&
+                g_Daemon.pinnedImageAboveEdit &&
+                !g_Daemon.isSavingAsModalOpen &&
+                (!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
+                (!g_Daemon.hCustomizeKeysWnd || !IsWindow(g_Daemon.hCustomizeKeysWnd)) &&
+                (!g_Daemon.hNamingSyntaxWnd || !IsWindow(g_Daemon.hNamingSyntaxWnd)) &&
+                (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd))) {
+                WINDOWPOS* wp = (WINDOWPOS*)lParam;
+                if (wp && (wp->flags & SWP_NOZORDER) == 0) {
+                    HWND hLowestPin = g_Daemon.GetLowestPinnedWindow();
+                    if (hLowestPin && hLowestPin != hWnd) {
+                        if (wp->hwndInsertAfter == HWND_TOP || wp->hwndInsertAfter == HWND_TOPMOST) {
+                            wp->hwndInsertAfter = hLowestPin;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
         case WM_ACTIVATE:
             if (LOWORD(wParam) != WA_INACTIVE) {
                 SetFocus(hWnd);
+                if (g_Daemon.IsEditingOpenedImage() && g_Daemon.pinnedImageAboveEdit) {
+                    g_Daemon.RaisePinnedWindowsAboveOverlay();
+                }
             }
             return 0;
 
@@ -12199,13 +12392,32 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 g_Daemon.SuppressAboveOverlayWindows();
                 if ((!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
+                    (!g_Daemon.hCustomizeKeysWnd || !IsWindow(g_Daemon.hCustomizeKeysWnd)) &&
+                    (!g_Daemon.hNamingSyntaxWnd || !IsWindow(g_Daemon.hNamingSyntaxWnd)) &&
                     (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd))) {
-                    SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                    if (GetForegroundWindow() != hWnd) {
-                        LockSetForegroundWindow(LSFW_UNLOCK);
-                        SetForegroundWindow(hWnd);
-                        SetActiveWindow(hWnd);
-                        SetFocus(hWnd);
+                    if (g_Daemon.IsEditingOpenedImage() && g_Daemon.pinnedImageAboveEdit) {
+                        HWND hLowestPin = g_Daemon.GetLowestPinnedWindow();
+                        if (hLowestPin && hLowestPin != hWnd) {
+                            SetWindowPos(hWnd, hLowestPin, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                            g_Daemon.RaisePinnedWindowsAboveOverlay();
+                        } else {
+                            SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        }
+                        HWND hFg = GetForegroundWindow();
+                        if (hFg != hWnd && !g_Daemon.IsPinnedWindow(hFg)) {
+                            LockSetForegroundWindow(LSFW_UNLOCK);
+                            SetForegroundWindow(hWnd);
+                            SetActiveWindow(hWnd);
+                            SetFocus(hWnd);
+                        }
+                    } else {
+                        SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        if (GetForegroundWindow() != hWnd) {
+                            LockSetForegroundWindow(LSFW_UNLOCK);
+                            SetForegroundWindow(hWnd);
+                            SetActiveWindow(hWnd);
+                            SetFocus(hWnd);
+                        }
                     }
                 }
                 if (!g_Daemon.hasSelection &&
@@ -12504,7 +12716,14 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_LBUTTONDOWN: {
+            if (GetForegroundWindow() != hWnd) {
+                SetForegroundWindow(hWnd);
+                SetActiveWindow(hWnd);
+            }
             SetFocus(hWnd);
+            if (g_Daemon.IsEditingOpenedImage()) {
+                g_Daemon.RaisePinnedWindowsAboveOverlay();
+            }
             int mx = GET_X_LPARAM(lParam);
             int my = GET_Y_LPARAM(lParam);
             POINT pt{ mx, my };
@@ -13759,9 +13978,31 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             break;
         }
 
+        case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0 || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            if (g_Daemon.IsEditingOpenedImage()) {
+                UINT capVk = (UINT)wParam;
+                bool inlineEditActive = g_Daemon.isEditingText || g_Daemon.isEditingSize || g_Daemon.isEditingRatio || g_Daemon.isEditingStroke;
+                if (MatchesOverlayShortcut(g_Daemon.hkPrevRegion, capVk, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PREV_REGION, 0, 0);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkRegionSnip, capVk, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_REGION_SNIP, 0, 0);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkFullSnap, capVk, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
+                    return 0;
+                }
+                if (!inlineEditActive && MatchesOverlayShortcut(g_Daemon.hkPinClipboard, capVk, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PIN_CLIPBOARD, 0, 0);
+                    return 0;
+                }
+            }
 
             if (g_Daemon.isEditingStroke) {
                 if (wParam == VK_ESCAPE) {
@@ -13903,7 +14144,6 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 return 0;
             }
-            bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0 || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             UINT vk = (UINT)wParam;
             bool isSelectionDragActive =
                 (g_Daemon.dragMode == DragMode::PendingOutsideSelection ||
@@ -14125,7 +14365,25 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
+        case WM_SYSKEYUP:
         case WM_KEYUP: {
+            if (wParam == VK_SNAPSHOT && g_Daemon.IsEditingOpenedImage()) {
+                bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0 || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                if (MatchesOverlayShortcut(g_Daemon.hkPrevRegion, VK_SNAPSHOT, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PREV_REGION, 0, 0);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkRegionSnip, VK_SNAPSHOT, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_REGION_SNIP, 0, 0);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkFullSnap, VK_SNAPSHOT, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
+                    return 0;
+                }
+            }
             if (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT) {
                 g_Daemon.lastShiftColorPick = false;
                 bool isSelectionOrResizeDrag =
@@ -14687,12 +14945,190 @@ bool PepperSnapDaemon::UpdateCtrlWindowHover() {
            (found && !EqualRect(&prevRc, &ctrlHoverWindowRect));
 }
 
+void PepperSnapDaemon::DiscardSavedEditSession() {
+    if (savedEditSession.frozenDesktopBmp) {
+        delete savedEditSession.frozenDesktopBmp;
+        savedEditSession.frozenDesktopBmp = nullptr;
+    }
+    if (savedEditSession.overlaySingleImageBmp) {
+        delete savedEditSession.overlaySingleImageBmp;
+        savedEditSession.overlaySingleImageBmp = nullptr;
+    }
+    for (Bitmap* f : savedEditSession.overlayFrames) {
+        delete f;
+    }
+    savedEditSession.overlayFrames.clear();
+    savedEditSession.overlayFrameDelaysMs.clear();
+    savedEditSession.annotations.clear();
+    savedEditSession.undoStack.clear();
+    savedEditSession.redoStack.clear();
+    savedEditSession.selectedAnnotationIds.clear();
+    savedEditSession = SavedEditOverlaySession();
+}
+
 void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* customSelRect) {
-    if (hOverlayWnd) {
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
         if (customBmp || (hOptionsWnd && IsWindow(hOptionsWnd)) || (hShortcutsWnd && IsWindow(hShortcutsWnd))) {
+            DiscardSavedEditSession();
             CloseRegionSnipOverlay();
-        } else {
+        } else if (!IsEditingOpenedImage()) {
             SetForegroundWindow(hOverlayWnd);
+            return;
+        } else {
+            // Capture the "Edit with PepperSnap" window into Custom Area mode
+            CommitActiveTextBox();
+            CommitActiveSizeInput();
+            CommitActiveRatioInput();
+            CommitActiveStrokeInput();
+            hoveredBtnId = -1;
+            pressedBtnId = -1;
+            InvalidateRect(hOverlayWnd, nullptr, FALSE);
+            UpdateWindow(hOverlayWnd);
+            GdiFlush();
+
+            Bitmap* capturedEditBmp = CaptureVirtualDesktop();
+            if (!capturedEditBmp) return;
+
+            std::vector<RECT> editWindowRects;
+            if (pinnedImageAboveEdit) {
+                HWND hPinCur = nullptr;
+                while ((hPinCur = FindWindowExW(nullptr, hPinCur, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+                    if (IsWindow(hPinCur) && IsWindowVisible(hPinCur)) {
+                        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hPinCur, GWLP_USERDATA);
+                        if (pData && pData->bmp) {
+                            int pinW = 32, pinH = 32;
+                            GetPinnedScaledDims(pData, pinW, pinH);
+                            RECT pinRc = {
+                                pData->screenImgX - vScreenX,
+                                pData->screenImgY - vScreenY,
+                                pData->screenImgX - vScreenX + pinW,
+                                pData->screenImgY - vScreenY + pinH
+                            };
+                            editWindowRects.push_back(pinRc);
+                        }
+                    }
+                }
+            }
+            if (HasOverlayMultiFrames()) {
+                if (overlayFrameStripToggleBtnRect.right > overlayFrameStripToggleBtnRect.left &&
+                    overlayFrameStripToggleBtnRect.bottom > overlayFrameStripToggleBtnRect.top) {
+                    editWindowRects.push_back(overlayFrameStripToggleBtnRect);
+                }
+                if (!overlayFrameStripCollapsed &&
+                    overlayFrameStripPanelRect.right > overlayFrameStripPanelRect.left &&
+                    overlayFrameStripPanelRect.bottom > overlayFrameStripPanelRect.top) {
+                    editWindowRects.push_back(overlayFrameStripPanelRect);
+                }
+            }
+            if (hasSelection) {
+                if (hudBoundsRect.right > hudBoundsRect.left && hudBoundsRect.bottom > hudBoundsRect.top) {
+                    editWindowRects.push_back(hudBoundsRect);
+                }
+                RECT normSel = {
+                    std::min(selRect.left, selRect.right),
+                    std::min(selRect.top, selRect.bottom),
+                    std::max(selRect.left, selRect.right),
+                    std::max(selRect.top, selRect.bottom)
+                };
+                if (normSel.right > normSel.left && normSel.bottom > normSel.top) {
+                    editWindowRects.push_back(normSel);
+                }
+            }
+            if (overlayImgDrawRect.right > overlayImgDrawRect.left &&
+                overlayImgDrawRect.bottom > overlayImgDrawRect.top) {
+                editWindowRects.push_back(overlayImgDrawRect);
+            }
+            editWindowRects.push_back({ 0, 0, vScreenW, vScreenH });
+
+            DiscardSavedEditSession();
+            if (overlayFramesPlaying) {
+                KillTimer(hOverlayWnd, 3);
+            }
+            savedEditSession.active = true;
+            savedEditSession.frozenDesktopBmp = frozenDesktopBmp;
+            savedEditSession.overlaySingleImageBmp = overlaySingleImageBmp;
+            savedEditSession.overlayFrames = std::move(overlayFrames);
+            savedEditSession.overlayFrameDelaysMs = std::move(overlayFrameDelaysMs);
+            savedEditSession.overlayActiveFrameIdx = overlayActiveFrameIdx;
+            savedEditSession.overlayImgDrawRect = overlayImgDrawRect;
+            savedEditSession.overlayFrameStripCollapsed = overlayFrameStripCollapsed;
+            savedEditSession.overlayFrameStripHeight = overlayFrameStripHeight;
+            savedEditSession.overlayFrameScrollX = overlayFrameScrollX;
+            savedEditSession.overlayFrameMaxScrollX = overlayFrameMaxScrollX;
+            savedEditSession.overlayFramesPlaying = overlayFramesPlaying;
+            savedEditSession.hasSelection = hasSelection;
+            savedEditSession.selRect = selRect;
+            savedEditSession.annotations = std::move(annotations);
+            savedEditSession.undoStack = std::move(undoStack);
+            savedEditSession.redoStack = std::move(redoStack);
+            savedEditSession.nextStepNum = nextStepNum;
+            savedEditSession.nextAnnotationId = nextAnnotationId;
+            savedEditSession.selectedAnnotationId = selectedAnnotationId;
+            savedEditSession.selectedAnnotationIds = std::move(selectedAnnotationIds);
+            savedEditSession.activeTool = activeTool;
+            savedEditSession.hasCustomHudPos = hasCustomHudPos;
+            savedEditSession.customHudPos = customHudPos;
+            savedEditSession.hasCustomRatio = hasCustomRatio;
+            savedEditSession.customRatioW = customRatioW;
+            savedEditSession.customRatioH = customRatioH;
+
+            frozenDesktopBmp = nullptr;
+            overlaySingleImageBmp = nullptr;
+            overlayFrames.clear();
+            overlayFrameDelaysMs.clear();
+            ClearOverlayFrames();
+
+            frozenDesktopBmp = capturedEditBmp;
+            desktopWindowRects = std::move(editWindowRects);
+            BuildOverlaySurfaceCache();
+
+            hasSelection = false;
+            selRect = { 0, 0, 0, 0 };
+            hasCtrlHoverWindow = false;
+            ctrlHoverWindowRect = { 0, 0, 0, 0 };
+            dimPillRect = { 0, 0, 0, 0 };
+            ratioPillRect = { 0, 0, 0, 0 };
+            ratioResetBtnRect = { 0, 0, 0, 0 };
+            customStrokeRect = { 0, 0, 0, 0 };
+            dragMode = DragMode::None;
+            activeTool = OverlayTool::SelectMove;
+            lastCtrlTempSelect = false;
+            lastShiftColorPick = false;
+            pendingShiftColorPick = false;
+            pendingCtrlWindowSelect = false;
+            pendingCtrlWindowRect = { 0, 0, 0, 0 };
+            loupeMagnification = 5;
+            isRightMouseHeld = false;
+            activeSelectionRatioW = 0;
+            activeSelectionRatioH = 0;
+            hasCustomRatio = false;
+            customRatioW = 0;
+            customRatioH = 0;
+            ratioResetBtnPressed = false;
+            lastRatioHover = false;
+            lastRatioResetHover = false;
+            hasCustomHudPos = false;
+            annotations.clear();
+            undoStack.clear();
+            redoStack.clear();
+            nextStepNum = 1;
+            ClearAnnotationSelection();
+            hoveredBtnId = -1;
+            pressedBtnId = -1;
+
+            POINT curPt{ 0, 0 };
+            if (GetCursorPos(&curPt)) {
+                mousePt = { curPt.x - vScreenX, curPt.y - vScreenY };
+            }
+            UpdateCtrlWindowHover();
+            HidePinnedBubbleTooltip();
+            SetWindowPos(hOverlayWnd, HWND_TOPMOST, vScreenX, vScreenY, vScreenW, vScreenH, SWP_SHOWWINDOW);
+            SetForegroundWindow(hOverlayWnd);
+            SetActiveWindow(hOverlayWnd);
+            SetFocus(hOverlayWnd);
+            UpdateOverlayCursor(mousePt.x, mousePt.y);
+            InvalidateRect(hOverlayWnd, nullptr, FALSE);
+            UpdateWindow(hOverlayWnd);
             return;
         }
     }
@@ -14792,7 +15228,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     }
 
     hOverlayWnd = nullptr;
-    if (s_fnCreateWindowInBand) {
+    if (!customBmp && s_fnCreateWindowInBand) {
         const DWORD candidateBands[] = { 16 /* ZBID_SYSTEM_TOOLS */, 4 /* ZBID_IMMERSIVE_NOTIFICATIONS */, 2 /* ZBID_UIACCESS */ };
         for (DWORD b : candidateBands) {
             hOverlayWnd = s_fnCreateWindowInBand(
@@ -14814,7 +15250,7 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
             nullptr, nullptr, hInst, nullptr
         );
     }
-    if (hOverlayWnd && s_fnSetWindowBand) {
+    if (!customBmp && hOverlayWnd && s_fnSetWindowBand) {
         if (!s_fnSetWindowBand(hOverlayWnd, HWND_TOPMOST, 16 /* ZBID_SYSTEM_TOOLS */)) {
             if (!s_fnSetWindowBand(hOverlayWnd, HWND_TOPMOST, 4 /* ZBID_IMMERSIVE_NOTIFICATIONS */)) {
                 s_fnSetWindowBand(hOverlayWnd, HWND_TOPMOST, 2 /* ZBID_UIACCESS */);
@@ -14827,6 +15263,11 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     SuppressAboveOverlayWindows();
 
     SetWindowPos(hOverlayWnd, HWND_TOPMOST, vScreenX, vScreenY, vScreenW, vScreenH, SWP_SHOWWINDOW);
+    if (IsEditingOpenedImage() && pinnedImageAboveEdit) {
+        RaisePinnedWindowsAboveOverlay();
+    } else if (IsEditingOpenedImage()) {
+        HidePinnedBubbleTooltip();
+    }
     UpdateOverlayCursor(mousePt.x, mousePt.y);
 
     // Unlock foreground activation so SetForegroundWindow succeeds even when a UWP CoreWindow (Notification Center / Start) had focus
@@ -14848,6 +15289,54 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
         SetForegroundWindow(hOverlayWnd);
         SetActiveWindow(hOverlayWnd);
         SetFocus(hOverlayWnd);
+    }
+    if (IsEditingOpenedImage() && pinnedImageAboveEdit) {
+        RaisePinnedWindowsAboveOverlay();
+    }
+}
+
+bool PepperSnapDaemon::IsPinnedWindow(HWND hWnd) const {
+    if (!hWnd || !IsWindow(hWnd)) return false;
+    if (std::find(pinnedWindows.begin(), pinnedWindows.end(), hWnd) != pinnedWindows.end()) {
+        return true;
+    }
+    WCHAR clsName[64] = {0};
+    if (GetClassNameW(hWnd, clsName, 63) > 0 && wcscmp(clsName, L"PepperSnapPinWnd") == 0) {
+        return true;
+    }
+    return false;
+}
+
+HWND PepperSnapDaemon::GetLowestPinnedWindow() const {
+    for (HWND hp : pinnedWindows) {
+        if (hp && IsWindow(hp) && IsWindowVisible(hp)) {
+            return hp;
+        }
+    }
+    HWND hPinExtra = FindWindowExW(nullptr, nullptr, L"PepperSnapPinWnd", nullptr);
+    if (hPinExtra && IsWindow(hPinExtra) && IsWindowVisible(hPinExtra)) {
+        return hPinExtra;
+    }
+    return nullptr;
+}
+
+void PepperSnapDaemon::RaisePinnedWindowsAboveOverlay() {
+    if (!pinnedImageAboveEdit) return;
+    for (HWND hp : pinnedWindows) {
+        if (hp && IsWindow(hp) && IsWindowVisible(hp)) {
+            SetWindowPos(hp, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+    }
+    HWND hPinExtra = nullptr;
+    while ((hPinExtra = FindWindowExW(nullptr, hPinExtra, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+        if (std::find(pinnedWindows.begin(), pinnedWindows.end(), hPinExtra) == pinnedWindows.end()) {
+            if (IsWindowVisible(hPinExtra)) {
+                SetWindowPos(hPinExtra, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            }
+        }
+    }
+    if (g_hPinTooltipWnd && IsWindow(g_hPinTooltipWnd) && IsWindowVisible(g_hPinTooltipWnd)) {
+        SetWindowPos(g_hPinTooltipWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
 
@@ -14885,6 +15374,71 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
     isDraggingStrokeText = false;
     editingStrokeText.clear();
     strokeCaretPos = strokeSelAnchor = 0;
+    if (savedEditSession.active && hOverlayWnd && IsWindow(hOverlayWnd)) {
+        if (frozenDesktopBmp) {
+            delete frozenDesktopBmp;
+            frozenDesktopBmp = nullptr;
+        }
+        ClearOverlayFrames();
+
+        frozenDesktopBmp = savedEditSession.frozenDesktopBmp;
+        overlaySingleImageBmp = savedEditSession.overlaySingleImageBmp;
+        overlayFrames = std::move(savedEditSession.overlayFrames);
+        overlayFrameDelaysMs = std::move(savedEditSession.overlayFrameDelaysMs);
+        overlayActiveFrameIdx = savedEditSession.overlayActiveFrameIdx;
+        overlayImgDrawRect = savedEditSession.overlayImgDrawRect;
+        overlayFrameStripCollapsed = savedEditSession.overlayFrameStripCollapsed;
+        overlayFrameStripHeight = savedEditSession.overlayFrameStripHeight;
+        overlayFrameScrollX = savedEditSession.overlayFrameScrollX;
+        overlayFrameMaxScrollX = savedEditSession.overlayFrameMaxScrollX;
+        overlayFramesPlaying = savedEditSession.overlayFramesPlaying;
+        hasSelection = savedEditSession.hasSelection;
+        selRect = savedEditSession.selRect;
+        annotations = std::move(savedEditSession.annotations);
+        undoStack = std::move(savedEditSession.undoStack);
+        redoStack = std::move(savedEditSession.redoStack);
+        nextStepNum = savedEditSession.nextStepNum;
+        nextAnnotationId = savedEditSession.nextAnnotationId;
+        selectedAnnotationId = savedEditSession.selectedAnnotationId;
+        selectedAnnotationIds = std::move(savedEditSession.selectedAnnotationIds);
+        activeTool = savedEditSession.activeTool;
+        hasCustomHudPos = savedEditSession.hasCustomHudPos;
+        customHudPos = savedEditSession.customHudPos;
+        hasCustomRatio = savedEditSession.hasCustomRatio;
+        customRatioW = savedEditSession.customRatioW;
+        customRatioH = savedEditSession.customRatioH;
+        savedEditSession = SavedEditOverlaySession();
+
+        hasCtrlHoverWindow = false;
+        desktopWindowRects.clear();
+        dragMode = DragMode::None;
+        hoveredBtnId = -1;
+        pressedBtnId = -1;
+
+        BuildOverlaySurfaceCache();
+        LayoutOverlayFrameStrip(vScreenW, vScreenH);
+        BuildDockedHUD();
+        if (overlayFramesPlaying && HasOverlayMultiFrames()) {
+            int delayMs = (overlayActiveFrameIdx < overlayFrameDelaysMs.size()) ? overlayFrameDelaysMs[overlayActiveFrameIdx] : 80;
+            delayMs = std::max(20, std::min(60000, delayMs));
+            SetTimer(hOverlayWnd, 3, (UINT)delayMs, nullptr);
+        }
+        if (pinnedImageAboveEdit) {
+            RaisePinnedWindowsAboveOverlay();
+        }
+        POINT curPt{ 0, 0 };
+        if (GetCursorPos(&curPt)) {
+            mousePt = { curPt.x - vScreenX, curPt.y - vScreenY };
+        }
+        SetForegroundWindow(hOverlayWnd);
+        SetActiveWindow(hOverlayWnd);
+        SetFocus(hOverlayWnd);
+        UpdateOverlayCursor(mousePt.x, mousePt.y);
+        InvalidateRect(hOverlayWnd, nullptr, FALSE);
+        UpdateWindow(hOverlayWnd);
+        return;
+    }
+
     if (hOverlayWnd) {
         DestroyWindow(hOverlayWnd);
         hOverlayWnd = nullptr;
@@ -15779,6 +16333,7 @@ void PepperSnapDaemon::OpenImageFileIntoOverlay(const std::wstring& filePath) {
     if (!LoadImageFramesFromFile(filePath, frames, delays) || frames.empty()) return;
 
     if (hOverlayWnd) {
+        DiscardSavedEditSession();
         CloseRegionSnipOverlay();
     }
     ClearOverlayFrames();
@@ -16653,6 +17208,9 @@ static void ShowTrayContextMenu(HWND hWnd) {
         std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);
         std::wstring prevMenu = L"Instant save previous custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPrevRegion);
         std::wstring pinClipMenu = L"Pin the image in clipboard on top\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPinClipboard);
+        const wchar_t* pinAboveEditMenu = g_Daemon.pinnedImageAboveEdit
+            ? L"Put pinned image below edit"
+            : L"Put pinned image above edit";
         const wchar_t* smoothPinsMenu = ShouldTrayMenuSmoothAllPins()
             ? L"Smooth all pinned image"
             : L"Unsmooth all pinned image";
@@ -16669,6 +17227,7 @@ static void ShowTrayContextMenu(HWND hWnd) {
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,        L"Open image to edit with PepperSnap...");
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE,    L"Open image to pin on top...");
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PIN_CLIPBOARD,     pinClipMenu.c_str());
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PIN_ABOVE_EDIT,    pinAboveEditMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SMOOTH_PINS,       smoothPinsMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_TOOLBAR_PINS, toolbarPinsMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_OUTLINE_PINS, outlinePinsMenu);
@@ -16695,7 +17254,8 @@ static void ShowTrayContextMenu(HWND hWnd) {
         int cmd = (int)TrackPopupMenu(hMenu, tpmFlags, anchorPt.x, anchorPt.y, 0, hWnd, nullptr);
         DestroyMenu(hMenu);
 
-        if (cmd == IDM_TRAY_SMOOTH_PINS ||
+        if (cmd == IDM_TRAY_PIN_ABOVE_EDIT ||
+            cmd == IDM_TRAY_SMOOTH_PINS ||
             cmd == IDM_TRAY_SHOW_TOOLBAR_PINS ||
             cmd == IDM_TRAY_SHOW_OUTLINE_PINS) {
             SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
@@ -16912,6 +17472,19 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     break;
                 case IDM_TRAY_OPTIONS:        g_Daemon.ShowOptionsModal(); break;
                 case IDM_TRAY_STARTUP_RUN:    g_Daemon.ToggleRunAtStartup(); break;
+                case IDM_TRAY_PIN_ABOVE_EDIT: {
+                    g_Daemon.pinnedImageAboveEdit = !g_Daemon.pinnedImageAboveEdit;
+                    g_Daemon.SaveSettings();
+                    if (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd) && g_Daemon.IsEditingOpenedImage()) {
+                        if (g_Daemon.pinnedImageAboveEdit) {
+                            g_Daemon.RaisePinnedWindowsAboveOverlay();
+                        } else {
+                            HidePinnedBubbleTooltip();
+                            SetWindowPos(g_Daemon.hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        }
+                    }
+                    break;
+                }
                 case IDM_TRAY_SMOOTH_PINS: {
                     bool smoothNow = ShouldTrayMenuSmoothAllPins();
                     g_Daemon.smoothPinnedImage = smoothNow;
@@ -17013,6 +17586,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 case IDM_TRAY_SHORTCUTS:      g_Daemon.ShowShortcutsModal(); break;
                 case IDM_TRAY_EXIT:
                     g_Daemon.SaveSettings();
+                    g_Daemon.DiscardSavedEditSession();
                     g_Daemon.CloseRegionSnipOverlay();
                     g_Daemon.RemoveTrayIcon();
                     PostQuitMessage(0);
