@@ -19,7 +19,7 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.9.1";
+    static constexpr const wchar_t* APP_VERSION = L"3.9.2";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, JPEG default, unified Options modal)
@@ -121,6 +121,7 @@ public:
     bool hasCtrlHoverWindow = false;
     RECT ctrlHoverWindowRect{0, 0, 0, 0};
     RECT dimPillRect{0, 0, 0, 0};
+    RECT ratioPillRect{0, 0, 0, 0};
     RECT customStrokeRect{0, 0, 0, 0};
     DragMode dragMode = DragMode::None;
     POINT dragStartPt{0, 0};
@@ -149,8 +150,76 @@ public:
     bool pendingCtrlWindowSelect = false;
     RECT pendingCtrlWindowRect{0, 0, 0, 0};
     int loupeMagnification = 5;
-    bool isRightClickSelectionDrag = false;
+    bool isRightMouseHeld = false;
+    int activeSelectionRatioW = 0;
+    int activeSelectionRatioH = 0;
     POINT selectionTargetPt{0, 0};
+
+    static int ComputeIntGcd(int a, int b) {
+        a = std::abs(a);
+        b = std::abs(b);
+        while (b != 0) {
+            int t = a % b;
+            a = b;
+            b = t;
+        }
+        return std::max(1, a);
+    }
+
+    std::wstring FormatSelectionRatioString(int sw, int sh) const {
+        if (activeSelectionRatioW > 0 && activeSelectionRatioH > 0) {
+            return std::to_wstring(activeSelectionRatioW) + L":" + std::to_wstring(activeSelectionRatioH);
+        }
+        int w = std::max(1, sw);
+        int h = std::max(1, sh);
+        int g = ComputeIntGcd(w, h);
+        return std::to_wstring(w / g) + L":" + std::to_wstring(h / g);
+    }
+
+    bool IsSelectionAnchorPlaced() const {
+        if (dragMode == DragMode::CreatingSelection) return true;
+        if (dragMode >= DragMode::ResizeTL && dragMode <= DragMode::ResizeL) return true;
+        if (dragMode == DragMode::PendingOutsideSelection && !pendingShiftColorPick && !pendingCtrlWindowSelect) return true;
+        return false;
+    }
+
+    bool GetActiveSelectionAspectRatio(WPARAM mouseWParam, int& outRatioW, int& outRatioH) const {
+        bool rButtonDown = isRightMouseHeld || ((mouseWParam & MK_RBUTTON) != 0);
+        bool shiftDownAfterAnchor = IsSelectionAnchorPlaced() &&
+            (((mouseWParam & MK_SHIFT) != 0) || ((GetKeyState(VK_SHIFT) & 0x8000) != 0));
+        if (rButtonDown || shiftDownAfterAnchor) {
+            outRatioW = 1;
+            outRatioH = 1;
+            return true;
+        }
+        auto isKeyDown = [](int vk1, int vk2) -> bool {
+            return ((GetKeyState(vk1) & 0x8000) != 0) ||
+                   ((GetKeyState(vk2) & 0x8000) != 0);
+        };
+        if (isKeyDown('1', VK_NUMPAD1)) {
+            outRatioW = 16;
+            outRatioH = 9;
+            return true;
+        }
+        if (isKeyDown('2', VK_NUMPAD2)) {
+            outRatioW = 9;
+            outRatioH = 16;
+            return true;
+        }
+        if (isKeyDown('3', VK_NUMPAD3)) {
+            outRatioW = 1;
+            outRatioH = 2;
+            return true;
+        }
+        if (isKeyDown('4', VK_NUMPAD4)) {
+            outRatioW = 2;
+            outRatioH = 1;
+            return true;
+        }
+        outRatioW = 0;
+        outRatioH = 0;
+        return false;
+    }
 
     bool HasCreatedCustomArea() const {
         if (!hasSelection) return false;
@@ -1123,6 +1192,10 @@ void PepperSnapDaemon::UpdateOverlayCursor(int mx, int my) {
 
     if (hasSelection && (PtInRect(&dimPillRect, pt) || PtInRect(&customStrokeRect, pt))) {
         SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+        return;
+    }
+    if (hasSelection && PtInRect(&ratioPillRect, pt)) {
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         return;
     }
     if (isEditingText) {
@@ -3367,6 +3440,8 @@ void PepperSnapDaemon::CommitActiveSizeInput() {
         selRect = { sx, sy, sx + newW, sy + newH };
         hasSelection = true;
         hasCustomHudPos = false;
+        activeSelectionRatioW = 0;
+        activeSelectionRatioH = 0;
     }
 }
 
@@ -10105,12 +10180,17 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addSection(L"Custom area — window selection, aiming & size input");
     addRow(L"Hold Shift then click (before selecting)",  L"Override pixel-grid snapping (with 1px crosshair gap), copy pixel RGB hex code (#RRGGBB) under magnifier & close");
     addRow(L"Hold Shift then scroll (before selecting)", L"Increase or decrease magnifier zoom (default 5×, minimum 100% / 1×, up to maximum zoom)");
-    addRow(L"Arrow keys (before or while dragging)",     L"Jump 1 pixel up, down, left, or right before selecting or while holding left/right click to drag/resize selection");
+    addRow(L"Arrow keys (before or while dragging)",     L"Jump 1 pixel up, down, left, or right before selecting or while holding click to drag/resize selection");
     addRow(L"Hold Ctrl then click (before selecting)",   L"Auto-detect, highlight & select any window, notification pop-up, or sidebar");
     addRow(L"Hold Ctrl (after selecting)",   L"Temporarily switch active tool to Select mode while Ctrl is held");
-    addRow(L"Right-click drag",              L"Constrain selection or resize to a 1:1 square (magnifier sticks to the opposite point of the current anchor point)");
+    addRow(L"Hold Shift (after anchor point placed)", L"Constrain selection or resize to 1:1 square ratio after the anchor point is placed in custom size mode (releasing Shift returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
+    addRow(L"Left-click + Right-click",      L"Constrain selection or resize to 1:1 square ratio (releasing right-click returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
+    addRow(L"1 + Left-click",                L"Constrain selection or resize to 16:9 ratio (releasing 1 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
+    addRow(L"2 + Left-click",                L"Constrain selection or resize to 9:16 ratio (releasing 2 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
+    addRow(L"3 + Left-click",                L"Constrain selection or resize to 1:2 ratio (releasing 3 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
+    addRow(L"4 + Left-click",                L"Constrain selection or resize to 2:1 ratio (releasing 4 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"Drag 8 resize handles",         L"Resize existing selected area with a 1:1 square magnification window at the active resize point");
-    addRow(L"Click W × H px indicator",      L"Type custom W×H, width only (200 or 200x), or height only (xx200 or x200), then press Enter (Esc cancels)");
+    addRow(L"Click [W × H px | ratio] indicator", L"Dynamic pill permanently shows [W×H px | ratio] (whole-integer ratio) — click W×H px to type custom W×H, width only (200 or 200x), or height only (xx200 or x200), then press Enter (Esc cancels)");
 
     addSection(L"Custom area — Row 1: annotation tools");
     addToolRow(OverlayTool::SelectMove,     FormatLabelWithShortcut(L"Select mode",         hkToolSelect),    L"Select, multi-select, move, resize, or recolor annotations, or move selection (or hold Ctrl after creating a custom area)");
@@ -11043,15 +11123,25 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 g.DrawRectangle(&handleOutline, pt.x - 4, pt.y - 4, 8, 8);
             }
 
-            // 5. Typeable Dimension Pill — anchored to the stationary (non-moving) corner when resizing!
-            //    Uses the same 8px distance to the selection outline as the toolbar, and +5px horizontal offset
-            //    so above-selection and inside-selection positions align identically.
-            //    Sized equal to 3 toolbar buttons (3 * 32 + 2 * 3 = 102px wide, 28px high).
+            // 5. Dynamic Typeable Dimension & Permanent Ratio Pill [ W×H px | ratio ] — anchored to the stationary corner when resizing!
             bool pillRight = false, pillBottom = false;
             g_Daemon.GetDimensionPillAnchor(pillRight, pillBottom);
-            const int pillBtnW = 32, pillBtnH = 28, pillBtnGap = 3;
-            int pillW = pillBtnW * 3 + pillBtnGap * 2;
-            int pillH = pillBtnH;
+            const int pillH = 28;
+            float pillFontSize = std::max(11.0f, (float)pillH * 0.60f);
+            Font pillMeasureFont(&ff, pillFontSize, FontStyleRegular, UnitPixel);
+
+            std::wstring dimValStr = g_Daemon.isEditingSize
+                ? g_Daemon.editingSizeText
+                : (std::to_wstring(sw) + L"\x00D7" + std::to_wstring(sh));
+            std::wstring fullDimStr = dimValStr + L" px";
+            std::wstring ratioStr = g_Daemon.FormatSelectionRatioString(sw, sh);
+
+            float dimTextW = PepperSnapDaemon::MeasureMonoPrefixWidth(g, pillMeasureFont, fullDimStr, fullDimStr.size());
+            float ratioTextW = PepperSnapDaemon::MeasureMonoPrefixWidth(g, pillMeasureFont, ratioStr, ratioStr.size());
+            int sizeBoxW = std::max(64, (int)std::ceil(dimTextW) + 18);
+            int ratioBoxW = std::max(38, (int)std::ceil(ratioTextW) + 16);
+            int pillW = sizeBoxW + ratioBoxW;
+
             const int outlineGap = 8; // Same distance to selected window outline as the toolbar (8px)
             int pillX = pillRight ? (sx + sw - pillW - 5) : (sx + 5);
             pillX = std::max(5, std::min(W - pillW - 5, pillX));
@@ -11073,21 +11163,34 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                     pillY = std::max(4, sy + sh - pillH - 6);
                 }
             }
-            g_Daemon.dimPillRect = { pillX, pillY, pillX + pillW, pillY + pillH };
+            g_Daemon.dimPillRect = { pillX, pillY, pillX + sizeBoxW, pillY + pillH };
+            g_Daemon.ratioPillRect = { pillX + sizeBoxW, pillY, pillX + pillW, pillY + pillH };
             bool pillHovered = PtInRect(&g_Daemon.dimPillRect, g_Daemon.mousePt);
 
-            SolidBrush pillBg(g_Daemon.isEditingSize ? Color(252, 30, 41, 59) : Color(235, 15, 23, 42));
-            g.FillRectangle(&pillBg, pillX, pillY, pillW, pillH);
-            Pen pillBorder(g_Daemon.isEditingSize ? Color(255, 56, 189, 248) : (pillHovered ? Color(255, 239, 68, 68) : Color(160, 71, 85, 105)), 1.4f);
-            g.DrawRectangle(&pillBorder, pillX, pillY, pillW, pillH);
+            SolidBrush sizeBg(g_Daemon.isEditingSize ? Color(252, 30, 41, 59) : Color(235, 15, 23, 42));
+            SolidBrush ratioBg(Color(235, 15, 23, 42));
+            g.FillRectangle(&sizeBg, pillX, pillY, sizeBoxW, pillH);
+            g.FillRectangle(&ratioBg, pillX + sizeBoxW, pillY, ratioBoxW, pillH);
 
-            std::wstring dimValStr = g_Daemon.isEditingSize
-                ? g_Daemon.editingSizeText
-                : (std::to_wstring(sw) + L"\x00D7" + std::to_wstring(sh));
+            Pen divPen(Color(190, 71, 85, 105), 1.2f);
+            g.DrawLine(&divPen, pillX + sizeBoxW, pillY + 4, pillX + sizeBoxW, pillY + pillH - 4);
+
+            Pen pillBorder(Color(160, 71, 85, 105), 1.4f);
+            g.DrawRectangle(&pillBorder, pillX, pillY, pillW, pillH);
+            if (g_Daemon.isEditingSize || pillHovered) {
+                Pen hiBorder(g_Daemon.isEditingSize ? Color(255, 56, 189, 248) : Color(255, 239, 68, 68), 1.4f);
+                g.DrawRectangle(&hiBorder, pillX, pillY, sizeBoxW, pillH);
+            }
+
             PepperSnapDaemon::DrawEditablePillText(
                 g, g_Daemon.dimPillRect,
                 dimValStr, L" px",
                 g_Daemon.isEditingSize, g_Daemon.sizeCaretPos, g_Daemon.sizeSelAnchor
+            );
+            PepperSnapDaemon::DrawEditablePillText(
+                g, g_Daemon.ratioPillRect,
+                ratioStr, L"",
+                false, 0, 0
             );
         }
 
@@ -11196,9 +11299,21 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 int drawB = std::min(H - 1, wy + wh);
                 g.DrawRectangle(&winBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
 
-                const int pillBtnW = 32, pillBtnH = 28, pillBtnGap = 3;
-                int pillW = pillBtnW * 3 + pillBtnGap * 2;
-                int pillH = pillBtnH;
+                const int pillH = 28;
+                float pillFontSize = std::max(11.0f, (float)pillH * 0.60f);
+                Font pillMeasureFont(&ff, pillFontSize, FontStyleRegular, UnitPixel);
+
+                std::wstring dimValStr = std::to_wstring(ww) + L"\x00D7" + std::to_wstring(wh);
+                std::wstring fullDimStr = dimValStr + L" px";
+                int gVal = PepperSnapDaemon::ComputeIntGcd(ww, wh);
+                std::wstring ratioStr = std::to_wstring(ww / gVal) + L":" + std::to_wstring(wh / gVal);
+
+                float dimTextW = PepperSnapDaemon::MeasureMonoPrefixWidth(g, pillMeasureFont, fullDimStr, fullDimStr.size());
+                float ratioTextW = PepperSnapDaemon::MeasureMonoPrefixWidth(g, pillMeasureFont, ratioStr, ratioStr.size());
+                int sizeBoxW = std::max(64, (int)std::ceil(dimTextW) + 18);
+                int ratioBoxW = std::max(38, (int)std::ceil(ratioTextW) + 16);
+                int pillW = sizeBoxW + ratioBoxW;
+
                 const int outlineGap = 8;
                 int pillX = std::max(5, std::min(W - pillW - 5, wx + 5));
                 int pillY = (wy >= pillH + outlineGap + 4) ? (wy - outlineGap - pillH) : (wy + 6);
@@ -11206,23 +11321,30 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
 
                 SolidBrush pillBg(Color(235, 15, 23, 42));
                 g.FillRectangle(&pillBg, pillX, pillY, pillW, pillH);
+                Pen divPen(Color(190, 71, 85, 105), 1.2f);
+                g.DrawLine(&divPen, pillX + sizeBoxW, pillY + 4, pillX + sizeBoxW, pillY + pillH - 4);
                 Pen pillBorder(Color(160, 71, 85, 105), 1.4f);
                 g.DrawRectangle(&pillBorder, pillX, pillY, pillW, pillH);
 
-                RECT hoverPillRect = { pillX, pillY, pillX + pillW, pillY + pillH };
-                std::wstring dimValStr = std::to_wstring(ww) + L"\x00D7" + std::to_wstring(wh);
+                RECT hoverSizeRect = { pillX, pillY, pillX + sizeBoxW, pillY + pillH };
+                RECT hoverRatioRect = { pillX + sizeBoxW, pillY, pillX + pillW, pillY + pillH };
                 PepperSnapDaemon::DrawEditablePillText(
-                    g, hoverPillRect,
+                    g, hoverSizeRect,
                     dimValStr, L" px", false, 0, 0
+                );
+                PepperSnapDaemon::DrawEditablePillText(
+                    g, hoverRatioRect,
+                    ratioStr, L"", false, 0, 0
                 );
             }
         } else {
             Pen crossPen(Color(150, 239, 68, 68), 1.0f);
             crossPen.SetDashStyle(DashStyleDash);
-            bool shiftHeldCross = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                  ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                  ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
-                                  ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+            bool shiftHeldCross = (g_Daemon.dragMode == DragMode::None || g_Daemon.pendingShiftColorPick) &&
+                                  (((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                   ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                                   ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                   ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0));
             if (shiftHeldCross) {
                 GraphicsState stScreenCross = g.Save();
                 g.SetClip(Rect(g_Daemon.mousePt.x, g_Daemon.mousePt.y, 1, 1), CombineModeExclude);
@@ -11242,7 +11364,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
     if (!g_Daemon.hasSelection || g_Daemon.dragMode == DragMode::CreatingSelection || isResizingSelection) {
         int mx = g_Daemon.mousePt.x;
         int my = g_Daemon.mousePt.y;
-        if (isResizingSelection || (g_Daemon.dragMode == DragMode::CreatingSelection && g_Daemon.isRightClickSelectionDrag)) {
+        if (isResizingSelection || g_Daemon.dragMode == DragMode::CreatingSelection) {
             mx = g_Daemon.selectionTargetPt.x;
             my = g_Daemon.selectionTargetPt.y;
         }
@@ -11301,7 +11423,9 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                                 ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
                                 ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
                                 ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
-            bool overrideGridSnap = (!g_Daemon.hasSelection && shiftHeldNow && !ctrlHeldNow);
+            bool overrideGridSnap = (!g_Daemon.hasSelection &&
+                                     (g_Daemon.dragMode == DragMode::None || g_Daemon.pendingShiftColorPick) &&
+                                     shiftHeldNow && !ctrlHeldNow);
             int mag = g_Daemon.hasSelection ? 5 : std::max(1, std::min(210, g_Daemon.loupeMagnification));
             double scaleX = 1.0 / (double)mag;
             double scaleY = 1.0 / (double)mag;
@@ -11495,7 +11619,9 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         SetFocus(hWnd);
                     }
                 }
-                if (!g_Daemon.hasSelection && (g_Daemon.dragMode == DragMode::None || g_Daemon.dragMode == DragMode::PendingOutsideSelection)) {
+                if (!g_Daemon.hasSelection &&
+                    (g_Daemon.dragMode == DragMode::None ||
+                     (g_Daemon.dragMode == DragMode::PendingOutsideSelection && (g_Daemon.pendingShiftColorPick || g_Daemon.pendingCtrlWindowSelect)))) {
                     g_Daemon.lastCtrlTempSelect = false;
                     bool curShiftColorPick = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
                                              ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
@@ -11554,104 +11680,34 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             SetFocus(hWnd);
             int mx = GET_X_LPARAM(lParam);
             int my = GET_Y_LPARAM(lParam);
-            POINT pt{ mx, my };
-            g_Daemon.mousePt = pt;
-
-            if (g_Daemon.HasOverlayMultiFrames()) {
-                g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
-                if (PtInRect(&g_Daemon.overlayFrameStripToggleBtnRect, pt) ||
-                    (!g_Daemon.overlayFrameStripCollapsed &&
-                     (PtInRect(&g_Daemon.overlayFrameStripResizeRect, pt) ||
-                      PtInRect(&g_Daemon.overlayFrameStripPanelRect, pt)))) {
-                    return 0;
-                }
-            }
-            if (g_Daemon.hasSelection &&
-                (PtInRect(&g_Daemon.customStrokeRect, pt) || PtInRect(&g_Daemon.dimPillRect, pt))) {
-                return 0;
-            }
-            for (const auto& b : g_Daemon.dockButtons) {
-                if (PtInRect(&b.rect, pt)) {
-                    return 0;
-                }
-            }
-
-            auto autoHideFrameStripOnFocus = [&]() {
-                if (g_Daemon.autoHideFrameList && g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed) {
-                    g_Daemon.overlayFrameStripCollapsed = true;
-                    g_Daemon.overlayHoveredFrameIdx = -1;
-                    g_Daemon.overlayTopResizeHovered = false;
-                    g_Daemon.overlayScrollbarHovered = false;
-                    g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
-                }
-            };
-
-            if (g_Daemon.isEditingStroke) g_Daemon.CommitActiveStrokeInput();
-            if (g_Daemon.isEditingSize)   g_Daemon.CommitActiveSizeInput();
-            if (g_Daemon.isEditingText)   g_Daemon.CommitActiveTextBox();
-
-            // 1. Right-click drag on any of the 8 selection resize handles constrains resize to a 1:1 square
-            DragMode handleHit = g_Daemon.HitTestSelectionHandles(mx, my);
-            if (handleHit != DragMode::None) {
-                autoHideFrameStripOnFocus();
-                g_Daemon.isRightClickSelectionDrag = true;
-                g_Daemon.dragMode = handleHit;
-                g_Daemon.dragStartPt = pt;
-                g_Daemon.dragOrigRect = {
-                    std::min(g_Daemon.selRect.left, g_Daemon.selRect.right),
-                    std::min(g_Daemon.selRect.top, g_Daemon.selRect.bottom),
-                    std::max(g_Daemon.selRect.left, g_Daemon.selRect.right),
-                    std::max(g_Daemon.selRect.top, g_Daemon.selRect.bottom)
-                };
-                g_Daemon.selectionTargetPt = pt;
-                SetCapture(hWnd);
-                SendMessageW(hWnd, WM_MOUSEMOVE, MK_RBUTTON, MAKELPARAM(mx, my));
+            g_Daemon.mousePt = { mx, my };
+            g_Daemon.isRightMouseHeld = true;
+            bool isSelectionOrResizeDrag =
+                (g_Daemon.dragMode == DragMode::PendingOutsideSelection ||
+                 g_Daemon.dragMode == DragMode::CreatingSelection ||
+                 (g_Daemon.dragMode >= DragMode::ResizeTL && g_Daemon.dragMode <= DragMode::ResizeL));
+            if (isSelectionOrResizeDrag) {
+                WPARAM moveWParam = (wParam | MK_RBUTTON);
+                if ((GetKeyState(VK_LBUTTON) & 0x8000) != 0) moveWParam |= MK_LBUTTON;
+                SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(mx, my));
                 InvalidateRect(hWnd, nullptr, FALSE);
-                return 0;
             }
-
-            // 2. If inside existing selection box, ignore right-click
-            if (g_Daemon.hasSelection) {
-                RECT normSel = {
-                    std::min(g_Daemon.selRect.left, g_Daemon.selRect.right),
-                    std::min(g_Daemon.selRect.top, g_Daemon.selRect.bottom),
-                    std::max(g_Daemon.selRect.left, g_Daemon.selRect.right),
-                    std::max(g_Daemon.selRect.top, g_Daemon.selRect.bottom)
-                };
-                if (PtInRect(&normSel, pt)) {
-                    return 0;
-                }
-            }
-
-            // 3. Outside selection box (or before selecting): Right-click drag constrains new selection to a 1:1 square
-            g_Daemon.ClearAnnotationSelection();
-            g_Daemon.isRightClickSelectionDrag = true;
-            g_Daemon.pendingShiftColorPick = false;
-            g_Daemon.pendingCtrlWindowSelect = false;
-            g_Daemon.dragMode = DragMode::PendingOutsideSelection;
-            g_Daemon.dragStartPt = pt;
-            SetCapture(hWnd);
-            g_Daemon.UpdateOverlayCursor(mx, my);
-            InvalidateRect(hWnd, nullptr, FALSE);
             return 0;
         }
 
         case WM_RBUTTONUP: {
-            if (g_Daemon.isRightClickSelectionDrag) {
-                int mx = GET_X_LPARAM(lParam);
-                int my = GET_Y_LPARAM(lParam);
-                g_Daemon.mousePt = { mx, my };
-                if (g_Daemon.dragMode == DragMode::CreatingSelection) {
-                    int w = std::abs(g_Daemon.selRect.right - g_Daemon.selRect.left);
-                    int h = std::abs(g_Daemon.selRect.bottom - g_Daemon.selRect.top);
-                    if (w < 1 || h < 1) g_Daemon.hasSelection = false;
-                }
-                g_Daemon.isRightClickSelectionDrag = false;
-                g_Daemon.pendingShiftColorPick = false;
-                g_Daemon.pendingCtrlWindowSelect = false;
-                g_Daemon.dragMode = DragMode::None;
-                ReleaseCapture();
-                g_Daemon.UpdateOverlayCursor(mx, my);
+            int mx = GET_X_LPARAM(lParam);
+            int my = GET_Y_LPARAM(lParam);
+            g_Daemon.mousePt = { mx, my };
+            g_Daemon.isRightMouseHeld = false;
+            bool isSelectionOrResizeDrag =
+                (g_Daemon.dragMode == DragMode::PendingOutsideSelection ||
+                 g_Daemon.dragMode == DragMode::CreatingSelection ||
+                 (g_Daemon.dragMode >= DragMode::ResizeTL && g_Daemon.dragMode <= DragMode::ResizeL));
+            if (isSelectionOrResizeDrag) {
+                WPARAM moveWParam = (wParam & ~MK_RBUTTON);
+                if ((GetKeyState(VK_LBUTTON) & 0x8000) != 0) moveWParam |= MK_LBUTTON;
+                SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(mx, my));
                 InvalidateRect(hWnd, nullptr, FALSE);
             }
             return 0;
@@ -11795,6 +11851,9 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.sizeCaretPos = s.size();
                 }
                 InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            if (g_Daemon.hasSelection && PtInRect(&g_Daemon.ratioPillRect, pt)) {
                 return 0;
             }
             if (g_Daemon.isEditingText) {
@@ -11960,6 +12019,14 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
+            if (preHandleHit == DragMode::None && g_Daemon.hasSelection && PtInRect(&g_Daemon.ratioPillRect, pt)) {
+                autoHideFrameStripOnFocus();
+                g_Daemon.CommitActiveTextBox();
+                g_Daemon.CommitActiveSizeInput();
+                g_Daemon.CommitActiveStrokeInput();
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
             if (g_Daemon.isEditingSize) {
                 g_Daemon.CommitActiveSizeInput();
                 InvalidateRect(hWnd, nullptr, FALSE);
@@ -12014,7 +12081,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             DragMode handleHit = g_Daemon.HitTestSelectionHandles(mx, my);
             if (handleHit != DragMode::None) {
                 autoHideFrameStripOnFocus();
-                g_Daemon.isRightClickSelectionDrag = false;
+                g_Daemon.isRightMouseHeld = ((wParam & MK_RBUTTON) != 0) || ((GetKeyState(VK_RBUTTON) & 0x8000) != 0);
                 g_Daemon.dragMode = handleHit;
                 g_Daemon.dragStartPt = pt;
                 g_Daemon.dragOrigRect = {
@@ -12025,7 +12092,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 };
                 g_Daemon.selectionTargetPt = pt;
                 SetCapture(hWnd);
-                SendMessageW(hWnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(mx, my));
+                SendMessageW(hWnd, WM_MOUSEMOVE, wParam | MK_LBUTTON, MAKELPARAM(mx, my));
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
@@ -12168,7 +12235,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             // (Shift + click picks pixel RGB color; Ctrl + click selects window on WM_LBUTTONUP release if not dragged;
             //  manual region creation starts in WM_MOUSEMOVE only if dragged >= 5px)
             g_Daemon.ClearAnnotationSelection();
-            g_Daemon.isRightClickSelectionDrag = false;
+            g_Daemon.isRightMouseHeld = ((wParam & MK_RBUTTON) != 0) || ((GetKeyState(VK_RBUTTON) & 0x8000) != 0);
             g_Daemon.dragMode = DragMode::PendingOutsideSelection;
             g_Daemon.dragStartPt = pt;
             bool ctrlHeldOnDown = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
@@ -12324,18 +12391,85 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             int clampedMy = std::max(0, std::min(g_Daemon.vScreenH, my));
             int dx = mx - g_Daemon.dragStartPt.x;
             int dy = my - g_Daemon.dragStartPt.y;
-            bool selSquareConstrain = g_Daemon.isRightClickSelectionDrag || ((wParam & MK_RBUTTON) != 0);
+            g_Daemon.isRightMouseHeld = ((wParam & MK_RBUTTON) != 0);
+            int ratioW = 0, ratioH = 0;
+            bool hasRatioConstrain = g_Daemon.GetActiveSelectionAspectRatio(wParam, ratioW, ratioH);
+            if (g_Daemon.dragMode == DragMode::CreatingSelection ||
+                (g_Daemon.dragMode >= DragMode::ResizeTL && g_Daemon.dragMode <= DragMode::ResizeL)) {
+                g_Daemon.activeSelectionRatioW = hasRatioConstrain ? ratioW : 0;
+                g_Daemon.activeSelectionRatioH = hasRatioConstrain ? ratioH : 0;
+            }
 
-            auto applySquareCorner = [&](int anchorX, int anchorY) {
+            auto applyRatioCorner = [&](int anchorX, int anchorY) {
                 int sdx = clampedMx - anchorX;
                 int sdy = clampedMy - anchorY;
-                int side = std::max(std::abs(sdx), std::abs(sdy));
-                int maxSideX = (sdx >= 0) ? (g_Daemon.vScreenW - anchorX) : anchorX;
-                int maxSideY = (sdy >= 0) ? (g_Daemon.vScreenH - anchorY) : anchorY;
-                side = std::min(side, std::min(maxSideX, maxSideY));
-                int tx = anchorX + (sdx >= 0 ? side : -side);
-                int ty = anchorY + (sdy >= 0 ? side : -side);
+                int w = 0, h = 0;
+                if ((long long)std::abs(sdx) * ratioH >= (long long)std::abs(sdy) * ratioW) {
+                    w = std::abs(sdx);
+                    h = (int)std::round((double)w * (double)ratioH / (double)ratioW);
+                } else {
+                    h = std::abs(sdy);
+                    w = (int)std::round((double)h * (double)ratioW / (double)ratioH);
+                }
+                int maxW = (sdx >= 0) ? (g_Daemon.vScreenW - anchorX) : anchorX;
+                int maxH = (sdy >= 0) ? (g_Daemon.vScreenH - anchorY) : anchorY;
+                if (w > maxW) {
+                    w = maxW;
+                    h = (int)std::round((double)w * (double)ratioH / (double)ratioW);
+                }
+                if (h > maxH) {
+                    h = maxH;
+                    w = (int)std::round((double)h * (double)ratioW / (double)ratioH);
+                }
+                w = std::min(w, maxW);
+                h = std::min(h, maxH);
+                int tx = anchorX + (sdx >= 0 ? w : -w);
+                int ty = anchorY + (sdy >= 0 ? h : -h);
                 g_Daemon.selRect = { std::min(anchorX, tx), std::min(anchorY, ty), std::max(anchorX, tx), std::max(anchorY, ty) };
+                g_Daemon.selectionTargetPt = { tx, ty };
+            };
+
+            auto applyRatioEdgeY = [&](int anchorX, int anchorY) {
+                int sdy = clampedMy - anchorY;
+                int h = std::abs(sdy);
+                int w = (int)std::round((double)h * (double)ratioW / (double)ratioH);
+                int maxW = g_Daemon.vScreenW - anchorX;
+                int maxH = (sdy >= 0) ? (g_Daemon.vScreenH - anchorY) : anchorY;
+                if (h > maxH) {
+                    h = maxH;
+                    w = (int)std::round((double)h * (double)ratioW / (double)ratioH);
+                }
+                if (w > maxW) {
+                    w = maxW;
+                    h = (int)std::round((double)w * (double)ratioH / (double)ratioW);
+                }
+                w = std::min(w, maxW);
+                h = std::min(h, maxH);
+                int ty = anchorY + (sdy >= 0 ? h : -h);
+                int tx = anchorX + w;
+                g_Daemon.selRect = { anchorX, std::min(anchorY, ty), tx, std::max(anchorY, ty) };
+                g_Daemon.selectionTargetPt = { tx, ty };
+            };
+
+            auto applyRatioEdgeX = [&](int anchorX, int anchorY) {
+                int sdx = clampedMx - anchorX;
+                int w = std::abs(sdx);
+                int h = (int)std::round((double)w * (double)ratioH / (double)ratioW);
+                int maxW = (sdx >= 0) ? (g_Daemon.vScreenW - anchorX) : anchorX;
+                int maxH = g_Daemon.vScreenH - anchorY;
+                if (w > maxW) {
+                    w = maxW;
+                    h = (int)std::round((double)w * (double)ratioH / (double)ratioW);
+                }
+                if (h > maxH) {
+                    h = maxH;
+                    w = (int)std::round((double)h * (double)ratioW / (double)ratioH);
+                }
+                w = std::min(w, maxW);
+                h = std::min(h, maxH);
+                int tx = anchorX + (sdx >= 0 ? w : -w);
+                int ty = anchorY + h;
+                g_Daemon.selRect = { std::min(anchorX, tx), anchorY, std::max(anchorX, tx), ty };
                 g_Daemon.selectionTargetPt = { tx, ty };
             };
 
@@ -12368,16 +12502,12 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 }
                 case DragMode::PendingOutsideSelection: {
-                    if (!g_Daemon.isRightClickSelectionDrag) {
+                    if (!hasRatioConstrain) {
                         bool ctrlHeldMove = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                             ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                             ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
                                             ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
-                        bool shiftHeldMove = ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                             ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                             ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
-                                             ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
-                        if (!g_Daemon.hasSelection && (shiftHeldMove || g_Daemon.pendingShiftColorPick) && !ctrlHeldMove) {
+                        if (!g_Daemon.hasSelection && g_Daemon.pendingShiftColorPick && !ctrlHeldMove) {
                             InvalidateRect(hWnd, nullptr, FALSE);
                             return 0;
                         }
@@ -12410,8 +12540,10 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
                         int startY = std::max(0, std::min(g_Daemon.vScreenH, (int)g_Daemon.dragStartPt.y));
                         g_Daemon.dragOrigRect = { startX, startY, startX, startY };
-                        if (selSquareConstrain) {
-                            applySquareCorner(startX, startY);
+                        g_Daemon.activeSelectionRatioW = hasRatioConstrain ? ratioW : 0;
+                        g_Daemon.activeSelectionRatioH = hasRatioConstrain ? ratioH : 0;
+                        if (hasRatioConstrain) {
+                            applyRatioCorner(startX, startY);
                         } else {
                             g_Daemon.selRect = { startX, startY, clampedMx, clampedMy };
                             g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12423,10 +12555,10 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 case DragMode::CreatingSelection:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
+                    if (hasRatioConstrain) {
                         int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
                         int startY = std::max(0, std::min(g_Daemon.vScreenH, (int)g_Daemon.dragStartPt.y));
-                        applySquareCorner(startX, startY);
+                        applyRatioCorner(startX, startY);
                     } else {
                         int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
                         int startY = std::max(0, std::min(g_Daemon.vScreenH, (int)g_Daemon.dragStartPt.y));
@@ -12446,8 +12578,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 case DragMode::ResizeTL:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        applySquareCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom);
+                    if (hasRatioConstrain) {
+                        applyRatioCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom);
                     } else {
                         g_Daemon.selRect = { clampedMx, clampedMy, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12455,14 +12587,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 case DragMode::ResizeT:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        int anchorX = g_Daemon.dragOrigRect.left, anchorY = g_Daemon.dragOrigRect.bottom;
-                        int sdy = clampedMy - anchorY;
-                        int side = std::min(std::abs(sdy), std::min(g_Daemon.vScreenW - anchorX, sdy >= 0 ? (g_Daemon.vScreenH - anchorY) : anchorY));
-                        int ty = anchorY + (sdy >= 0 ? side : -side);
-                        int tx = anchorX + side;
-                        g_Daemon.selRect = { anchorX, std::min(anchorY, ty), tx, std::max(anchorY, ty) };
-                        g_Daemon.selectionTargetPt = { tx, ty };
+                    if (hasRatioConstrain) {
+                        applyRatioEdgeY(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.bottom);
                     } else {
                         g_Daemon.selRect = { g_Daemon.dragOrigRect.left, clampedMy, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12470,8 +12596,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 case DragMode::ResizeTR:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        applySquareCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.bottom);
+                    if (hasRatioConstrain) {
+                        applyRatioCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.bottom);
                     } else {
                         g_Daemon.selRect = { g_Daemon.dragOrigRect.left, clampedMy, clampedMx, g_Daemon.dragOrigRect.bottom };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12479,14 +12605,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 case DragMode::ResizeR:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        int anchorX = g_Daemon.dragOrigRect.left, anchorY = g_Daemon.dragOrigRect.top;
-                        int sdx = clampedMx - anchorX;
-                        int side = std::min(std::abs(sdx), std::min(g_Daemon.vScreenH - anchorY, sdx >= 0 ? (g_Daemon.vScreenW - anchorX) : anchorX));
-                        int tx = anchorX + (sdx >= 0 ? side : -side);
-                        int ty = anchorY + side;
-                        g_Daemon.selRect = { std::min(anchorX, tx), anchorY, std::max(anchorX, tx), ty };
-                        g_Daemon.selectionTargetPt = { tx, ty };
+                    if (hasRatioConstrain) {
+                        applyRatioEdgeX(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
                     } else {
                         g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, clampedMx, g_Daemon.dragOrigRect.bottom };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12494,8 +12614,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 case DragMode::ResizeBR:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        applySquareCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
+                    if (hasRatioConstrain) {
+                        applyRatioCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
                     } else {
                         g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, clampedMx, clampedMy };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12503,14 +12623,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 case DragMode::ResizeB:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        int anchorX = g_Daemon.dragOrigRect.left, anchorY = g_Daemon.dragOrigRect.top;
-                        int sdy = clampedMy - anchorY;
-                        int side = std::min(std::abs(sdy), std::min(g_Daemon.vScreenW - anchorX, sdy >= 0 ? (g_Daemon.vScreenH - anchorY) : anchorY));
-                        int ty = anchorY + (sdy >= 0 ? side : -side);
-                        int tx = anchorX + side;
-                        g_Daemon.selRect = { anchorX, std::min(anchorY, ty), tx, std::max(anchorY, ty) };
-                        g_Daemon.selectionTargetPt = { tx, ty };
+                    if (hasRatioConstrain) {
+                        applyRatioEdgeY(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
                     } else {
                         g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, clampedMy };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12518,8 +12632,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 case DragMode::ResizeBL:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        applySquareCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.top);
+                    if (hasRatioConstrain) {
+                        applyRatioCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.top);
                     } else {
                         g_Daemon.selRect = { clampedMx, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, clampedMy };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12527,14 +12641,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 case DragMode::ResizeL:
                     g_Daemon.hasCustomHudPos = false;
-                    if (selSquareConstrain) {
-                        int anchorX = g_Daemon.dragOrigRect.right, anchorY = g_Daemon.dragOrigRect.top;
-                        int sdx = clampedMx - anchorX;
-                        int side = std::min(std::abs(sdx), std::min(g_Daemon.vScreenH - anchorY, sdx >= 0 ? (g_Daemon.vScreenW - anchorX) : anchorX));
-                        int tx = anchorX + (sdx >= 0 ? side : -side);
-                        int ty = anchorY + side;
-                        g_Daemon.selRect = { std::min(anchorX, tx), anchorY, std::max(anchorX, tx), ty };
-                        g_Daemon.selectionTargetPt = { tx, ty };
+                    if (hasRatioConstrain) {
+                        applyRatioEdgeX(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.top);
                     } else {
                         g_Daemon.selRect = { clampedMx, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
@@ -12855,11 +12963,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                     ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                     ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
                                     ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
-                    bool shiftHeld = ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                     ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                     ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
-                                     ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
-                    if (!g_Daemon.hasSelection && (shiftHeld || g_Daemon.pendingShiftColorPick) && !ctrlHeld) {
+                    if (!g_Daemon.hasSelection && g_Daemon.pendingShiftColorPick && !ctrlHeld) {
                         g_Daemon.pendingShiftColorPick = false;
                         g_Daemon.pendingCtrlWindowSelect = false;
                         ReleaseCapture();
@@ -12879,6 +12983,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         if (hasWin) {
                             g_Daemon.hasSelection = true;
                             g_Daemon.selRect = winRc;
+                            g_Daemon.activeSelectionRatioW = 0;
+                            g_Daemon.activeSelectionRatioH = 0;
                             g_Daemon.hasCtrlHoverWindow = false;
                             g_Daemon.hasCustomHudPos = false;
                             g_Daemon.activeTool = OverlayTool::SelectMove;
@@ -13095,14 +13201,14 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                  g_Daemon.dragMode == DragMode::ResizeB  ||
                  g_Daemon.dragMode == DragMode::ResizeBL ||
                  g_Daemon.dragMode == DragMode::ResizeL);
-            if ((!g_Daemon.hasSelection || isSelectionDragActive) && !shift && !ctrl && !alt &&
+            if ((!g_Daemon.hasSelection || isSelectionDragActive) && !ctrl && !alt &&
                 (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT)) {
                 int stepX = (wParam == VK_LEFT) ? -1 : ((wParam == VK_RIGHT) ? 1 : 0);
                 int stepY = (wParam == VK_UP)   ? -1 : ((wParam == VK_DOWN)  ? 1 : 0);
                 int nextX = std::max(0, std::min(g_Daemon.vScreenW - 1, (int)g_Daemon.mousePt.x + stepX));
                 int nextY = std::max(0, std::min(g_Daemon.vScreenH - 1, (int)g_Daemon.mousePt.y + stepY));
 
-                if (g_Daemon.dragMode == DragMode::PendingOutsideSelection) {
+                if (g_Daemon.dragMode == DragMode::PendingOutsideSelection && !g_Daemon.pendingShiftColorPick) {
                     if (g_Daemon.autoHideFrameList && g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed) {
                         g_Daemon.overlayFrameStripCollapsed = true;
                         g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
@@ -13123,9 +13229,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.dragOrigRect = { startX, startY, startX, startY };
                 }
 
-                // When creating or corner-resizing a 1:1 square via right-click drag, step from the active constrained
-                // square corner so every arrow key press changes the square size by 1 pixel immediately.
-                if (g_Daemon.isRightClickSelectionDrag &&
+                int ratioW = 0, ratioH = 0;
+                WPARAM curMouseWParam = 0;
+                if ((GetKeyState(VK_LBUTTON) & 0x8000) != 0) curMouseWParam |= MK_LBUTTON;
+                if (g_Daemon.isRightMouseHeld || (GetKeyState(VK_RBUTTON) & 0x8000) != 0) curMouseWParam |= MK_RBUTTON;
+                if (shift) curMouseWParam |= MK_SHIFT;
+                bool hasRatio = g_Daemon.GetActiveSelectionAspectRatio(curMouseWParam, ratioW, ratioH);
+                if (hasRatio &&
                     (g_Daemon.dragMode == DragMode::CreatingSelection ||
                      g_Daemon.dragMode == DragMode::ResizeTL ||
                      g_Daemon.dragMode == DragMode::ResizeTR ||
@@ -13146,22 +13256,39 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         anchorX = g_Daemon.dragOrigRect.right;
                         anchorY = g_Daemon.dragOrigRect.top;
                     }
-                    int curSdx = g_Daemon.mousePt.x - anchorX;
-                    int curSdy = g_Daemon.mousePt.y - anchorY;
-                    int curSide = std::max(std::abs(curSdx), std::abs(curSdy));
+                    int curSdx = g_Daemon.selectionTargetPt.x - anchorX;
+                    int curSdy = g_Daemon.selectionTargetPt.y - anchorY;
+                    int curW = std::abs(curSdx);
+                    int curH = std::abs(curSdy);
                     int dirX = (curSdx >= 0) ? 1 : -1;
                     int dirY = (curSdy >= 0) ? 1 : -1;
-                    if (curSide == 0) {
+                    if (curW == 0 && curH == 0) {
                         if (stepX != 0) dirX = stepX;
                         if (stepY != 0) dirY = stepY;
                     }
-                    int deltaSide = (stepX != 0) ? (stepX * dirX) : (stepY * dirY);
-                    int nextSide = std::max(1, curSide + deltaSide);
-                    int maxSideX = (dirX >= 0) ? (g_Daemon.vScreenW - anchorX) : anchorX;
-                    int maxSideY = (dirY >= 0) ? (g_Daemon.vScreenH - anchorY) : anchorY;
-                    nextSide = std::min(nextSide, std::min(maxSideX, maxSideY));
-                    nextX = std::max(0, std::min(g_Daemon.vScreenW - 1, anchorX + dirX * nextSide));
-                    nextY = std::max(0, std::min(g_Daemon.vScreenH - 1, anchorY + dirY * nextSide));
+                    int nextW = curW;
+                    int nextH = curH;
+                    if (stepX != 0) {
+                        nextW = std::max(1, curW + stepX * dirX);
+                        nextH = std::max(1, (int)std::round((double)nextW * (double)ratioH / (double)ratioW));
+                    } else {
+                        nextH = std::max(1, curH + stepY * dirY);
+                        nextW = std::max(1, (int)std::round((double)nextH * (double)ratioW / (double)ratioH));
+                    }
+                    int maxW = (dirX >= 0) ? (g_Daemon.vScreenW - anchorX) : anchorX;
+                    int maxH = (dirY >= 0) ? (g_Daemon.vScreenH - anchorY) : anchorY;
+                    if (nextW > maxW) {
+                        nextW = maxW;
+                        nextH = std::max(1, (int)std::round((double)nextW * (double)ratioH / (double)ratioW));
+                    }
+                    if (nextH > maxH) {
+                        nextH = maxH;
+                        nextW = std::max(1, (int)std::round((double)nextH * (double)ratioW / (double)ratioH));
+                    }
+                    nextW = std::min(nextW, maxW);
+                    nextH = std::min(nextH, maxH);
+                    nextX = std::max(0, std::min(g_Daemon.vScreenW - 1, anchorX + dirX * nextW));
+                    nextY = std::max(0, std::min(g_Daemon.vScreenH - 1, anchorY + dirY * nextH));
                 }
 
                 g_Daemon.mousePt.x = nextX;
@@ -13170,9 +13297,22 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 
                 WPARAM moveWParam = 0;
                 if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) moveWParam |= MK_LBUTTON;
-                if ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0 || g_Daemon.isRightClickSelectionDrag) moveWParam |= MK_RBUTTON;
+                if ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0 || g_Daemon.isRightMouseHeld) moveWParam |= MK_RBUTTON;
+                if (shift) moveWParam |= MK_SHIFT;
                 SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(nextX, nextY));
                 g_Daemon.UpdateOverlayCursor(nextX, nextY);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+
+            if (isSelectionDragActive &&
+                (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT ||
+                 wParam == '1' || wParam == '2' || wParam == '3' || wParam == '4' ||
+                 wParam == VK_NUMPAD1 || wParam == VK_NUMPAD2 || wParam == VK_NUMPAD3 || wParam == VK_NUMPAD4)) {
+                WPARAM moveWParam = MK_LBUTTON;
+                if (shift || wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT) moveWParam |= MK_SHIFT;
+                if (g_Daemon.isRightMouseHeld || (GetKeyState(VK_RBUTTON) & 0x8000) != 0) moveWParam |= MK_RBUTTON;
+                SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(g_Daemon.mousePt.x, g_Daemon.mousePt.y));
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
@@ -13272,7 +13412,16 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         case WM_KEYUP: {
             if (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT) {
                 g_Daemon.lastShiftColorPick = false;
-                if (!g_Daemon.hasSelection) {
+                bool isSelectionOrResizeDrag =
+                    (g_Daemon.dragMode == DragMode::PendingOutsideSelection ||
+                     g_Daemon.dragMode == DragMode::CreatingSelection ||
+                     (g_Daemon.dragMode >= DragMode::ResizeTL && g_Daemon.dragMode <= DragMode::ResizeL));
+                if (isSelectionOrResizeDrag) {
+                    WPARAM moveWParam = MK_LBUTTON;
+                    if (g_Daemon.isRightMouseHeld || (GetKeyState(VK_RBUTTON) & 0x8000) != 0) moveWParam |= MK_RBUTTON;
+                    SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(g_Daemon.mousePt.x, g_Daemon.mousePt.y));
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                } else if (!g_Daemon.hasSelection) {
                     InvalidateRect(hWnd, nullptr, FALSE);
                 }
                 return 0;
@@ -13290,6 +13439,20 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 if (changed) {
                     g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            if (wParam == '1' || wParam == '2' || wParam == '3' || wParam == '4' ||
+                wParam == VK_NUMPAD1 || wParam == VK_NUMPAD2 || wParam == VK_NUMPAD3 || wParam == VK_NUMPAD4) {
+                bool isSelectionOrResizeDrag =
+                    (g_Daemon.dragMode == DragMode::PendingOutsideSelection ||
+                     g_Daemon.dragMode == DragMode::CreatingSelection ||
+                     (g_Daemon.dragMode >= DragMode::ResizeTL && g_Daemon.dragMode <= DragMode::ResizeL));
+                if (isSelectionOrResizeDrag) {
+                    WPARAM moveWParam = MK_LBUTTON;
+                    if (g_Daemon.isRightMouseHeld || (GetKeyState(VK_RBUTTON) & 0x8000) != 0) moveWParam |= MK_RBUTTON;
+                    SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(g_Daemon.mousePt.x, g_Daemon.mousePt.y));
                     InvalidateRect(hWnd, nullptr, FALSE);
                 }
                 return 0;
@@ -13863,7 +14026,11 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
     pendingCtrlWindowSelect = false;
     pendingCtrlWindowRect = { 0, 0, 0, 0 };
     loupeMagnification = 5;
-    isRightClickSelectionDrag = false;
+    isRightMouseHeld = false;
+    activeSelectionRatioW = 0;
+    activeSelectionRatioH = 0;
+    dimPillRect = { 0, 0, 0, 0 };
+    ratioPillRect = { 0, 0, 0, 0 };
     isEditingText = false;
     isEditingSize = false;
     isDraggingSizeText = false;
@@ -13972,7 +14139,11 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
     pendingCtrlWindowSelect = false;
     pendingCtrlWindowRect = { 0, 0, 0, 0 };
     loupeMagnification = 5;
-    isRightClickSelectionDrag = false;
+    isRightMouseHeld = false;
+    activeSelectionRatioW = 0;
+    activeSelectionRatioH = 0;
+    dimPillRect = { 0, 0, 0, 0 };
+    ratioPillRect = { 0, 0, 0, 0 };
     isEditingText = false;
     isEditingSize = false;
     isDraggingSizeText = false;
