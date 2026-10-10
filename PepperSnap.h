@@ -58,8 +58,9 @@ using namespace Gdiplus;
 #define WM_TRIGGER_FULL_SNAP   (WM_USER + 103)
 #define WM_TRIGGER_PREV_REGION (WM_USER + 104)
 #define WM_UPDATE_CHECK_RESULT (WM_USER + 105)
-#define WM_SHORTCUT_RECORDED   (WM_USER + 106)
-#define WM_PROCESS_PIN_QUEUE   (WM_USER + 107)
+#define WM_SHORTCUT_RECORDED     (WM_USER + 106)
+#define WM_PROCESS_PIN_QUEUE     (WM_USER + 107)
+#define WM_TRIGGER_PIN_CLIPBOARD (WM_USER + 108)
 
 #define COPYDATA_OPEN_IMAGE        0x5053494DUL
 #define COPYDATA_PIN_IMAGE         0x5053504EUL
@@ -72,6 +73,7 @@ using namespace Gdiplus;
 #define HK_REGION_SNIP         9101
 #define HK_FULL_SNAP           9102
 #define HK_PREV_REGION         9103
+#define HK_PIN_CLIPBOARD       9104
 
 struct HotkeyBinding {
     UINT modifiers = MOD_CONTROL;
@@ -104,6 +106,7 @@ enum TrayMenuID {
     IDM_TRAY_PREV_REGION,
     IDM_TRAY_OPEN_IMAGE,
     IDM_TRAY_OPEN_PIN_IMAGE,
+    IDM_TRAY_PIN_CLIPBOARD,
     IDM_TRAY_OPEN_FOLDER,
     IDM_TRAY_OPTIONS,
     IDM_TRAY_STARTUP_RUN,
@@ -192,6 +195,7 @@ enum DockBtnID {
     DBTN_ACT_ZOOM_OUT,
     DBTN_ACT_ZOOM_IN,
     DBTN_ACT_ZOOM_RESET,
+    DBTN_ACT_POS_RESET,
     DBTN_ACT_PIN_OUTLINE,
     DBTN_ACT_PIN_HIDE_TOOLBAR,
     DBTN_ACT_PIN_UNFILTER,
@@ -218,6 +222,8 @@ struct PinnedWindowData {
     float scale = 1.0f;
     int screenImgX = 0;
     int screenImgY = 0;
+    int initialScreenImgX = 0;
+    int initialScreenImgY = 0;
     int winX = 0;
     int winY = 0;
     int winW = 32;
@@ -230,6 +236,7 @@ struct PinnedWindowData {
     bool hideToolbar = false;
     bool hideOutline = false;
     bool smoothImage = false;
+    bool isSelected = false;
     bool dragging = false;
     bool dragMoved = false;
     POINT dragStartMouse{0, 0};
@@ -269,6 +276,8 @@ struct PinnedWindowData {
     int cachedImgH = 0;
     size_t cachedFrameIdx = (size_t)-1;
     bool cachedHideOutline = false;
+    bool cachedSelected = false;
     bool cachedSmooth = false;
     bool cachedHq = false;
+    int zoomAnchorCorner = 0;
 };

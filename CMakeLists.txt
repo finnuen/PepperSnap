@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PepperSnap VERSION 3.9.2 LANGUAGES CXX RC)
+project(PepperSnap VERSION 3.9.3 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
