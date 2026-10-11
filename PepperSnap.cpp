@@ -45,12 +45,12 @@ public:
     bool hidePinnedToolbar = false;
     bool hidePinnedOutline = false;
     bool smoothPinnedImage = false;
-    bool pinnedImageAboveEdit = false;
-    int optionsWindowHeight = 772;
-    int customizeKeysWindowHeight = 560;
-    int shortcutsWindowWidth = 880;
-    int shortcutsWindowHeight = 560;
-    int namingSyntaxWindowHeight = 706;
+    bool pinnedImageAboveEdit = true;
+    int optionsWindowHeight = 860;
+    int customizeKeysWindowHeight = 620;
+    int shortcutsWindowWidth = 900;
+    int shortcutsWindowHeight = 620;
+    int namingSyntaxWindowHeight = 760;
     bool autoCheckUpdates = true;
     UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
     long long lastUpdateCheckTime = 0;
@@ -630,6 +630,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"HidePinnedOutline", hidePinnedOutline ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"SmoothPinnedImage", smoothPinnedImage ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PinnedImageAboveEdit", pinnedImageAboveEdit ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"PinAboveEditDefaultV1", L"1", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowWidth", std::to_wstring(shortcutsWindowWidth).c_str(), iniPath.c_str());
@@ -730,17 +731,25 @@ void PepperSnapDaemon::LoadSettings() {
     hidePinnedToolbar = (GetPrivateProfileIntW(L"PepperSnap", L"HidePinnedToolbar", 0, iniPath.c_str()) != 0);
     hidePinnedOutline = (GetPrivateProfileIntW(L"PepperSnap", L"HidePinnedOutline", 0, iniPath.c_str()) != 0);
     smoothPinnedImage = (GetPrivateProfileIntW(L"PepperSnap", L"SmoothPinnedImage", 0, iniPath.c_str()) != 0);
-    pinnedImageAboveEdit = (GetPrivateProfileIntW(L"PepperSnap", L"PinnedImageAboveEdit", 0, iniPath.c_str()) != 0);
-    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 772, iniPath.c_str());
-    if (optWinH == 716 || optWinH == 744) optWinH = 772;
+    if (GetPrivateProfileIntW(L"PepperSnap", L"PinAboveEditDefaultV1", 0, iniPath.c_str()) == 0) {
+        pinnedImageAboveEdit = true;
+        WritePrivateProfileStringW(L"PepperSnap", L"PinnedImageAboveEdit", L"1", iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", L"PinAboveEditDefaultV1", L"1", iniPath.c_str());
+    } else {
+        pinnedImageAboveEdit = (GetPrivateProfileIntW(L"PepperSnap", L"PinnedImageAboveEdit", 1, iniPath.c_str()) != 0);
+    }
+    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 860, iniPath.c_str());
+    if (optWinH == 716 || optWinH == 744 || optWinH == 772 || optWinH == 800) optWinH = 860;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
-    int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 560, iniPath.c_str());
+    int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 620, iniPath.c_str());
+    if (ckWinH == 560) ckWinH = 620;
     customizeKeysWindowHeight = std::max(280, std::min(2160, ckWinH));
-    int scWinW = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowWidth", 880, iniPath.c_str());
+    int scWinW = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowWidth", 900, iniPath.c_str());
     shortcutsWindowWidth = std::max(680, std::min(3840, scWinW));
-    int scWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowHeight", 560, iniPath.c_str());
+    int scWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowHeight", 620, iniPath.c_str());
     shortcutsWindowHeight = std::max(260, std::min(2160, scWinH));
-    int nsWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"NamingSyntaxWindowHeight", 706, iniPath.c_str());
+    int nsWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"NamingSyntaxWindowHeight", 760, iniPath.c_str());
+    if (nsWinH == 706) nsWinH = 760;
     namingSyntaxWindowHeight = std::max(260, std::min(2160, nsWinH));
     int fsH = (int)GetPrivateProfileIntW(L"PepperSnap", L"FrameStripHeight", 142, iniPath.c_str());
     overlayFrameStripHeight = std::max(92, std::min(600, fsH));
@@ -1503,6 +1512,136 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
     std::wstring editCmd   = L"\"" + std::wstring(exePath) + L"\" --edit \"%1\"";
     std::wstring pinCmd    = L"\"" + std::wstring(exePath) + L"\" --pin \"%1\"";
 
+    // If "Launch PepperSnap at Windows startup" is enabled, ensure it points to the current executable (not an old v2.0.1.0 path)
+    {
+        HKEY hRunKey = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ | KEY_WRITE, &hRunKey) == ERROR_SUCCESS) {
+            WCHAR runBuf[MAX_PATH * 2] = {0};
+            DWORD cbRun = sizeof(runBuf);
+            if (RegQueryValueExW(hRunKey, L"PepperSnap", nullptr, nullptr, (LPBYTE)runBuf, &cbRun) == ERROR_SUCCESS && runBuf[0] != L'\0') {
+                std::wstring desired = L"\"" + std::wstring(exePath) + L"\"";
+                if (_wcsicmp(runBuf, desired.c_str()) != 0) {
+                    RegSetValueExW(hRunKey, L"PepperSnap", 0, REG_SZ, (const BYTE*)desired.c_str(), (DWORD)((desired.size() + 1) * sizeof(wchar_t)));
+                }
+            }
+            RegCloseKey(hRunKey);
+        }
+        HKEY hRunLM = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ | KEY_WRITE, &hRunLM) == ERROR_SUCCESS) {
+            RegDeleteValueW(hRunLM, L"PepperSnap");
+            RegCloseKey(hRunLM);
+        }
+    }
+
+    // Purge any stale v2.0.1.0 / PepperSnap entries from Explorer MuiCache and Applications class keys
+    {
+        HKEY hMui = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache", 0, KEY_READ | KEY_WRITE, &hMui) == ERROR_SUCCESS) {
+            std::vector<std::wstring> valsToDelete;
+            DWORD idx = 0;
+            WCHAR valName[1024];
+            DWORD valNameLen = 1024;
+            BYTE dataBuf[1024];
+            DWORD dataLen = sizeof(dataBuf);
+            DWORD valType = 0;
+            while (RegEnumValueW(hMui, idx++, valName, &valNameLen, nullptr, &valType, dataBuf, &dataLen) == ERROR_SUCCESS) {
+                std::wstring vn(valName, valNameLen);
+                std::wstring vd;
+                if ((valType == REG_SZ || valType == REG_EXPAND_SZ) && dataLen >= sizeof(wchar_t)) {
+                    const wchar_t* wptr = (const wchar_t*)dataBuf;
+                    vd.assign(wptr, wcsnlen(wptr, dataLen / sizeof(wchar_t)));
+                }
+                if (vn.find(L"2.0.1") != std::wstring::npos || vd.find(L"2.0.1") != std::wstring::npos ||
+                    (vn.find(L"PepperSnap") != std::wstring::npos && vn.find(exePath) == std::wstring::npos)) {
+                    valsToDelete.push_back(vn);
+                }
+                valNameLen = 1024;
+                dataLen = sizeof(dataBuf);
+            }
+            for (const auto& v : valsToDelete) {
+                RegDeleteValueW(hMui, v.c_str());
+            }
+            RegCloseKey(hMui);
+        }
+
+        // Remove any legacy Applications\PepperSnap.exe registration so Windows doesn't offer PepperSnap on non-image files
+        SHDeleteKeyW(HKEY_CURRENT_USER,  L"Software\\Classes\\Applications\\PepperSnap.exe");
+        SHDeleteKeyW(HKEY_LOCAL_MACHINE, L"Software\\Classes\\Applications\\PepperSnap.exe");
+    }
+
+    // Purge any PepperSnap context menu verbs from non-image / unselected shell locations
+    // (such as empty Desktop background, Folder background, Directories, Drives, or '*' all-files)
+    auto purgePepperSnapVerbsFromShellKey = [](HKEY hRoot, const std::wstring& shellSubKey) {
+        HKEY hShell = nullptr;
+        if (RegOpenKeyExW(hRoot, shellSubKey.c_str(), 0, KEY_READ | KEY_WRITE, &hShell) != ERROR_SUCCESS) return;
+        std::vector<std::wstring> toRemove;
+        DWORD idx = 0;
+        WCHAR subName[256];
+        DWORD subLen = 256;
+        while (RegEnumKeyExW(hShell, idx++, subName, &subLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            std::wstring s(subName, subLen);
+            if (_wcsnicmp(s.c_str(), L"PepperSnap", 10) == 0 || s.find(L"2.0.1") != std::wstring::npos) {
+                toRemove.push_back(s);
+            } else {
+                // Also check default value / command value for lingering v2.0.1.0 or PepperSnap references
+                WCHAR cmdBuf[MAX_PATH * 2] = {0};
+                DWORD cbCmd = sizeof(cmdBuf);
+                if (RegGetValueW(hShell, (s + L"\\command").c_str(), nullptr, RRF_RT_REG_SZ, nullptr, cmdBuf, &cbCmd) == ERROR_SUCCESS) {
+                    if (wcsstr(cmdBuf, L"PepperSnap") != nullptr || wcsstr(cmdBuf, L"2.0.1") != nullptr) {
+                        toRemove.push_back(s);
+                    }
+                }
+            }
+            subLen = 256;
+        }
+        RegCloseKey(hShell);
+        for (const auto& k : toRemove) {
+            std::wstring full = shellSubKey + L"\\" + k;
+            SHDeleteKeyW(hRoot, full.c_str());
+        }
+    };
+
+    const wchar_t* nonImageShellPaths[] = {
+        L"Software\\Classes\\*\\shell",
+        L"Software\\Classes\\AllFilesystemObjects\\shell",
+        L"Software\\Classes\\Directory\\shell",
+        L"Software\\Classes\\Directory\\Background\\shell",
+        L"Software\\Classes\\DesktopBackground\\Shell",
+        L"Software\\Classes\\Folder\\shell",
+        L"Software\\Classes\\Drive\\shell"
+    };
+    for (const wchar_t* p : nonImageShellPaths) {
+        purgePepperSnapVerbsFromShellKey(HKEY_CURRENT_USER,  p);
+        purgePepperSnapVerbsFromShellKey(HKEY_LOCAL_MACHINE, p);
+    }
+
+    // Also clean any legacy verb names (other than PepperSnapEdit and PepperSnapPin) on image shell keys
+    auto cleanLegacyImageShellVerbs = [](HKEY hRoot, const std::wstring& baseKeyPath) {
+        std::wstring shellPath = baseKeyPath + L"\\shell";
+        HKEY hShell = nullptr;
+        if (RegOpenKeyExW(hRoot, shellPath.c_str(), 0, KEY_READ | KEY_WRITE, &hShell) != ERROR_SUCCESS) return;
+        std::vector<std::wstring> toRemove;
+        DWORD idx = 0;
+        WCHAR subName[256];
+        DWORD subLen = 256;
+        while (RegEnumKeyExW(hShell, idx++, subName, &subLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            std::wstring s(subName, subLen);
+            bool isCurrentVerb = (_wcsicmp(s.c_str(), L"PepperSnapEdit") == 0 || _wcsicmp(s.c_str(), L"PepperSnapPin") == 0);
+            if (!isCurrentVerb && (_wcsnicmp(s.c_str(), L"PepperSnap", 10) == 0 || s.find(L"2.0.1") != std::wstring::npos)) {
+                toRemove.push_back(s);
+            } else if (hRoot == HKEY_LOCAL_MACHINE && isCurrentVerb) {
+                // Keep verbs in HKCU only so HKLM never holds stale paths
+                toRemove.push_back(s);
+            }
+            subLen = 256;
+        }
+        RegCloseKey(hShell);
+        for (const auto& k : toRemove) {
+            std::wstring full = shellPath + L"\\" + k;
+            SHDeleteKeyW(hRoot, full.c_str());
+        }
+    };
+
     auto writeSingleVerb = [&](const std::wstring& verbKeyPath, const std::wstring& lbl, const std::wstring& cmd, const wchar_t* multiSelectModel) {
         HKEY hVerbKey = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, verbKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &hVerbKey, nullptr) == ERROR_SUCCESS) {
@@ -1522,11 +1661,13 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
     };
 
     auto writeShellVerbs = [&](const std::wstring& baseKeyPath) {
+        cleanLegacyImageShellVerbs(HKEY_CURRENT_USER,  baseKeyPath);
+        cleanLegacyImageShellVerbs(HKEY_LOCAL_MACHINE, baseKeyPath);
         writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapEdit", editLabel, editCmd, L"Single");
         writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapPin",  pinLabel,  pinCmd,  L"Player");
     };
 
-    // Register ONLY for image files via SystemFileAssociations\image and common image extensions
+    // Register ONLY for selected image files via SystemFileAssociations\image and common image extensions
     writeShellVerbs(L"Software\\Classes\\SystemFileAssociations\\image");
     const wchar_t* imgExts[] = {
         L".png", L".jpg", L".jpeg", L".webp", L".bmp", L".gif", L".tif", L".tiff", L".ico"
@@ -4380,7 +4521,31 @@ Bitmap* PepperSnapDaemon::RenderCroppedRegionBitmap() {
 
                     gOut.SetInterpolationMode(pData->smoothImage ? InterpolationModeHighQualityBicubic : InterpolationModeNearestNeighbor);
                     gOut.SetPixelOffsetMode(PixelOffsetModeHalf);
-                    gOut.DrawImage(pData->bmp, Rect(fitX, fitY, fitW, fitH), 0, 0, srcW, srcH, UnitPixel, &ia);
+
+                    double clipX0 = std::max(0.0, (double)fitX);
+                    double clipY0 = std::max(0.0, (double)fitY);
+                    double clipX1 = std::min((double)rw, (double)(fitX + fitW));
+                    double clipY1 = std::min((double)rh, (double)(fitY + fitH));
+                    if (clipX1 > clipX0 && clipY1 > clipY0) {
+                        double srcX0 = (clipX0 - (double)fitX) * (double)srcW / (double)fitW;
+                        double srcY0 = (clipY0 - (double)fitY) * (double)srcH / (double)fitH;
+                        double srcX1 = (clipX1 - (double)fitX) * (double)srcW / (double)fitW;
+                        double srcY1 = (clipY1 - (double)fitY) * (double)srcH / (double)fitH;
+                        int sLeft   = std::max(0, (int)std::floor(srcX0) - 2);
+                        int sTop    = std::max(0, (int)std::floor(srcY0) - 2);
+                        int sRight  = std::min(srcW, (int)std::ceil(srcX1) + 2);
+                        int sBottom = std::min(srcH, (int)std::ceil(srcY1) + 2);
+                        int subSrcW = sRight - sLeft;
+                        int subSrcH = sBottom - sTop;
+                        if (subSrcW > 0 && subSrcH > 0) {
+                            REAL subDstX = (REAL)((double)fitX + (double)sLeft * (double)fitW / (double)srcW);
+                            REAL subDstY = (REAL)((double)fitY + (double)sTop  * (double)fitH / (double)srcH);
+                            REAL subDstW = (REAL)((double)subSrcW * (double)fitW / (double)srcW);
+                            REAL subDstH = (REAL)((double)subSrcH * (double)fitH / (double)srcH);
+                            gOut.DrawImage(pData->bmp, RectF(subDstX, subDstY, subDstW, subDstH),
+                                           (REAL)sLeft, (REAL)sTop, (REAL)subSrcW, (REAL)subSrcH, UnitPixel, &ia);
+                        }
+                    }
                 }
             }
         }
@@ -4835,6 +5000,19 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
             g.DrawLine(&chevPen, cx, cy + 7.2f, cx + 4.0f, cy + 3.8f);
             break;
         }
+        case DBTN_ACT_SCALE_RESET_100: {
+            // Typical circular counter-clockwise reset arrow icon
+            float r = 5.2f;
+            float acy = cy + 0.6f;
+            g.DrawArc(&whitePen, cx - r, acy - r, r * 2.0f, r * 2.0f, 270.0f, 285.0f);
+            PointF head[3] = {
+                PointF(cx - 3.8f, acy - r),
+                PointF(cx + 0.6f, acy - r - 2.9f),
+                PointF(cx + 0.6f, acy - r + 2.9f)
+            };
+            g.FillPolygon(&whiteBrush, head, 3);
+            break;
+        }
     }
 }
 
@@ -5211,8 +5389,68 @@ static void FreePinnedWindowCache(PinnedWindowData* data) {
     data->cachePixels = nullptr;
     data->cachedImgW = 0;
     data->cachedImgH = 0;
+    data->cachedViewX = 0;
+    data->cachedViewY = 0;
+    data->cachedViewW = 0;
+    data->cachedViewH = 0;
     data->cachedFrameIdx = (size_t)-1;
     data->cachedHq = false;
+}
+
+static void GetPinnedVisibleSlice(const PinnedWindowData* data, int imgW, int imgH, int& outViewX, int& outViewY, int& outViewW, int& outViewH) {
+    if (!data || imgW <= 0 || imgH <= 0) {
+        outViewX = 0;
+        outViewY = 0;
+        outViewW = 1;
+        outViewH = 1;
+        return;
+    }
+    int vL = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vT = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (vW <= 0 || vH <= 0) {
+        vL = 0;
+        vT = 0;
+        vW = GetSystemMetrics(SM_CXSCREEN);
+        vH = GetSystemMetrics(SM_CYSCREEN);
+    }
+    int vR = vL + vW;
+    int vB = vT + vH;
+
+    int sImgL = data->screenImgX;
+    int sImgT = data->screenImgY;
+    int sImgR = sImgL + imgW;
+    int sImgB = sImgT + imgH;
+
+    int visL = std::max(sImgL, vL);
+    int visT = std::max(sImgT, vT);
+    int visR = std::min(sImgR, vR);
+    int visB = std::min(sImgB, vB);
+
+    if (visR <= visL) {
+        if (sImgR <= vL) {
+            visL = sImgR - 1;
+            visR = sImgR;
+        } else {
+            visL = sImgL;
+            visR = sImgL + 1;
+        }
+    }
+    if (visB <= visT) {
+        if (sImgB <= vT) {
+            visT = sImgB - 1;
+            visB = sImgB;
+        } else {
+            visT = sImgT;
+            visB = sImgT + 1;
+        }
+    }
+
+    outViewX = visL - sImgL;
+    outViewY = visT - sImgT;
+    outViewW = std::max(1, visR - visL);
+    outViewH = std::max(1, visB - visT);
 }
 
 static RECT GetPinnedMonitorWorkArea(HMONITOR hMon) {
@@ -5546,11 +5784,16 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
 
 static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, bool highQuality) {
     if (!data || !data->bmp || imgW <= 0 || imgH <= 0) return;
+    int viewX = 0, viewY = 0, viewW = imgW, viewH = imgH;
+    GetPinnedVisibleSlice(data, imgW, imgH, viewX, viewY, viewW, viewH);
+
     bool hideOutline = data->hideOutline;
     bool selected = data->isSelected;
     bool smooth = data->smoothImage;
     if (data->hCacheDC && data->hCacheBmp && data->cachePixels &&
         data->cachedImgW == imgW && data->cachedImgH == imgH &&
+        data->cachedViewX == viewX && data->cachedViewY == viewY &&
+        data->cachedViewW == viewW && data->cachedViewH == viewH &&
         data->cachedFrameIdx == data->curFrameIdx &&
         data->cachedHideOutline == hideOutline &&
         data->cachedSelected == selected &&
@@ -5559,14 +5802,14 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
         return;
     }
 
-    if (!data->hCacheDC || !data->hCacheBmp || !data->cachePixels || data->cachedImgW != imgW || data->cachedImgH != imgH) {
+    if (!data->hCacheDC || !data->hCacheBmp || !data->cachePixels || data->cachedViewW != viewW || data->cachedViewH != viewH) {
         FreePinnedWindowCache(data);
         HDC hScreen = GetDC(nullptr);
         data->hCacheDC = CreateCompatibleDC(hScreen);
         BITMAPINFO bmi = {0};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = imgW;
-        bmi.bmiHeader.biHeight = -imgH;
+        bmi.bmiHeader.biWidth = viewW;
+        bmi.bmiHeader.biHeight = -viewH;
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
@@ -5581,14 +5824,14 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
         data->hCacheOldBmp = SelectObject(data->hCacheDC, data->hCacheBmp);
     }
 
-    memset(data->cachePixels, 0, (size_t)imgW * (size_t)imgH * sizeof(DWORD));
+    memset(data->cachePixels, 0, (size_t)viewW * (size_t)viewH * sizeof(DWORD));
     {
-        Bitmap cacheSurface(imgW, imgH, imgW * 4, PixelFormat32bppPARGB, (BYTE*)data->cachePixels);
+        Bitmap cacheSurface(viewW, viewH, viewW * 4, PixelFormat32bppPARGB, (BYTE*)data->cachePixels);
         Graphics g(&cacheSurface);
         g.SetCompositingMode(CompositingModeSourceCopy);
         g.SetPixelOffsetMode(PixelOffsetModeHalf);
 
-        long long totalPixels = (long long)imgW * (long long)imgH;
+        long long visiblePixels = (long long)viewW * (long long)viewH;
         if (!smooth) {
             // Button OFF (default): image is unfiltered so zoomed pixels stay crisp and pixelated
             g.SetInterpolationMode(InterpolationModeNearestNeighbor);
@@ -5596,7 +5839,7 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
             // Button ON: smooth filter active
             g.SetInterpolationMode(InterpolationModeBilinear);
         } else {
-            g.SetInterpolationMode(totalPixels > (2560LL * 1440LL) ? InterpolationModeBilinear : InterpolationModeHighQualityBicubic);
+            g.SetInterpolationMode(visiblePixels > (2560LL * 1440LL) ? InterpolationModeBilinear : InterpolationModeHighQualityBicubic);
         }
 
         ImageAttributes ia;
@@ -5608,13 +5851,45 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
         int drawH = std::max(1, std::min(imgH, (int)std::round(srcH * fitScale)));
         int drawX = (imgW - drawW) / 2;
         int drawY = (imgH - drawH) / 2;
-        g.DrawImage(
-            data->bmp,
-            Rect(drawX, drawY, drawW, drawH),
-            0, 0, srcW, srcH,
-            UnitPixel,
-            &ia
-        );
+
+        // Only scale and render the visible sub-region of the source bitmap that intersects [0..viewW, 0..viewH]
+        double dstFullX = (double)(drawX - viewX);
+        double dstFullY = (double)(drawY - viewY);
+        double dstFullW = (double)drawW;
+        double dstFullH = (double)drawH;
+
+        double clipX0 = std::max(0.0, dstFullX);
+        double clipY0 = std::max(0.0, dstFullY);
+        double clipX1 = std::min((double)viewW, dstFullX + dstFullW);
+        double clipY1 = std::min((double)viewH, dstFullY + dstFullH);
+
+        if (clipX1 > clipX0 && clipY1 > clipY0) {
+            double srcX0 = (clipX0 - dstFullX) * (double)srcW / dstFullW;
+            double srcY0 = (clipY0 - dstFullY) * (double)srcH / dstFullH;
+            double srcX1 = (clipX1 - dstFullX) * (double)srcW / dstFullW;
+            double srcY1 = (clipY1 - dstFullY) * (double)srcH / dstFullH;
+
+            int sLeft   = std::max(0, (int)std::floor(srcX0) - 2);
+            int sTop    = std::max(0, (int)std::floor(srcY0) - 2);
+            int sRight  = std::min(srcW, (int)std::ceil(srcX1) + 2);
+            int sBottom = std::min(srcH, (int)std::ceil(srcY1) + 2);
+            int subSrcW = sRight - sLeft;
+            int subSrcH = sBottom - sTop;
+
+            if (subSrcW > 0 && subSrcH > 0) {
+                REAL subDstX = (REAL)(dstFullX + (double)sLeft * dstFullW / (double)srcW);
+                REAL subDstY = (REAL)(dstFullY + (double)sTop  * dstFullH / (double)srcH);
+                REAL subDstW = (REAL)((double)subSrcW * dstFullW / (double)srcW);
+                REAL subDstH = (REAL)((double)subSrcH * dstFullH / (double)srcH);
+                g.DrawImage(
+                    data->bmp,
+                    RectF(subDstX, subDstY, subDstW, subDstH),
+                    (REAL)sLeft, (REAL)sTop, (REAL)subSrcW, (REAL)subSrcH,
+                    UnitPixel,
+                    &ia
+                );
+            }
+        }
 
         if (selected || !hideOutline) {
             g.SetCompositingMode(CompositingModeSourceOver);
@@ -5622,16 +5897,16 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
             g.SetPixelOffsetMode(PixelOffsetModeNone);
             Color outlineCol = selected ? Color(255, 59, 130, 246) : Color(255, 239, 68, 68);
             Pen border1px(outlineCol, 1.0f);
-            g.DrawRectangle(&border1px, 0, 0, imgW - 1, imgH - 1);
+            g.DrawRectangle(&border1px, -viewX, -viewY, imgW - 1, imgH - 1);
             if (imgW >= 4 && imgH >= 4) {
-                g.DrawRectangle(&border1px, 1, 1, imgW - 3, imgH - 3);
+                g.DrawRectangle(&border1px, 1 - viewX, 1 - viewY, imgW - 3, imgH - 3);
             }
         }
     }
 
-    // Ensure transparent pixels inside the image rect have alpha >= 1 (0.39% opacity, visually 100% transparent
+    // Ensure transparent pixels inside the visible image slice have alpha >= 1 (0.39% opacity, visually 100% transparent
     // over desktop while remaining mouse-interactive for dragging, zooming, and double-clicking)
-    size_t totalPx = (size_t)imgW * (size_t)imgH;
+    size_t totalPx = (size_t)viewW * (size_t)viewH;
     for (size_t i = 0; i < totalPx; ++i) {
         if ((data->cachePixels[i] >> 24) == 0) {
             data->cachePixels[i] = 0x01000000u;
@@ -5640,6 +5915,10 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
 
     data->cachedImgW = imgW;
     data->cachedImgH = imgH;
+    data->cachedViewX = viewX;
+    data->cachedViewY = viewY;
+    data->cachedViewW = viewW;
+    data->cachedViewH = viewH;
     data->cachedFrameIdx = data->curFrameIdx;
     data->cachedHideOutline = hideOutline;
     data->cachedSelected = selected;
@@ -5653,6 +5932,8 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
     GetPinnedScaledDims(data, imgW, imgH);
     EnsurePinnedWindowCache(data, imgW, imgH, data->cachedHq || ((long long)imgW * (long long)imgH <= 960LL * 540LL));
     if (!data->cachePixels) return;
+    int viewW = std::max(1, data->cachedViewW);
+    int viewH = std::max(1, data->cachedViewH);
 
     int winW = std::max(1, data->winW);
     int winH = std::max(1, data->winH);
@@ -5676,15 +5957,15 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
 
         int imgLeft = data->imgRect.left;
         int imgTop  = data->imgRect.top;
-        for (int y = 0; y < imgH; ++y) {
+        for (int y = 0; y < viewH; ++y) {
             int dy = imgTop + y;
             if (dy < 0 || dy >= winH) continue;
             int copyX = std::max(0, imgLeft);
             int srcX  = copyX - imgLeft;
-            int copyW = std::min(imgW - srcX, winW - copyX);
+            int copyW = std::min(viewW - srcX, winW - copyX);
             if (copyW > 0) {
                 memcpy(dstPixels + (size_t)dy * winW + copyX,
-                       data->cachePixels + (size_t)y * imgW + srcX,
+                       data->cachePixels + (size_t)y * viewW + srcX,
                        (size_t)copyW * sizeof(DWORD));
             }
         }
@@ -5745,6 +6026,10 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
                 int sbw = data->sizeBoxRect.right - data->sizeBoxRect.left;
                 int pbx = data->pctBoxRect.left;
                 int pbw = data->pctBoxRect.right - data->pctBoxRect.left;
+                int rbx = data->pctResetBtnRect.left;
+                int rbw = data->pctResetBtnRect.right - data->pctResetBtnRect.left;
+                bool resetHovered = data->hoveredPctResetBtn;
+                bool resetPressed = data->pressedPctResetBtn && resetHovered;
 
                 Color sizeBgCol = data->isEditingSize
                     ? Color(252, 30, 41, 59)
@@ -5752,9 +6037,13 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
                 Color pctBgCol = data->isEditingPct
                     ? Color(252, 30, 41, 59)
                     : (data->hoveredPctBox ? Color(250, 30, 41, 59) : Color(245, 15, 23, 42));
+                Color resetBgCol = resetPressed
+                    ? Color(255, 71, 85, 105)
+                    : (resetHovered ? Color(255, 51, 65, 85) : Color(245, 15, 23, 42));
 
                 SolidBrush sizeBg(sizeBgCol);
                 SolidBrush pctBg(pctBgCol);
+                SolidBrush resetBg(resetBgCol);
                 Pen outerBorder(Color(235, 51, 65, 85), 1.0f);
                 Pen divPen(Color(235, 71, 85, 105), 1.0f);
 
@@ -5763,6 +6052,9 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
                 g.SetPixelOffsetMode(PixelOffsetModeNone);
                 g.FillRectangle(&sizeBg, sbx, ry, sbw, rh);
                 g.FillRectangle(&pctBg, pbx, ry, pbw, rh);
+                if (rbw > 0) {
+                    g.FillRectangle(&resetBg, rbx, ry, rbw, rh);
+                }
                 g.DrawRectangle(&outerBorder, rx, ry, rw - 1, rh - 1);
                 g.DrawLine(&divPen, pbx, ry + 4, pbx, ry + rh - 5);
 
@@ -5773,6 +6065,10 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
                 if (data->isEditingPct || data->hoveredPctBox) {
                     Pen hiPen(data->isEditingPct ? Color(255, 56, 189, 248) : Color(255, 239, 68, 68), 1.0f);
                     g.DrawRectangle(&hiPen, pbx, ry, pbw - 1, rh - 1);
+                }
+                if (rbw > 0 && resetHovered) {
+                    Pen hiPen(Color(255, 239, 68, 68), 1.0f);
+                    g.DrawRectangle(&hiPen, rbx, ry, rbw - 1, rh - 1);
                 }
                 g.Restore(stBoxes);
 
@@ -5794,6 +6090,14 @@ static void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
                     pctValStr, L"%",
                     data->isEditingPct, data->pctCaretPos, data->pctSelAnchor
                 );
+
+                if (rbw > 0) {
+                    DockButton resetIconBtn;
+                    resetIconBtn.id = DBTN_ACT_SCALE_RESET_100;
+                    resetIconBtn.isTool = false;
+                    RectF resetRf((float)rbx, (float)ry, (float)rbw, (float)rh);
+                    PepperSnapDaemon::DrawDockButtonIcon(g, resetIconBtn, resetRf);
+                }
             }
         }
 
@@ -5866,11 +6170,18 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     int sStripL = sStripR - stripW;
     int sStripB = sStripT + totalHudH;
 
+    int viewX = 0, viewY = 0, viewW = imgW, viewH = imgH;
+    GetPinnedVisibleSlice(data, imgW, imgH, viewX, viewY, viewW, viewH);
+    int visImgL = sImgL + viewX;
+    int visImgT = sImgT + viewY;
+    int visImgR = visImgL + viewW;
+    int visImgB = visImgT + viewH;
+
     bool suppressToolbar = data->hideToolbar || (data->dragging && data->dragMoved);
-    int winL = suppressToolbar ? sImgL : std::min(sImgL, sStripL);
-    int winT = suppressToolbar ? sImgT : std::min(sImgT, sStripT);
-    int winR = suppressToolbar ? sImgR : std::max(sImgR, sStripR);
-    int winB = suppressToolbar ? sImgB : std::max(sImgB, sStripB);
+    int winL = suppressToolbar ? visImgL : std::min(visImgL, sStripL);
+    int winT = suppressToolbar ? visImgT : std::min(visImgT, sStripT);
+    int winR = suppressToolbar ? visImgR : std::max(visImgR, sStripR);
+    int winB = suppressToolbar ? visImgB : std::max(visImgB, sStripB);
     int winW = std::max(1, winR - winL);
     int winH = std::max(1, winB - winT);
 
@@ -5878,7 +6189,8 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     data->winY = winT;
     data->winW = winW;
     data->winH = winH;
-    data->imgRect = { sImgL - winL, sImgT - winT, sImgR - winL, sImgB - winT };
+    data->imgRect = { visImgL - winL, visImgT - winT, visImgR - winL, visImgB - winT };
+    RECT curSliceRect = { viewX, viewY, viewX + viewW, viewY + viewH };
 
     RECT curStripRect = { 0, 0, 0, 0 };
     data->buttons.clear();
@@ -5899,17 +6211,23 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
         int rx = sStripL - winL;
         int ry = by + actBtnH + gap;
         int sizeBoxW = 158;
-        data->sizeRowRect = { rx, ry, rx + stripW, ry + actBtnH };
-        data->sizeBoxRect = { rx, ry, rx + sizeBoxW, ry + actBtnH };
-        data->pctBoxRect  = { rx + sizeBoxW, ry, rx + stripW, ry + actBtnH };
+        int resetBtnW = 26;
+        data->sizeRowRect     = { rx, ry, rx + stripW, ry + actBtnH };
+        data->sizeBoxRect     = { rx, ry, rx + sizeBoxW, ry + actBtnH };
+        data->pctBoxRect      = { rx + sizeBoxW, ry, rx + stripW - resetBtnW, ry + actBtnH };
+        data->pctResetBtnRect = { rx + stripW - resetBtnW, ry, rx + stripW, ry + actBtnH };
     } else {
-        data->sizeRowRect = { 0, 0, 0, 0 };
-        data->sizeBoxRect = { 0, 0, 0, 0 };
-        data->pctBoxRect  = { 0, 0, 0, 0 };
+        data->sizeRowRect     = { 0, 0, 0, 0 };
+        data->sizeBoxRect     = { 0, 0, 0, 0 };
+        data->pctBoxRect      = { 0, 0, 0, 0 };
+        data->pctResetBtnRect = { 0, 0, 0, 0 };
         data->hoveredBtnId = -1;
         data->pressedBtnId = -1;
         data->hoveredSizeBox = false;
         data->hoveredPctBox = false;
+        data->hoveredPctResetBtn = false;
+        data->pressedPctResetBtn = false;
+        data->pressedPctResetShift = false;
         HidePinnedBubbleTooltip();
     }
 
@@ -5917,9 +6235,11 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
         bool rgnChanged = !data->hasAppliedRgn ||
                           data->lastRgnHideToolbar != suppressToolbar ||
                           !EqualRect(&data->lastRgnImgRect, &data->imgRect) ||
+                          !EqualRect(&data->lastRgnSliceRect, &curSliceRect) ||
                           !EqualRect(&data->lastRgnStripRect, &curStripRect);
         if (rgnChanged) {
             data->lastRgnImgRect = data->imgRect;
+            data->lastRgnSliceRect = curSliceRect;
             data->lastRgnStripRect = curStripRect;
             data->lastRgnHideToolbar = suppressToolbar;
             data->hasAppliedRgn = true;
@@ -5932,7 +6252,64 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
     }
 }
 
-static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float targetScale) {
+static void UpdatePinnedSnapModeFromPosition(PinnedWindowData* d, HMONITOR hExplicitMon = nullptr, bool disallowSnap = false) {
+    if (!d) return;
+    d->lastZoomCursorPt = { -999999, -999999 };
+    if (disallowSnap) {
+        d->zoomSnapMode = PinnedSnapMode::None;
+        return;
+    }
+    int imgW = 32, imgH = 32;
+    GetPinnedScaledDims(d, imgW, imgH);
+    int left   = d->screenImgX;
+    int top    = d->screenImgY;
+    int right  = left + imgW;
+    int bottom = top + imgH;
+
+    RECT rcPin = { left, top, right, bottom };
+    HMONITOR hMon = hExplicitMon ? hExplicitMon : MonitorFromRect(&rcPin, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    if (!hMon || !GetMonitorInfoW(hMon, &mi)) {
+        d->zoomSnapMode = PinnedSnapMode::None;
+        return;
+    }
+
+    int distLeft   = std::abs(left   - (int)mi.rcMonitor.left);
+    int distRight  = std::abs(right  - (int)mi.rcMonitor.right);
+    int distTop    = std::abs(top    - (int)mi.rcMonitor.top);
+    int distBottom = std::abs(bottom - (int)mi.rcMonitor.bottom);
+
+    bool snappedLeft   = (left   == mi.rcMonitor.left)   && (distLeft <= distRight);
+    bool snappedRight  = (right  == mi.rcMonitor.right)  && !snappedLeft;
+    bool snappedTop    = (top    == mi.rcMonitor.top)    && (distTop <= distBottom);
+    bool snappedBottom = (bottom == mi.rcMonitor.bottom) && !snappedTop;
+
+    if (snappedLeft && snappedBottom) {
+        d->zoomSnapMode = PinnedSnapMode::CornerBottomLeft;
+    } else if (snappedLeft && snappedTop) {
+        d->zoomSnapMode = PinnedSnapMode::CornerTopLeft;
+    } else if (snappedRight && snappedTop) {
+        d->zoomSnapMode = PinnedSnapMode::CornerTopRight;
+    } else if (snappedRight && snappedBottom) {
+        d->zoomSnapMode = PinnedSnapMode::CornerBottomRight;
+    } else if (snappedLeft) {
+        d->zoomSnapMode = PinnedSnapMode::SideLeft;
+        d->zoomSideCenterY = (double)top + (double)imgH * 0.5;
+    } else if (snappedRight) {
+        d->zoomSnapMode = PinnedSnapMode::SideRight;
+        d->zoomSideCenterY = (double)top + (double)imgH * 0.5;
+    } else if (snappedTop) {
+        d->zoomSnapMode = PinnedSnapMode::SideTop;
+        d->zoomSideCenterX = (double)left + (double)imgW * 0.5;
+    } else if (snappedBottom) {
+        d->zoomSnapMode = PinnedSnapMode::SideBottom;
+        d->zoomSideCenterX = (double)left + (double)imgW * 0.5;
+    } else {
+        d->zoomSnapMode = PinnedSnapMode::None;
+    }
+}
+
+static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float targetScale, bool useCursorAnchorWhenUnsnapped = false, const POINT* pCursorScreenPt = nullptr) {
     if (!data || !data->bmp) return;
     int oldImgW = 32, oldImgH = 32;
     GetPinnedScaledDims(data, oldImgW, oldImgH);
@@ -5954,49 +6331,93 @@ static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float t
     int oldImgRight  = oldImgLeft + oldImgW;
     int oldImgBottom = oldImgTop + oldImgH;
 
-    RECT rcImgScreen = { oldImgLeft, oldImgTop, oldImgRight, oldImgBottom };
-    HMONITOR hMon = MonitorFromRect(&rcImgScreen, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = { sizeof(mi) };
-    int anchorCorner = 0; // 0 = BottomRight (default), 1 = BottomLeft, 2 = TopLeft, 3 = TopRight
-    if (hMon && GetMonitorInfoW(hMon, &mi)) {
-        bool atLeft   = (oldImgLeft   == mi.rcMonitor.left);
-        bool atRight  = (oldImgRight  == mi.rcMonitor.right);
-        bool atTop    = (oldImgTop    == mi.rcMonitor.top);
-        bool atBottom = (oldImgBottom == mi.rcMonitor.bottom);
+    // Determine active snap mode:
+    // - CornerBottomLeft:  expand upward and rightward
+    // - CornerTopLeft:     expand downward and rightward
+    // - CornerTopRight:    expand downward and leftward
+    // - CornerBottomRight: expand upward and leftward (1a)
+    // - SideLeft:          expand upward, rightward, downward (1b)
+    // - SideRight:         expand upward, leftward, downward (1c)
+    // - SideTop:           expand leftward, downward, rightward (1c)
+    // - SideBottom:        expand leftward, upward, rightward (1c)
+    // - None:              when not snapped to any edge/corner, use the cursor as the anchor point (1)
+    PinnedSnapMode mode = data->zoomSnapMode;
 
-        if (atLeft && atRight) {
-            atLeft  = (data->zoomAnchorCorner == 1 || data->zoomAnchorCorner == 2);
-            atRight = !atLeft;
+    if (mode != PinnedSnapMode::None) {
+        data->lastZoomCursorPt = { -999999, -999999 };
+        switch (mode) {
+            case PinnedSnapMode::CornerBottomLeft:
+                data->screenImgX = oldImgLeft;
+                data->screenImgY = oldImgBottom - imgH;
+                break;
+            case PinnedSnapMode::CornerTopLeft:
+                data->screenImgX = oldImgLeft;
+                data->screenImgY = oldImgTop;
+                break;
+            case PinnedSnapMode::CornerTopRight:
+                data->screenImgX = oldImgRight - imgW;
+                data->screenImgY = oldImgTop;
+                break;
+            case PinnedSnapMode::CornerBottomRight:
+                data->screenImgX = oldImgRight - imgW;
+                data->screenImgY = oldImgBottom - imgH;
+                break;
+            case PinnedSnapMode::SideLeft:
+                data->screenImgX = oldImgLeft;
+                data->screenImgY = (int)std::round(data->zoomSideCenterY - (double)imgH * 0.5);
+                break;
+            case PinnedSnapMode::SideRight:
+                data->screenImgX = oldImgRight - imgW;
+                data->screenImgY = (int)std::round(data->zoomSideCenterY - (double)imgH * 0.5);
+                break;
+            case PinnedSnapMode::SideTop:
+                data->screenImgX = (int)std::round(data->zoomSideCenterX - (double)imgW * 0.5);
+                data->screenImgY = oldImgTop;
+                break;
+            case PinnedSnapMode::SideBottom:
+                data->screenImgX = (int)std::round(data->zoomSideCenterX - (double)imgW * 0.5);
+                data->screenImgY = oldImgBottom - imgH;
+                break;
+            default:
+                break;
         }
-        if (atTop && atBottom) {
-            atTop    = (data->zoomAnchorCorner == 2 || data->zoomAnchorCorner == 3);
-            atBottom = !atTop;
-        }
-
-        if (atLeft && atBottom) {
-            anchorCorner = 1; // Bottom-left corner: expand upward and rightward
-        } else if (atLeft && atTop) {
-            anchorCorner = 2; // Top-left corner: expand downward and rightward
-        } else if (atRight && atTop) {
-            anchorCorner = 3; // Top-right corner: expand downward and leftward
-        } else {
-            anchorCorner = 0; // Bottom-right corner (or anywhere else): expand upward and leftward
-        }
-    }
-    data->zoomAnchorCorner = anchorCorner;
-
-    if (anchorCorner == 1) {
-        data->screenImgX = oldImgLeft;
-        data->screenImgY = oldImgBottom - imgH;
-    } else if (anchorCorner == 2) {
-        data->screenImgX = oldImgLeft;
-        data->screenImgY = oldImgTop;
-    } else if (anchorCorner == 3) {
-        data->screenImgX = oldImgRight - imgW;
-        data->screenImgY = oldImgTop;
     } else {
-        data->screenImgX = oldImgRight - imgW;
-        data->screenImgY = oldImgBottom - imgH;
+        POINT curPt = { 0, 0 };
+        bool hasCur = false;
+        if (pCursorScreenPt) {
+            curPt = *pCursorScreenPt;
+            hasCur = true;
+        } else if (GetCursorPos(&curPt)) {
+            hasCur = true;
+        }
+
+        bool cursorInsideImg = hasCur &&
+            curPt.x >= oldImgLeft && curPt.x <= oldImgRight &&
+            curPt.y >= oldImgTop  && curPt.y <= oldImgBottom;
+
+        if (hasCur && (useCursorAnchorWhenUnsnapped || cursorInsideImg)) {
+            if (curPt.x != data->lastZoomCursorPt.x || curPt.y != data->lastZoomCursorPt.y) {
+                double rx = (double)(curPt.x - oldImgLeft) / (double)std::max(1, oldImgW);
+                double ry = (double)(curPt.y - oldImgTop)  / (double)std::max(1, oldImgH);
+                data->zoomCursorRelX = std::max(0.0, std::min(1.0, rx));
+                data->zoomCursorRelY = std::max(0.0, std::min(1.0, ry));
+                data->lastZoomCursorPt = curPt;
+            }
+            double anchorScreenX = (cursorInsideImg)
+                ? (double)curPt.x
+                : ((double)oldImgLeft + data->zoomCursorRelX * (double)oldImgW);
+            double anchorScreenY = (cursorInsideImg)
+                ? (double)curPt.y
+                : ((double)oldImgTop  + data->zoomCursorRelY * (double)oldImgH);
+            data->screenImgX = (int)std::round(anchorScreenX - data->zoomCursorRelX * (double)imgW);
+            data->screenImgY = (int)std::round(anchorScreenY - data->zoomCursorRelY * (double)imgH);
+        } else {
+            data->lastZoomCursorPt = { -999999, -999999 };
+            double centerX = (double)oldImgLeft + (double)oldImgW * 0.5;
+            double centerY = (double)oldImgTop  + (double)oldImgH * 0.5;
+            data->screenImgX = (int)std::round(centerX - (double)imgW * 0.5);
+            data->screenImgY = (int)std::round(centerY - (double)imgH * 0.5);
+        }
     }
 
     bool fastInteractive = ((long long)imgW * (long long)imgH > 960LL * 540LL);
@@ -6021,7 +6442,8 @@ static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float t
             data->hoveredBtnId = newHover;
             data->hoveredSizeBox = (newHover == -1 && PtInRect(&data->sizeBoxRect, cur) != FALSE);
             data->hoveredPctBox  = (newHover == -1 && !data->hoveredSizeBox && PtInRect(&data->pctBoxRect, cur) != FALSE);
-            SetCursor(LoadCursorW(nullptr, (data->hoveredSizeBox || data->hoveredPctBox) ? IDC_IBEAM : ((newHover != -1) ? IDC_HAND : IDC_SIZEALL)));
+            data->hoveredPctResetBtn = (newHover == -1 && !data->hoveredSizeBox && !data->hoveredPctBox && PtInRect(&data->pctResetBtnRect, cur) != FALSE);
+            SetCursor(LoadCursorW(nullptr, (data->hoveredSizeBox || data->hoveredPctBox) ? IDC_IBEAM : ((newHover != -1 || data->hoveredPctResetBtn) ? IDC_HAND : IDC_SIZEALL)));
             if (newHover != -1) {
                 for (const auto& b : data->buttons) {
                     if (b.id == newHover) {
@@ -6029,6 +6451,11 @@ static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float t
                         break;
                     }
                 }
+            } else if (data->hoveredPctResetBtn) {
+                DockButton fakeTip;
+                fakeTip.rect = data->pctResetBtnRect;
+                fakeTip.tooltip = L"Set to 100%";
+                ShowPinnedBubbleTooltip(hWnd, fakeTip);
             } else {
                 HidePinnedBubbleTooltip();
             }
@@ -6037,7 +6464,7 @@ static void SetPinnedWindowExactScale(HWND hWnd, PinnedWindowData* data, float t
     }
 }
 
-static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float factor, bool resetToOriginal = false) {
+static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float factor, bool resetToOriginal = false, bool useCursorAnchorWhenUnsnapped = false, const POINT* pCursorScreenPt = nullptr) {
     if (!data || !data->bmp) return;
     float targetScale = (data->initialScale > 0.0f) ? data->initialScale : 1.0f;
     if (!resetToOriginal) {
@@ -6099,7 +6526,7 @@ static void ApplyPinnedWindowZoom(HWND hWnd, PinnedWindowData* data, float facto
             }
         }
     }
-    SetPinnedWindowExactScale(hWnd, data, targetScale);
+    SetPinnedWindowExactScale(hWnd, data, targetScale, useCursorAnchorWhenUnsnapped, pCursorScreenPt);
 }
 
 static void ResetPinnedWindowSizeAndPosition(HWND hWnd, PinnedWindowData* data) {
@@ -6110,7 +6537,7 @@ static void ResetPinnedWindowSizeAndPosition(HWND hWnd, PinnedWindowData* data) 
     data->scale = std::max(minScale, std::min(maxScale, initScale));
     data->screenImgX = data->initialScreenImgX;
     data->screenImgY = data->initialScreenImgY;
-    data->zoomAnchorCorner = 0;
+    UpdatePinnedSnapModeFromPosition(data, nullptr, false);
 
     int imgW = 32, imgH = 32;
     GetPinnedScaledDims(data, imgW, imgH);
@@ -6136,7 +6563,8 @@ static void ResetPinnedWindowSizeAndPosition(HWND hWnd, PinnedWindowData* data) 
             data->hoveredBtnId = newHover;
             data->hoveredSizeBox = (newHover == -1 && PtInRect(&data->sizeBoxRect, cur) != FALSE);
             data->hoveredPctBox  = (newHover == -1 && !data->hoveredSizeBox && PtInRect(&data->pctBoxRect, cur) != FALSE);
-            SetCursor(LoadCursorW(nullptr, (data->hoveredSizeBox || data->hoveredPctBox) ? IDC_IBEAM : ((newHover != -1) ? IDC_HAND : IDC_SIZEALL)));
+            data->hoveredPctResetBtn = (newHover == -1 && !data->hoveredSizeBox && !data->hoveredPctBox && PtInRect(&data->pctResetBtnRect, cur) != FALSE);
+            SetCursor(LoadCursorW(nullptr, (data->hoveredSizeBox || data->hoveredPctBox) ? IDC_IBEAM : ((newHover != -1 || data->hoveredPctResetBtn) ? IDC_HAND : IDC_SIZEALL)));
             if (newHover != -1) {
                 for (const auto& b : data->buttons) {
                     if (b.id == newHover) {
@@ -6144,6 +6572,11 @@ static void ResetPinnedWindowSizeAndPosition(HWND hWnd, PinnedWindowData* data) 
                         break;
                     }
                 }
+            } else if (data->hoveredPctResetBtn) {
+                DockButton fakeTip;
+                fakeTip.rect = data->pctResetBtnRect;
+                fakeTip.tooltip = L"Set to 100%";
+                ShowPinnedBubbleTooltip(hWnd, fakeTip);
             } else {
                 HidePinnedBubbleTooltip();
             }
@@ -6362,27 +6795,9 @@ static void UpdatePinnedDragPosition(HWND hWnd, PinnedWindowData* data) {
             HMONITOR hMon = (d == data)
                 ? MonitorFromPoint(cur, MONITOR_DEFAULTTONEAREST)
                 : MonitorFromRect(&rcPin, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO mi = { sizeof(mi) };
-            if (hMon && GetMonitorInfoW(hMon, &mi)) {
-                int distLeft   = std::abs(d->screenImgX - (int)mi.rcMonitor.left);
-                int distRight  = std::abs((d->screenImgX + dImgW) - (int)mi.rcMonitor.right);
-                int distTop    = std::abs(d->screenImgY - (int)mi.rcMonitor.top);
-                int distBottom = std::abs((d->screenImgY + dImgH) - (int)mi.rcMonitor.bottom);
-
-                bool snappedLeft   = (d->screenImgX == mi.rcMonitor.left)  && (distLeft <= distRight);
-                bool snappedRight  = (d->screenImgX + dImgW == mi.rcMonitor.right) && !snappedLeft;
-                bool snappedTop    = (d->screenImgY == mi.rcMonitor.top)   && (distTop <= distBottom);
-                bool snappedBottom = (d->screenImgY + dImgH == mi.rcMonitor.bottom) && !snappedTop;
-
-                if (snappedLeft && snappedBottom)      d->zoomAnchorCorner = 1;
-                else if (snappedLeft && snappedTop)    d->zoomAnchorCorner = 2;
-                else if (snappedRight && snappedTop)   d->zoomAnchorCorner = 3;
-                else                                   d->zoomAnchorCorner = 0;
-            } else {
-                d->zoomAnchorCorner = 0;
-            }
+            UpdatePinnedSnapModeFromPosition(d, hMon, false);
         } else {
-            d->zoomAnchorCorner = 0;
+            UpdatePinnedSnapModeFromPosition(d, nullptr, true);
         }
         UpdatePinnedWindowLayout(hp, d, true);
     }
@@ -6557,6 +6972,24 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 }
             } else {
                 ApplyPinnedWindowZoom(hWnd, data, 1.0f, true);
+            }
+            return;
+        case DBTN_ACT_SCALE_RESET_100:
+            SetFocus(hWnd);
+            if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
+                std::vector<HWND> pins = g_Daemon.pinnedWindows;
+                for (HWND hPin : pins) {
+                    if (hPin && IsWindow(hPin)) {
+                        PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+                        if (d && d->bmp) {
+                            CancelPinnedInlineEdits(d);
+                            SetPinnedWindowExactScale(hPin, d, 1.0f);
+                        }
+                    }
+                }
+            } else {
+                CancelPinnedInlineEdits(data);
+                SetPinnedWindowExactScale(hWnd, data, 1.0f);
             }
             return;
         case DBTN_ACT_POS_RESET:
@@ -6879,7 +7312,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 if (data->hoveredSizeBox || data->hoveredPctBox || data->isDraggingSizeText || data->isDraggingPctText) {
                     SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
                 } else {
-                    SetCursor(LoadCursorW(nullptr, (data->hoveredBtnId != -1) ? IDC_HAND : IDC_SIZEALL));
+                    SetCursor(LoadCursorW(nullptr, (data->hoveredBtnId != -1 || data->hoveredPctResetBtn) ? IDC_HAND : IDC_SIZEALL));
                 }
                 return TRUE;
             }
@@ -6890,6 +7323,20 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 data->showingImgHoverTip = false;
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 bool shiftHeld = IsPinShiftHeld();
+
+                if (!data->hideToolbar && PtInRect(&data->pctResetBtnRect, pt)) {
+                    HidePinnedBubbleTooltip();
+                    if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                    if (data->isEditingPct)  CommitPinnedPctInput(hWnd, data, false);
+                    data->pressedPctResetBtn = true;
+                    data->pressedPctResetShift = shiftHeld;
+                    data->hoveredPctResetBtn = true;
+                    SetCapture(hWnd);
+                    SetFocus(hWnd);
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
 
                 if (!data->hideToolbar && PtInRect(&data->sizeBoxRect, pt)) {
                     HidePinnedBubbleTooltip();
@@ -6949,6 +7396,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 data->pressedBtnId = -1;
                 data->pressedBtnShift = false;
+                data->pressedPctResetBtn = false;
+                data->pressedPctResetShift = false;
                 HidePinnedBubbleTooltip();
 
                 if (IsPinAltHeld() && PtInRect(&data->imgRect, pt)) {
@@ -6986,6 +7435,20 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 KillTimer(hWnd, 2);
                 data->showingImgHoverTip = false;
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+                if (!data->hideToolbar && PtInRect(&data->pctResetBtnRect, pt)) {
+                    HidePinnedBubbleTooltip();
+                    if (data->isEditingSize) CommitPinnedSizeInput(hWnd, data, false);
+                    if (data->isEditingPct)  CommitPinnedPctInput(hWnd, data, false);
+                    data->pressedPctResetBtn = true;
+                    data->pressedPctResetShift = IsPinShiftHeld();
+                    data->hoveredPctResetBtn = true;
+                    SetCapture(hWnd);
+                    SetFocus(hWnd);
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
 
                 if (!data->hideToolbar && PtInRect(&data->sizeBoxRect, pt)) {
                     HidePinnedBubbleTooltip();
@@ -7306,7 +7769,7 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             if (wParam == 2 && data) {
                 KillTimer(hWnd, 2);
                 if (!data->dragging && data->hoveredBtnId == -1 && data->pressedBtnId == -1 &&
-                    !data->hoveredSizeBox && !data->hoveredPctBox) {
+                    !data->hoveredSizeBox && !data->hoveredPctBox && !data->hoveredPctResetBtn && !data->pressedPctResetBtn) {
                     POINT ptScreen;
                     if (GetCursorPos(&ptScreen)) {
                         POINT ptClient = ptScreen;
@@ -7346,6 +7809,28 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     data->pctCaretPos = PepperSnapDaemon::HitTestMonoIndex(pt.x, data->pctBoxRect, data->editingPctText, L"%");
                     SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
                     RenderPinnedLayeredWindow(hWnd, data);
+                    return 0;
+                }
+                if (data->pressedPctResetBtn) {
+                    KillTimer(hWnd, 2);
+                    if (data->showingImgHoverTip) {
+                        data->showingImgHoverTip = false;
+                        HidePinnedBubbleTooltip();
+                    }
+                    bool newResetHov = (!data->hideToolbar && PtInRect(&data->pctResetBtnRect, pt) != FALSE);
+                    if (newResetHov != data->hoveredPctResetBtn) {
+                        data->hoveredPctResetBtn = newResetHov;
+                        SetCursor(LoadCursorW(nullptr, newResetHov ? IDC_HAND : IDC_SIZEALL));
+                        if (newResetHov) {
+                            DockButton fakeTip;
+                            fakeTip.rect = data->pctResetBtnRect;
+                            fakeTip.tooltip = L"Set to 100%";
+                            ShowPinnedBubbleTooltip(hWnd, fakeTip);
+                        } else {
+                            HidePinnedBubbleTooltip();
+                        }
+                        RenderPinnedLayeredWindow(hWnd, data);
+                    }
                     return 0;
                 }
                 if (data->pressedBtnId != -1) {
@@ -7401,8 +7886,9 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 bool newSizeHov = (newHover == -1 && !data->hideToolbar && PtInRect(&data->sizeBoxRect, pt) != FALSE);
                 bool newPctHov  = (newHover == -1 && !newSizeHov && !data->hideToolbar && PtInRect(&data->pctBoxRect, pt) != FALSE);
+                bool newPctResetHov = (newHover == -1 && !newSizeHov && !newPctHov && !data->hideToolbar && PtInRect(&data->pctResetBtnRect, pt) != FALSE);
 
-                if (newHover != -1 || newSizeHov || newPctHov) {
+                if (newHover != -1 || newSizeHov || newPctHov || newPctResetHov) {
                     KillTimer(hWnd, 2);
                     data->showingImgHoverTip = false;
                     data->lastHoverMouse = { -10000, -10000 };
@@ -7420,11 +7906,12 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         HidePinnedBubbleTooltip();
                     }
                 }
-                if (newHover != data->hoveredBtnId || newSizeHov != data->hoveredSizeBox || newPctHov != data->hoveredPctBox) {
+                if (newHover != data->hoveredBtnId || newSizeHov != data->hoveredSizeBox || newPctHov != data->hoveredPctBox || newPctResetHov != data->hoveredPctResetBtn) {
                     data->hoveredBtnId = newHover;
                     data->hoveredSizeBox = newSizeHov;
                     data->hoveredPctBox = newPctHov;
-                    SetCursor(LoadCursorW(nullptr, (newSizeHov || newPctHov) ? IDC_IBEAM : ((newHover != -1) ? IDC_HAND : IDC_SIZEALL)));
+                    data->hoveredPctResetBtn = newPctResetHov;
+                    SetCursor(LoadCursorW(nullptr, (newSizeHov || newPctHov) ? IDC_IBEAM : ((newHover != -1 || newPctResetHov) ? IDC_HAND : IDC_SIZEALL)));
                     if (newHover != -1) {
                         for (const auto& b : data->buttons) {
                             if (b.id == newHover) {
@@ -7442,6 +7929,11 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         fakeTip.rect = data->pctBoxRect;
                         fakeTip.tooltip = L"Zoom scale \x2014 click to type percentage (%)";
                         ShowPinnedBubbleTooltip(hWnd, fakeTip);
+                    } else if (newPctResetHov) {
+                        DockButton fakeTip;
+                        fakeTip.rect = data->pctResetBtnRect;
+                        fakeTip.tooltip = L"Set to 100%";
+                        ShowPinnedBubbleTooltip(hWnd, fakeTip);
                     } else if (!data->showingImgHoverTip) {
                         HidePinnedBubbleTooltip();
                     }
@@ -7456,10 +7948,11 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 data->showingImgHoverTip = false;
                 data->lastHoverMouse = { -10000, -10000 };
                 HidePinnedBubbleTooltip();
-                if (data->hoveredBtnId != -1 || data->hoveredSizeBox || data->hoveredPctBox) {
+                if (data->hoveredBtnId != -1 || data->hoveredSizeBox || data->hoveredPctBox || data->hoveredPctResetBtn) {
                     data->hoveredBtnId = -1;
                     data->hoveredSizeBox = false;
                     data->hoveredPctBox = false;
+                    data->hoveredPctResetBtn = false;
                     RenderPinnedLayeredWindow(hWnd, data);
                 }
             }
@@ -7489,6 +7982,20 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         if (IsWindow(hWnd) && PtInRect(&data->imgRect, pt)) {
                             SetTimer(hWnd, 2, 500, nullptr);
                         }
+                    }
+                    return 0;
+                }
+                if (data->pressedPctResetBtn) {
+                    bool releasedWithShift = data->pressedPctResetShift || IsPinShiftHeld();
+                    data->pressedPctResetBtn = false;
+                    data->pressedPctResetShift = false;
+                    ReleaseCapture();
+                    POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                    bool hit = (!data->hideToolbar && PtInRect(&data->pctResetBtnRect, pt) != FALSE);
+                    data->hoveredPctResetBtn = hit;
+                    RenderPinnedLayeredWindow(hWnd, data);
+                    if (hit) {
+                        ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SCALE_RESET_100, releasedWithShift);
                     }
                     return 0;
                 }
@@ -7562,6 +8069,8 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 if (data->isEditingPct)  CommitPinnedPctInput(hWnd, data, false);
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 if (delta != 0) {
+                    POINT wheelPt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                    GetCursorPos(&wheelPt);
                     float steps = (float)delta / (float)WHEEL_DELTA;
                     float factor = std::pow(1.15f, steps);
                     if (IsPinShiftHeld() && g_Daemon.pinnedWindows.size() > 1) {
@@ -7569,11 +8078,14 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                         for (HWND hPin : pins) {
                             if (hPin && IsWindow(hPin)) {
                                 PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
-                                if (d) ApplyPinnedWindowZoom(hPin, d, factor);
+                                if (d) {
+                                    bool isHoveredPin = (hPin == hWnd);
+                                    ApplyPinnedWindowZoom(hPin, d, factor, false, isHoveredPin, isHoveredPin ? &wheelPt : nullptr);
+                                }
                             }
                         }
                     } else {
-                        ApplyPinnedWindowZoom(hWnd, data, factor);
+                        ApplyPinnedWindowZoom(hWnd, data, factor, false, true, &wheelPt);
                     }
                 }
             }
@@ -7634,6 +8146,7 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
     data->hideOutline = hidePinnedOutline;
     data->smoothImage = smoothPinnedImage;
     data->isSelected = initiallySelected;
+    UpdatePinnedSnapModeFromPosition(data, nullptr, false);
 
     int imgW = 32, imgH = 32;
     GetPinnedScaledDims(data, imgW, imgH);
@@ -7705,6 +8218,7 @@ struct OptionsDlgState {
     bool alsoSaveOcr = true;
     bool keepCursor = false;
     bool autoHideFrames = true;
+    bool pinAboveEdit = true;
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 15;
@@ -7752,11 +8266,19 @@ struct OptionsDlgState {
     bool openedAppData = false;
     bool restoredAllDefaults = false;
     int scrollY = 0;
-    int scrollContentHeight = 716;
+    int scrollContentHeight = 744;
     int footerHeight = 56;
     int fixedWinWidth = 580;
-    int fullWinHeight = 772;
-    int savedWinHeight = 772;
+    int fullWinHeight = 860;
+    int savedWinHeight = 860;
+    int lastFooterTop = -1;
+
+    HWND hViewport = nullptr;
+    std::vector<std::pair<HWND, int>> scrollControls;
+    HFONT hFont = nullptr;
+    HFONT hBoldFont = nullptr;
+    HFONT hLinkFont = nullptr;
+    HPEN hFooterLinePen = nullptr;
 
     HWND hFolderEdit = nullptr;
     HWND hComboRegion = nullptr;
@@ -7772,6 +8294,7 @@ struct OptionsDlgState {
     HWND hSaveOcrChk = nullptr;
     HWND hKeepCursorChk = nullptr;
     HWND hAutoHideFramesChk = nullptr;
+    HWND hPinAboveEditChk = nullptr;
     HWND hNonStackingChk = nullptr;
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
@@ -7785,6 +8308,27 @@ struct OptionsDlgState {
     HWND hAppDataInfo = nullptr;
     HWND hOkBtn = nullptr;
     HWND hCancelBtn = nullptr;
+
+    void InitGdiCache() {
+        if (hFont) return;
+        hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hLinkFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hFooterLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+    }
+
+    void FreeGdiCache() {
+        if (hFooterLinePen) { DeleteObject(hFooterLinePen); hFooterLinePen = nullptr; }
+        if (hLinkFont)      { DeleteObject(hLinkFont);      hLinkFont = nullptr; }
+        if (hBoldFont)      { DeleteObject(hBoldFont);      hBoldFont = nullptr; }
+        if (hFont)          { DeleteObject(hFont);          hFont = nullptr; }
+    }
 };
 
 #define IDC_OPT_FOLDER_EDIT      1001
@@ -7812,6 +8356,7 @@ struct OptionsDlgState {
 #define IDC_OPT_NAMING_SYNTAX    1026
 #define IDC_OPT_KEEP_CURSOR_CHK  1027
 #define IDC_OPT_AUTOHIDE_FRM_CHK 1028
+#define IDC_OPT_PIN_ABOVE_EDIT_CHK 1029
 
 #define IDC_CK_BTN_BASE          2100
 #define IDC_CK_RESTORE_DEFAULTS  2201
@@ -7824,19 +8369,63 @@ struct NamingSyntaxRow {
 
 struct NamingSyntaxDlgState {
     int scrollY = 0;
-    int scrollContentHeight = 620;
+    int scrollContentHeight = 634;
     int headerHeight = 36;
     int footerHeight = 50;
     int fixedWinWidth = 490;
-    int fullWinHeight = 706;
-    int savedWinHeight = 706;
+    int fullWinHeight = 760;
+    int savedWinHeight = 760;
+    int lastFooterTop = -1;
     int hoveredRowIdx = -1;
     int pressedRowIdx = -1;
     std::wstring copiedSyntax;
     HWND hOkBtn = nullptr;
     HWND hListViewport = nullptr;
     std::vector<HWND> hSyntaxEdits;
+
+    HFONT hHeaderFont = nullptr;
     HFONT hCodeFont = nullptr;
+    HFONT hRowFont = nullptr;
+    HFONT hBoldFont = nullptr;
+    HPEN hHeaderLinePen = nullptr;
+    HPEN hRowPen = nullptr;
+    HDC hContentDC = nullptr;
+    HBITMAP hContentBmp = nullptr;
+    HGDIOBJ hContentOldBmp = nullptr;
+    int contentW = 0;
+    int contentH = 0;
+    HDC hBackDC = nullptr;
+    HBITMAP hBackBmp = nullptr;
+    HGDIOBJ hBackOldBmp = nullptr;
+    int backCapW = 0;
+    int backCapH = 0;
+
+    void FreeGdiCache() {
+        if (hBackDC) {
+            if (hBackOldBmp) SelectObject(hBackDC, hBackOldBmp);
+            if (hBackBmp) DeleteObject(hBackBmp);
+            DeleteDC(hBackDC);
+            hBackDC = nullptr;
+            hBackBmp = nullptr;
+            hBackOldBmp = nullptr;
+            backCapW = backCapH = 0;
+        }
+        if (hContentDC) {
+            if (hContentOldBmp) SelectObject(hContentDC, hContentOldBmp);
+            if (hContentBmp) DeleteObject(hContentBmp);
+            DeleteDC(hContentDC);
+            hContentDC = nullptr;
+            hContentBmp = nullptr;
+            hContentOldBmp = nullptr;
+            contentW = contentH = 0;
+        }
+        if (hRowPen)        { DeleteObject(hRowPen);        hRowPen = nullptr; }
+        if (hHeaderLinePen) { DeleteObject(hHeaderLinePen); hHeaderLinePen = nullptr; }
+        if (hBoldFont)      { DeleteObject(hBoldFont);      hBoldFont = nullptr; }
+        if (hRowFont)       { DeleteObject(hRowFont);       hRowFont = nullptr; }
+        if (hCodeFont)      { DeleteObject(hCodeFont);      hCodeFont = nullptr; }
+        if (hHeaderFont)    { DeleteObject(hHeaderFont);    hHeaderFont = nullptr; }
+    }
 };
 
 static const NamingSyntaxRow kNamingSyntaxRows[] = {
@@ -7865,6 +8454,71 @@ static const NamingSyntaxRow kNamingSyntaxRows[] = {
     { L"{NNN}",  L"3 digit capture counter",       L"001"        },
     { L"{N}",    L"Capture counter (no leading 0)",L"1"          }
 };
+
+static void RebuildNamingSyntaxContentBitmap(HDC hdcRef, NamingSyntaxDlgState* st, int clientW) {
+    if (!st || !hdcRef) return;
+    int cw = std::max(320, clientW);
+    int ch = std::max(100, st->scrollContentHeight);
+    if (st->hContentDC && st->contentW == cw && st->contentH == ch) return;
+
+    if (!st->hContentDC) {
+        st->hContentDC = CreateCompatibleDC(hdcRef);
+    } else if (st->hContentOldBmp) {
+        SelectObject(st->hContentDC, st->hContentOldBmp);
+        if (st->hContentBmp) DeleteObject(st->hContentBmp);
+    }
+    st->contentW = cw;
+    st->contentH = ch;
+    st->hContentBmp = CreateCompatibleBitmap(hdcRef, cw, ch);
+    st->hContentOldBmp = SelectObject(st->hContentDC, st->hContentBmp);
+
+    RECT rcAll = { 0, 0, cw, ch };
+    FillRect(st->hContentDC, &rcAll, GetSysColorBrush(COLOR_BTNFACE));
+    SetBkMode(st->hContentDC, TRANSPARENT);
+
+    const int padX = 16;
+    const int col1X = padX;
+    const int col1W = 84;
+    const int sep1X = col1X + col1W;
+    const int col2X = sep1X + 12;
+    const int col2W = 224;
+    const int sep2X = col2X + col2W;
+    const int col3X = sep2X + 12;
+    const int rightEdge = cw - padX;
+    const int rowH = 26;
+    const int rowCount = (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]));
+
+    HGDIOBJ hOldF = SelectObject(st->hContentDC, st->hRowFont);
+    HGDIOBJ hOldP = SelectObject(st->hContentDC, st->hRowPen);
+
+    for (int i = 0; i < rowCount; ++i) {
+        int y = 4 + i * rowH;
+        if (i > 0) {
+            SelectObject(st->hContentDC, st->hRowPen);
+            MoveToEx(st->hContentDC, padX, y, nullptr);
+            LineTo(st->hContentDC, rightEdge, y);
+        }
+
+        SelectObject(st->hContentDC, st->hRowFont);
+        SetTextColor(st->hContentDC, GetSysColor(COLOR_WINDOWTEXT));
+        RECT rcC2 = { col2X, y, sep2X - 6, y + rowH };
+        DrawTextW(st->hContentDC, kNamingSyntaxRows[i].explanation.c_str(), -1, &rcC2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        SelectObject(st->hContentDC, st->hCodeFont);
+        SetTextColor(st->hContentDC, RGB(30, 41, 59));
+        RECT rcC3 = { col3X, y, rightEdge, y + rowH };
+        DrawTextW(st->hContentDC, kNamingSyntaxRows[i].example.c_str(), -1, &rcC3, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    SelectObject(st->hContentDC, st->hRowPen);
+    MoveToEx(st->hContentDC, sep1X, 0, nullptr);
+    LineTo(st->hContentDC, sep1X, ch - 4);
+    MoveToEx(st->hContentDC, sep2X, 0, nullptr);
+    LineTo(st->hContentDC, sep2X, ch - 4);
+
+    SelectObject(st->hContentDC, hOldP);
+    SelectObject(st->hContentDC, hOldF);
+}
 
 static void CopySyntaxStringToClipboard(HWND hOwner, const std::wstring& text) {
     if (text.empty()) return;
@@ -8022,75 +8676,17 @@ static LRESULT CALLBACK NamingSyntaxViewportWndProc(HWND hViewport, UINT msg, WP
             GetClientRect(hViewport, &rcV);
             int vw = std::max(1, (int)(rcV.right - rcV.left));
             int vh = std::max(1, (int)(rcV.bottom - rcV.top));
-
-            HDC memDC = CreateCompatibleDC(hdc);
-            HBITMAP memBmp = CreateCompatibleBitmap(hdc, vw, vh);
-            HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
-
-            FillRect(memDC, &rcV, GetSysColorBrush(COLOR_BTNFACE));
-            SetBkMode(memDC, TRANSPARENT);
-
-            HFONT hCodeFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-            HFONT hRowFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            HGDIOBJ hOldF = SelectObject(memDC, hRowFont);
-
-            const int padX = 16;
-            const int col1X = padX;
-            const int col1W = 84;
-            const int sep1X = col1X + col1W;
-            const int col2X = sep1X + 12;
-            const int col2W = 224;
-            const int sep2X = col2X + col2W;
-            const int col3X = sep2X + 12;
-            const int rightEdge = vw - padX;
-            const int rowH = 26;
-            const int rowCount = (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]));
-            const int sy = st ? st->scrollY : 0;
-
-            HPEN hRowPen = CreatePen(PS_SOLID, 1, RGB(214, 218, 224));
-            HGDIOBJ hOldP = SelectObject(memDC, hRowPen);
-
-            for (int i = 0; i < rowCount; ++i) {
-                int y = 4 + i * rowH - sy;
-                if (y + rowH < 0 || y > vh) continue;
-                if (i > 0) {
-                    SelectObject(memDC, hRowPen);
-                    MoveToEx(memDC, padX, y, nullptr);
-                    LineTo(memDC, rightEdge, y);
+            if (st) {
+                RebuildNamingSyntaxContentBitmap(hdc, st, vw);
+                if (st->hContentDC) {
+                    int sy = std::max(0, std::min(st->scrollY, std::max(0, st->contentH - vh)));
+                    BitBlt(hdc, 0, 0, vw, vh, st->hContentDC, 0, sy, SRCCOPY);
+                } else {
+                    FillRect(hdc, &rcV, GetSysColorBrush(COLOR_BTNFACE));
                 }
-
-                SelectObject(memDC, hRowFont);
-                SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
-                RECT rcC2 = { col2X, y, sep2X - 6, y + rowH };
-                DrawTextW(memDC, kNamingSyntaxRows[i].explanation.c_str(), -1, &rcC2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
-                SelectObject(memDC, hCodeFont);
-                SetTextColor(memDC, RGB(30, 41, 59));
-                RECT rcC3 = { col3X, y, rightEdge, y + rowH };
-                DrawTextW(memDC, kNamingSyntaxRows[i].example.c_str(), -1, &rcC3, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            } else {
+                FillRect(hdc, &rcV, GetSysColorBrush(COLOR_BTNFACE));
             }
-
-            SelectObject(memDC, hRowPen);
-            MoveToEx(memDC, sep1X, 0, nullptr);
-            LineTo(memDC, sep1X, vh - 4);
-            MoveToEx(memDC, sep2X, 0, nullptr);
-            LineTo(memDC, sep2X, vh - 4);
-
-            SelectObject(memDC, hOldP);
-            SelectObject(memDC, hOldF);
-            DeleteObject(hRowPen);
-            DeleteObject(hRowFont);
-            DeleteObject(hCodeFont);
-
-            BitBlt(hdc, 0, 0, vw, vh, memDC, 0, 0, SRCCOPY);
-            SelectObject(memDC, oldBmp);
-            DeleteObject(memBmp);
-            DeleteDC(memDC);
-
             EndPaint(hViewport, &ps);
             return 0;
         }
@@ -8098,7 +8694,7 @@ static LRESULT CALLBACK NamingSyntaxViewportWndProc(HWND hViewport, UINT msg, WP
     return DefWindowProcW(hViewport, msg, wParam, lParam);
 }
 
-static void UpdateNamingSyntaxScroll(HWND hWnd, NamingSyntaxDlgState* st, int newScrollY) {
+static void UpdateNamingSyntaxScroll(HWND hWnd, NamingSyntaxDlgState* st, int newScrollY, bool forceEditPos = false) {
     if (!hWnd || !st) return;
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
@@ -8110,21 +8706,32 @@ static void UpdateNamingSyntaxScroll(HWND hWnd, NamingSyntaxDlgState* st, int ne
     int dy = st->scrollY - clamped;
     st->scrollY = clamped;
     if (st->hListViewport) {
-        SetWindowPos(st->hListViewport, HWND_TOP, 0, st->headerHeight, clientW, viewportH, SWP_NOACTIVATE);
-        const int col1X = 16;
-        const int col1W = 84;
-        const int rowH = 26;
-        for (size_t i = 0; i < st->hSyntaxEdits.size(); ++i) {
-            if (st->hSyntaxEdits[i]) {
-                int y = 4 + (int)i * rowH - st->scrollY;
-                SetWindowPos(st->hSyntaxEdits[i], nullptr, col1X, y + 4, col1W - 8, rowH - 7,
-                             SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(st->hListViewport, nullptr, 0, st->headerHeight, clientW, viewportH,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+        if (dy != 0 || forceEditPos) {
+            const int col1X = 16;
+            const int col1W = 84;
+            const int rowH = 26;
+            HDWP hdwp = BeginDeferWindowPos((int)st->hSyntaxEdits.size());
+            for (size_t i = 0; i < st->hSyntaxEdits.size(); ++i) {
+                if (st->hSyntaxEdits[i]) {
+                    int y = 4 + (int)i * rowH - st->scrollY;
+                    if (hdwp) {
+                        hdwp = DeferWindowPos(hdwp, st->hSyntaxEdits[i], nullptr, col1X, y + 4, col1W - 8, rowH - 7,
+                                              SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+                    } else {
+                        SetWindowPos(st->hSyntaxEdits[i], nullptr, col1X, y + 4, col1W - 8, rowH - 7,
+                                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+                    }
+                }
             }
+            if (hdwp) EndDeferWindowPos(hdwp);
         }
     }
-    if (st->hOkBtn) {
-        int footerTop = std::max(0, clientH - st->footerHeight);
-        SetWindowPos(st->hOkBtn, HWND_TOP, clientW - 16 - 88, footerTop + 10, 88, 30, SWP_NOACTIVATE);
+    int footerTop = std::max(0, clientH - st->footerHeight);
+    if (st->hOkBtn && footerTop != st->lastFooterTop) {
+        st->lastFooterTop = footerTop;
+        SetWindowPos(st->hOkBtn, HWND_TOP, clientW - 16 - 88, footerTop + 10, 88, 30, SWP_NOACTIVATE | SWP_NOCOPYBITS);
     }
     SCROLLINFO si = { sizeof(SCROLLINFO) };
     si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
@@ -8149,12 +8756,6 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
             st = (NamingSyntaxDlgState*)cs->lpCreateParams;
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
 
-            HFONT hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            HFONT hCodeFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
             RECT rcC;
             GetClientRect(hWnd, &rcC);
             int clientW = rcC.right - rcC.left;
@@ -8166,14 +8767,34 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
                 vpwc.lpfnWndProc = NamingSyntaxViewportWndProc;
                 vpwc.hInstance = g_Daemon.hInst;
                 vpwc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-                vpwc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+                vpwc.hbrBackground = nullptr;
                 vpwc.lpszClassName = L"PepperSnapNamingSyntaxViewport";
                 RegisterClassExW(&vpwc);
                 vpReg = true;
             }
 
             if (st) {
-                st->hCodeFont = hCodeFont;
+                st->hHeaderFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                st->hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                st->hCodeFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+                st->hRowFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                st->hHeaderLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+                st->hRowPen = CreatePen(PS_SOLID, 1, RGB(214, 218, 224));
+
+                HDC hdc = GetDC(hWnd);
+                if (hdc) {
+                    RebuildNamingSyntaxContentBitmap(hdc, st, clientW);
+                    ReleaseDC(hWnd, hdc);
+                }
+
                 int vpH = std::max(1, clientH - st->headerHeight - st->footerHeight);
                 st->hListViewport = CreateWindowExW(
                     0, L"PepperSnapNamingSyntaxViewport", L"",
@@ -8195,7 +8816,7 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
                         col1X, y + 4, col1W - 8, rowH - 7,
                         st->hListViewport, (HMENU)(INT_PTR)(3000 + i), g_Daemon.hInst, nullptr
                     );
-                    SendMessageW(hEd, WM_SETFONT, (WPARAM)hCodeFont, TRUE);
+                    SendMessageW(hEd, WM_SETFONT, (WPARAM)st->hCodeFont, TRUE);
                     WNDPROC origEditProc = (WNDPROC)SetWindowLongPtrW(hEd, GWLP_WNDPROC, (LONG_PTR)NamingSyntaxEditSubclassProc);
                     SetPropW(hEd, L"PepperSnapOrigSyntaxEditProc", (HANDLE)origEditProc);
                     SetPropW(hEd, L"PepperSnapSyntaxRowIdx", (HANDLE)(INT_PTR)(i + 1));
@@ -8206,19 +8827,20 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"OK",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON,
                 clientW - 16 - 88, clientH - 40, 88, 30, hWnd, (HMENU)IDOK, nullptr, nullptr);
-            SendMessageW(hOk, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+            if (st && st->hBoldFont) {
+                SendMessageW(hOk, WM_SETFONT, (WPARAM)st->hBoldFont, TRUE);
+            }
             if (st) {
                 st->hOkBtn = hOk;
-                UpdateNamingSyntaxScroll(hWnd, st, 0);
+                UpdateNamingSyntaxScroll(hWnd, st, 0, true);
             }
             return 0;
         }
-        case WM_DESTROY:
-            if (st && st->hCodeFont) {
-                DeleteObject(st->hCodeFont);
-                st->hCodeFont = nullptr;
+        case WM_NCDESTROY:
+            if (st) {
+                st->FreeGdiCache();
             }
-            return 0;
+            break;
         case WM_ERASEBKGND:
             return 1;
         case WM_GETMINMAXINFO: {
@@ -8241,7 +8863,7 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
         }
         case WM_SIZE: {
             if (st && wParam != SIZE_MINIMIZED) {
-                UpdateNamingSyntaxScroll(hWnd, st, st->scrollY);
+                UpdateNamingSyntaxScroll(hWnd, st, st->scrollY, false);
                 InvalidateRect(hWnd, nullptr, FALSE);
                 RECT rcW;
                 if (GetWindowRect(hWnd, &rcW)) {
@@ -8276,7 +8898,7 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
                     }
                     default: break;
                 }
-                UpdateNamingSyntaxScroll(hWnd, st, target);
+                UpdateNamingSyntaxScroll(hWnd, st, target, false);
                 return 0;
             }
             break;
@@ -8286,7 +8908,7 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 if (delta != 0) {
                     int step = -(delta * 52) / WHEEL_DELTA;
-                    UpdateNamingSyntaxScroll(hWnd, st, st->scrollY + step);
+                    UpdateNamingSyntaxScroll(hWnd, st, st->scrollY + step, false);
                 }
                 return 0;
             }
@@ -8299,136 +8921,84 @@ static LRESULT CALLBACK NamingSyntaxDlgWndProc(HWND hWnd, UINT msg, WPARAM wPara
             GetClientRect(hWnd, &rcClient);
             int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
             int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
+            if (st) {
+                if (!st->hBackDC || clientW > st->backCapW || clientH > st->backCapH) {
+                    if (!st->hBackDC) {
+                        st->hBackDC = CreateCompatibleDC(hdc);
+                    } else if (st->hBackOldBmp) {
+                        SelectObject(st->hBackDC, st->hBackOldBmp);
+                        if (st->hBackBmp) DeleteObject(st->hBackBmp);
+                    }
+                    st->backCapW = std::max(clientW + 64, 520);
+                    st->backCapH = std::max(clientH + 64, GetSystemMetrics(SM_CYSCREEN));
+                    st->hBackBmp = CreateCompatibleBitmap(hdc, st->backCapW, st->backCapH);
+                    st->hBackOldBmp = SelectObject(st->hBackDC, st->hBackBmp);
+                }
+                HDC memDC = st->hBackDC;
+                RECT rcAll = { 0, 0, clientW, clientH };
+                FillRect(memDC, &rcAll, GetSysColorBrush(COLOR_BTNFACE));
+                SetBkMode(memDC, TRANSPARENT);
 
-            HDC memDC = CreateCompatibleDC(hdc);
-            HBITMAP memBmp = CreateCompatibleBitmap(hdc, clientW, clientH);
-            HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
+                const int padX = 16;
+                const int col1X = padX;
+                const int col1W = 84;
+                const int sep1X = col1X + col1W;
+                const int col2X = sep1X + 12;
+                const int col2W = 224;
+                const int sep2X = col2X + col2W;
+                const int col3X = sep2X + 12;
+                const int rightEdge = clientW - padX;
 
-            FillRect(memDC, &rcClient, GetSysColorBrush(COLOR_BTNFACE));
-            SetBkMode(memDC, TRANSPARENT);
+                const int headerH = st->headerHeight;
+                const int footerH = st->footerHeight;
+                const int footerTop = std::max(headerH, clientH - footerH);
 
-            HFONT hHeaderFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            HFONT hCodeFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-            HFONT hRowFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            HGDIOBJ hOldF = SelectObject(memDC, hHeaderFont);
+                HGDIOBJ hOldF = SelectObject(memDC, st->hHeaderFont);
+                HGDIOBJ hOldP = SelectObject(memDC, st->hHeaderLinePen);
 
-            const int padX = 16;
-            const int col1X = padX;
-            const int col1W = 84;
-            const int sep1X = col1X + col1W;
-            const int col2X = sep1X + 12;
-            const int col2W = 224;
-            const int sep2X = col2X + col2W;
-            const int col3X = sep2X + 12;
-            const int rightEdge = clientW - padX;
+                // Pinned top header row
+                SetTextColor(memDC, RGB(220, 38, 38));
+                RECT rcH1 = { col1X, 6, sep1X - 6, headerH - 2 };
+                RECT rcH2 = { col2X, 6, sep2X - 6, headerH - 2 };
+                RECT rcH3 = { col3X, 6, rightEdge, headerH - 2 };
+                DrawTextW(memDC, L"Syntax",      -1, &rcH1, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                DrawTextW(memDC, L"Explanation", -1, &rcH2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                DrawTextW(memDC, L"Example",     -1, &rcH3, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-            const int headerH = st ? st->headerHeight : 36;
-            const int footerH = st ? st->footerHeight : 50;
-            const int footerTop = std::max(headerH, clientH - footerH);
-            const int rowH = 26;
-            const int rowCount = (int)(sizeof(kNamingSyntaxRows) / sizeof(kNamingSyntaxRows[0]));
-            const int sy = st ? st->scrollY : 0;
+                SelectObject(memDC, st->hHeaderLinePen);
+                MoveToEx(memDC, padX, headerH - 1, nullptr);
+                LineTo(memDC, rightEdge, headerH - 1);
 
-            HPEN hHeaderLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-            HPEN hRowPen = CreatePen(PS_SOLID, 1, RGB(214, 218, 224));
-            HGDIOBJ hOldP = SelectObject(memDC, hHeaderLinePen);
+                // Vertical dividers in header
+                SelectObject(memDC, st->hRowPen);
+                MoveToEx(memDC, sep1X, 8, nullptr);
+                LineTo(memDC, sep1X, headerH - 2);
+                MoveToEx(memDC, sep2X, 8, nullptr);
+                LineTo(memDC, sep2X, headerH - 2);
 
-            // Pinned top header row
-            SelectObject(memDC, hHeaderFont);
-            SetTextColor(memDC, RGB(220, 38, 38));
-            RECT rcH1 = { col1X, 6, sep1X - 6, headerH - 2 };
-            RECT rcH2 = { col2X, 6, sep2X - 6, headerH - 2 };
-            RECT rcH3 = { col3X, 6, rightEdge, headerH - 2 };
-            DrawTextW(memDC, L"Syntax",      -1, &rcH1, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            DrawTextW(memDC, L"Explanation", -1, &rcH2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            DrawTextW(memDC, L"Example",     -1, &rcH3, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                // Pinned bottom footer bar
+                RECT rcFooter = { 0, footerTop, clientW, clientH };
+                FillRect(memDC, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
+                SelectObject(memDC, st->hHeaderLinePen);
+                MoveToEx(memDC, 0, footerTop, nullptr);
+                LineTo(memDC, clientW, footerTop);
 
-            SelectObject(memDC, hHeaderLinePen);
-            MoveToEx(memDC, padX, headerH - 1, nullptr);
-            LineTo(memDC, rightEdge, headerH - 1);
-
-            // Scrollable table body
-            int savedClip = SaveDC(memDC);
-            IntersectClipRect(memDC, 0, headerH, clientW, footerTop);
-
-            for (int i = 0; i < rowCount; ++i) {
-                int y = headerH + 4 + i * rowH - sy;
-                if (y + rowH < headerH || y > footerTop) continue;
-                if (i > 0) {
-                    SelectObject(memDC, hRowPen);
-                    MoveToEx(memDC, padX, y, nullptr);
-                    LineTo(memDC, rightEdge, y);
+                SelectObject(memDC, st->hRowFont);
+                RECT rcHint = { padX, footerTop + 10, clientW - 116, clientH - 10 };
+                if (!st->copiedSyntax.empty()) {
+                    SetTextColor(memDC, RGB(22, 163, 74));
+                    std::wstring copiedMsg = L"\x2713 Copied " + st->copiedSyntax + L" to clipboard";
+                    DrawTextW(memDC, copiedMsg.c_str(), -1, &rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                } else {
+                    SetTextColor(memDC, GetSysColor(COLOR_GRAYTEXT));
+                    DrawTextW(memDC, L"Click or select any syntax to copy", -1, &rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
                 }
 
-                SelectObject(memDC, hCodeFont);
-                SetTextColor(memDC, RGB(30, 41, 59));
-                RECT rcC1 = { col1X, y, sep1X - 6, y + rowH };
-                DrawTextW(memDC, kNamingSyntaxRows[i].syntax.c_str(), -1, &rcC1, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                SelectObject(memDC, hOldP);
+                SelectObject(memDC, hOldF);
 
-                SelectObject(memDC, hRowFont);
-                SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
-                RECT rcC2 = { col2X, y, sep2X - 6, y + rowH };
-                DrawTextW(memDC, kNamingSyntaxRows[i].explanation.c_str(), -1, &rcC2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
-                SelectObject(memDC, hCodeFont);
-                SetTextColor(memDC, RGB(30, 41, 59));
-                RECT rcC3 = { col3X, y, rightEdge, y + rowH };
-                DrawTextW(memDC, kNamingSyntaxRows[i].example.c_str(), -1, &rcC3, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                BitBlt(hdc, 0, 0, clientW, clientH, memDC, 0, 0, SRCCOPY);
             }
-
-            // Vertical column separator lines
-            SelectObject(memDC, hRowPen);
-            MoveToEx(memDC, sep1X, 8, nullptr);
-            LineTo(memDC, sep1X, footerTop - 4);
-            MoveToEx(memDC, sep2X, 8, nullptr);
-            LineTo(memDC, sep2X, footerTop - 4);
-
-            RestoreDC(memDC, savedClip);
-
-            // Vertical dividers in header as well
-            SelectObject(memDC, hRowPen);
-            MoveToEx(memDC, sep1X, 8, nullptr);
-            LineTo(memDC, sep1X, headerH - 2);
-            MoveToEx(memDC, sep2X, 8, nullptr);
-            LineTo(memDC, sep2X, headerH - 2);
-
-            // Pinned bottom footer bar
-            RECT rcFooter = { 0, footerTop, clientW, clientH };
-            FillRect(memDC, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
-            SelectObject(memDC, hHeaderLinePen);
-            MoveToEx(memDC, 0, footerTop, nullptr);
-            LineTo(memDC, clientW, footerTop);
-
-            SelectObject(memDC, hRowFont);
-            RECT rcHint = { padX, footerTop + 10, clientW - 116, clientH - 10 };
-            if (st && !st->copiedSyntax.empty()) {
-                SetTextColor(memDC, RGB(22, 163, 74));
-                std::wstring copiedMsg = L"\x2713 Copied " + st->copiedSyntax + L" to clipboard";
-                DrawTextW(memDC, copiedMsg.c_str(), -1, &rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            } else {
-                SetTextColor(memDC, GetSysColor(COLOR_GRAYTEXT));
-                DrawTextW(memDC, L"Click or select any syntax to copy", -1, &rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            }
-
-            SelectObject(memDC, hOldP);
-            SelectObject(memDC, hOldF);
-            DeleteObject(hRowPen);
-            DeleteObject(hHeaderLinePen);
-            DeleteObject(hRowFont);
-            DeleteObject(hCodeFont);
-            DeleteObject(hHeaderFont);
-
-            BitBlt(hdc, 0, 0, clientW, clientH, memDC, 0, 0, SRCCOPY);
-            SelectObject(memDC, oldBmp);
-            DeleteObject(memBmp);
-            DeleteDC(memDC);
-
             EndPaint(hWnd, &ps);
             return 0;
         }
@@ -8459,7 +9029,7 @@ static void ShowNamingSyntaxModal(HWND hParentOptWnd) {
         wc.hInstance = g_Daemon.hInst;
         wc.hIcon = LoadIconW(g_Daemon.hInst, MAKEINTRESOURCEW(IDI_APPICON));
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"PepperSnapNamingSyntaxModal";
         RegisterClassExW(&wc);
         reg = true;
@@ -8540,7 +9110,7 @@ static void ShowNamingSyntaxModal(HWND hParentOptWnd) {
 }
 
 struct CustomizeKeyRow {
-    int slot = 0; // 1..20, or 0 for section separator
+    int slot = 0; // 1..50, or 0 for section header/separator
     bool isSeparator = false;
     bool hasIcon = false;
     DockButton iconBtn;
@@ -8599,12 +9169,146 @@ struct CustomizeKeysDlgState {
     int footerHeight = 50;
     int fixedWinWidth = 460;
     int fullWinHeight = 730;
-    int savedWinHeight = 560;
+    int savedWinHeight = 620;
+    int lastFooterTop = -1;
 
+    HWND hViewport = nullptr;
     HWND hFooterBg = nullptr;
     HWND hRestoreBtn = nullptr;
     HWND hSaveBtn = nullptr;
     HWND hCancelBtn = nullptr;
+
+    HFONT hFont = nullptr;
+    HFONT hBoldFont = nullptr;
+    HPEN hSepShadow = nullptr;
+    HPEN hSepHilight = nullptr;
+    HPEN hRowSep = nullptr;
+    HDC hContentDC = nullptr;
+    HBITMAP hContentBmp = nullptr;
+    HGDIOBJ hContentOldBmp = nullptr;
+    int contentBmpW = 0;
+    int contentBmpH = 0;
+
+    void InitGdiCache(HDC hdcRef, int clientW) {
+        if (!hFont) {
+            hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            hSepShadow = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+            hSepHilight = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
+            hRowSep = CreatePen(PS_SOLID, 1, RGB(218, 222, 228));
+        }
+        int targetW = std::max(428, clientW);
+        int targetH = std::max(64, scrollContentHeight);
+        if (!hContentDC || contentBmpW != targetW || contentBmpH != targetH) {
+            if (!hContentDC) {
+                hContentDC = CreateCompatibleDC(hdcRef);
+            } else if (hContentOldBmp) {
+                SelectObject(hContentDC, hContentOldBmp);
+                if (hContentBmp) DeleteObject(hContentBmp);
+            }
+            contentBmpW = targetW;
+            contentBmpH = targetH;
+            hContentBmp = CreateCompatibleBitmap(hdcRef, contentBmpW, contentBmpH);
+            hContentOldBmp = SelectObject(hContentDC, hContentBmp);
+
+            RECT rcAll = { 0, 0, contentBmpW, contentBmpH };
+            FillRect(hContentDC, &rcAll, GetSysColorBrush(COLOR_BTNFACE));
+            SetBkMode(hContentDC, TRANSPARENT);
+
+            HGDIOBJ hOldF = SelectObject(hContentDC, hFont);
+            HGDIOBJ hOldP = SelectObject(hContentDC, hSepShadow);
+
+            int padX = 16;
+            int rightEdge = contentBmpW - padX;
+            const int iconW = 26;
+            const int iconH = 22;
+
+            Graphics gIcon(hContentDC);
+            gIcon.SetSmoothingMode(SmoothingModeAntiAlias);
+            gIcon.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+
+            for (size_t i = 0; i < rows.size(); ++i) {
+                const auto& r = rows[i];
+                int drawY = r.y;
+
+                if (r.isSeparator) {
+                    if (i > 0) {
+                        int lineY = drawY + 6;
+                        SelectObject(hContentDC, hSepShadow);
+                        MoveToEx(hContentDC, padX, lineY, nullptr);
+                        LineTo(hContentDC, rightEdge, lineY);
+                        SelectObject(hContentDC, hSepHilight);
+                        MoveToEx(hContentDC, padX, lineY + 1, nullptr);
+                        LineTo(hContentDC, rightEdge, lineY + 1);
+                    }
+                    if (!r.label.empty()) {
+                        SelectObject(hContentDC, hBoldFont);
+                        SetTextColor(hContentDC, RGB(15, 23, 42));
+                        int hdrTop = (i > 0) ? (drawY + 12) : (drawY + 2);
+                        RECT rcHdr = { padX, hdrTop, rightEdge, drawY + r.h };
+                        DrawTextW(hContentDC, r.label.c_str(), -1, &rcHdr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                    }
+                } else {
+                    if (i > 0 && !rows[i - 1].isSeparator) {
+                        SelectObject(hContentDC, hRowSep);
+                        MoveToEx(hContentDC, padX, drawY, nullptr);
+                        LineTo(hContentDC, rightEdge, drawY);
+                    }
+
+                    int textLeft = padX;
+                    if (r.hasIcon) {
+                        int iconX = padX;
+                        int iconY = drawY + (r.h - iconH) / 2;
+                        RectF rfIcon((float)iconX, (float)iconY, (float)iconW, (float)iconH);
+                        Color bgCol = r.iconBtn.isPrimaryAction ? Color(255, 239, 68, 68) : Color(245, 15, 23, 42);
+                        SolidBrush btnBg(bgCol);
+                        Pen btnBorder(r.iconBtn.isPrimaryAction ? Color(255, 252, 165, 165) : Color(220, 51, 65, 85), 1.0f);
+                        GraphicsState stB = gIcon.Save();
+                        gIcon.SetSmoothingMode(SmoothingModeNone);
+                        gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
+                        gIcon.FillRectangle(&btnBg, iconX, iconY, iconW, iconH);
+                        gIcon.Restore(stB);
+                        PepperSnapDaemon::DrawDockButtonIcon(gIcon, r.iconBtn, rfIcon);
+                        GraphicsState stO = gIcon.Save();
+                        gIcon.SetSmoothingMode(SmoothingModeNone);
+                        gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
+                        gIcon.DrawRectangle(&btnBorder, iconX, iconY, iconW - 1, iconH - 1);
+                        gIcon.Restore(stO);
+                        textLeft += iconW + 8;
+                    }
+
+                    SelectObject(hContentDC, hFont);
+                    SetTextColor(hContentDC, GetSysColor(COLOR_WINDOWTEXT));
+                    RECT rcLbl = { textLeft, drawY, 252, drawY + r.h };
+                    DrawTextW(hContentDC, r.label.c_str(), -1, &rcLbl, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                }
+            }
+
+            SelectObject(hContentDC, hOldP);
+            SelectObject(hContentDC, hOldF);
+        }
+    }
+
+    void FreeGdiCache() {
+        if (hContentDC) {
+            if (hContentOldBmp) SelectObject(hContentDC, hContentOldBmp);
+            if (hContentBmp) DeleteObject(hContentBmp);
+            DeleteDC(hContentDC);
+            hContentDC = nullptr;
+            hContentBmp = nullptr;
+            hContentOldBmp = nullptr;
+            contentBmpW = contentBmpH = 0;
+        }
+        if (hRowSep)     { DeleteObject(hRowSep);     hRowSep = nullptr; }
+        if (hSepHilight) { DeleteObject(hSepHilight); hSepHilight = nullptr; }
+        if (hSepShadow)  { DeleteObject(hSepShadow);  hSepShadow = nullptr; }
+        if (hBoldFont)   { DeleteObject(hBoldFont);   hBoldFont = nullptr; }
+        if (hFont)       { DeleteObject(hFont);       hFont = nullptr; }
+    }
 };
 
 static void UpdateCustomizeKeysRecordingTooltip(HWND hWnd, CustomizeKeysDlgState* ck) {
@@ -8653,21 +9357,31 @@ static void LayoutCustomizeKeysFooter(HWND hWnd, CustomizeKeysDlgState* ck) {
     int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
     int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
     int footerTop = std::max(0, clientH - ck->footerHeight);
-    if (ck->hFooterBg) {
-        SetWindowPos(ck->hFooterBg, HWND_TOP, 0, footerTop, clientW, ck->footerHeight, SWP_NOACTIVATE);
+    if (footerTop == ck->lastFooterTop) return;
+    ck->lastFooterTop = footerTop;
+
+    if (ck->hViewport) {
+        SetWindowPos(ck->hViewport, nullptr, 0, 0, clientW, footerTop, SWP_NOZORDER | SWP_NOACTIVATE);
     }
-    if (ck->hRestoreBtn) {
-        SetWindowPos(ck->hRestoreBtn, HWND_TOP, 16, footerTop + 9, 128, 32, SWP_NOACTIVATE);
-    }
-    if (ck->hSaveBtn) {
-        SetWindowPos(ck->hSaveBtn, HWND_TOP, clientW - 16 - 88 - 8 - 88, footerTop + 9, 88, 32, SWP_NOACTIVATE);
-    }
-    if (ck->hCancelBtn) {
-        SetWindowPos(ck->hCancelBtn, HWND_TOP, clientW - 16 - 88, footerTop + 9, 88, 32, SWP_NOACTIVATE);
+    HDWP hdwp = BeginDeferWindowPos(4);
+    if (hdwp) {
+        if (ck->hFooterBg) {
+            hdwp = DeferWindowPos(hdwp, ck->hFooterBg, HWND_TOP, 0, footerTop, clientW, ck->footerHeight, SWP_NOACTIVATE);
+        }
+        if (ck->hRestoreBtn) {
+            hdwp = DeferWindowPos(hdwp, ck->hRestoreBtn, HWND_TOP, 16, footerTop + 9, 128, 32, SWP_NOACTIVATE);
+        }
+        if (ck->hSaveBtn) {
+            hdwp = DeferWindowPos(hdwp, ck->hSaveBtn, HWND_TOP, clientW - 16 - 88 - 8 - 88, footerTop + 9, 88, 32, SWP_NOACTIVATE);
+        }
+        if (ck->hCancelBtn) {
+            hdwp = DeferWindowPos(hdwp, ck->hCancelBtn, HWND_TOP, clientW - 16 - 88, footerTop + 9, 88, 32, SWP_NOACTIVATE);
+        }
+        EndDeferWindowPos(hdwp);
     }
 }
 
-static void UpdateCustomizeKeysScroll(HWND hWnd, CustomizeKeysDlgState* ck, int newScrollY) {
+static void UpdateCustomizeKeysScroll(HWND hWnd, CustomizeKeysDlgState* ck, int newScrollY, bool forceReposition = false) {
     if (!hWnd || !ck) return;
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
@@ -8678,15 +9392,28 @@ static void UpdateCustomizeKeysScroll(HWND hWnd, CustomizeKeysDlgState* ck, int 
     int clamped = std::max(0, std::min(newScrollY, maxScroll));
     int dy = ck->scrollY - clamped;
     ck->scrollY = clamped;
-    if (dy != 0) {
+
+    LayoutCustomizeKeysFooter(hWnd, ck);
+
+    if (dy != 0 || forceReposition) {
+        int btnCount = 0;
         for (const auto& r : ck->rows) {
-            if (!r.isSeparator && r.hBtn) {
-                int btnY = r.y + (r.h - 26) / 2 - ck->scrollY;
-                SetWindowPos(r.hBtn, nullptr, 256, btnY, 156, 26, SWP_NOZORDER | SWP_NOACTIVATE);
+            if (!r.isSeparator && r.hBtn) btnCount++;
+        }
+        if (btnCount > 0) {
+            HDWP hdwp = BeginDeferWindowPos(btnCount);
+            if (hdwp) {
+                for (const auto& r : ck->rows) {
+                    if (!r.isSeparator && r.hBtn) {
+                        int btnY = r.y + (r.h - 26) / 2 - ck->scrollY;
+                        hdwp = DeferWindowPos(hdwp, r.hBtn, nullptr, 256, btnY, 156, 26, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+                    }
+                }
+                EndDeferWindowPos(hdwp);
             }
         }
     }
-    LayoutCustomizeKeysFooter(hWnd, ck);
+
     SCROLLINFO si = { sizeof(SCROLLINFO) };
     si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
     si.nMin = 0;
@@ -8695,10 +9422,59 @@ static void UpdateCustomizeKeysScroll(HWND hWnd, CustomizeKeysDlgState* ck, int 
     si.nPos = ck->scrollY;
     SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
     UpdateCustomizeKeysRecordingTooltip(hWnd, ck);
-    if (dy != 0) {
-        RECT rcInval = { 0, 0, clientW, clientH };
-        RedrawWindow(hWnd, &rcInval, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+
+    if (dy != 0 && ck->hViewport) {
+        RedrawWindow(ck->hViewport, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
     }
+}
+
+static LRESULT CALLBACK CustomizeKeysViewportWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    CustomizeKeysDlgState* ck = (CustomizeKeysDlgState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+    switch (msg) {
+        case WM_CREATE: {
+            CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
+            ck = (CustomizeKeysDlgState*)cs->lpCreateParams;
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)ck);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT rcV;
+            GetClientRect(hWnd, &rcV);
+            int vw = std::max(1, (int)(rcV.right - rcV.left));
+            int vh = std::max(1, (int)(rcV.bottom - rcV.top));
+            if (ck) {
+                ck->InitGdiCache(hdc, vw);
+                if (ck->hContentDC) {
+                    int sy = ck->scrollY;
+                    int copyH = std::max(0, std::min(vh, ck->contentBmpH - sy));
+                    if (copyH > 0) {
+                        BitBlt(hdc, 0, 0, vw, copyH, ck->hContentDC, 0, sy, SRCCOPY);
+                    }
+                    if (copyH < vh) {
+                        RECT rcRem = { 0, copyH, vw, vh };
+                        FillRect(hdc, &rcRem, GetSysColorBrush(COLOR_BTNFACE));
+                    }
+                } else {
+                    FillRect(hdc, &rcV, GetSysColorBrush(COLOR_BTNFACE));
+                }
+            }
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+        case WM_COMMAND:
+        case WM_MOUSEWHEEL: {
+            HWND hParent = GetParent(hWnd);
+            if (hParent) {
+                return SendMessageW(hParent, msg, wParam, lParam);
+            }
+            break;
+        }
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
 static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -8709,21 +9485,23 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
             ck = (CustomizeKeysDlgState*)cs->lpCreateParams;
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)ck);
 
-            HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            HFONT hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-
             if (ck) {
+                HDC hdc = GetDC(hWnd);
+                ck->InitGdiCache(hdc, 428);
+                if (hdc) ReleaseDC(hWnd, hdc);
+
+                ck->hViewport = CreateWindowExW(0, L"PepperSnapCustomizeKeysViewport", L"",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                    0, 0, 428, 500, hWnd, nullptr, g_Daemon.hInst, ck);
+
+                HWND hBtnParent = ck->hViewport ? ck->hViewport : hWnd;
                 for (auto& r : ck->rows) {
                     if (r.isSeparator) continue;
                     int btnY = r.y + (r.h - 26) / 2;
                     r.hBtn = CreateWindowExW(0, L"BUTTON", L"",
                         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                        256, btnY, 156, 26, hWnd, (HMENU)(INT_PTR)(IDC_CK_BTN_BASE + r.slot), nullptr, nullptr);
-                    SendMessageW(r.hBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+                        256, btnY, 156, 26, hBtnParent, (HMENU)(INT_PTR)(IDC_CK_BTN_BASE + r.slot), nullptr, nullptr);
+                    SendMessageW(r.hBtn, WM_SETFONT, (WPARAM)ck->hFont, TRUE);
                 }
 
                 ck->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
@@ -8731,19 +9509,20 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
 
                 ck->hRestoreBtn = CreateWindowExW(0, L"BUTTON", L"Restore defaults",
                     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 16, 509, 128, 32, hWnd, (HMENU)IDC_CK_RESTORE_DEFAULTS, nullptr, nullptr);
-                SendMessageW(ck->hRestoreBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+                SendMessageW(ck->hRestoreBtn, WM_SETFONT, (WPARAM)ck->hFont, TRUE);
 
                 ck->hSaveBtn = CreateWindowExW(0, L"BUTTON", L"Save",
                     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 228, 509, 88, 32, hWnd, (HMENU)IDOK, nullptr, nullptr);
-                SendMessageW(ck->hSaveBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+                SendMessageW(ck->hSaveBtn, WM_SETFONT, (WPARAM)ck->hBoldFont, TRUE);
 
                 ck->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
                     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 324, 509, 88, 32, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
-                SendMessageW(ck->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+                SendMessageW(ck->hCancelBtn, WM_SETFONT, (WPARAM)ck->hFont, TRUE);
 
                 RefreshCustomizeKeysButtonLabels(hWnd, ck);
+                ck->lastFooterTop = -1;
                 LayoutCustomizeKeysFooter(hWnd, ck);
-                UpdateCustomizeKeysScroll(hWnd, ck, 0);
+                UpdateCustomizeKeysScroll(hWnd, ck, 0, true);
             }
             return 0;
         }
@@ -8757,108 +9536,15 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
             int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
             int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
             if (ck) {
-                HDC memDC = CreateCompatibleDC(hdc);
-                HBITMAP memBmp = CreateCompatibleBitmap(hdc, clientW, clientH);
-                HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
-
-                RECT rcAll = { 0, 0, clientW, clientH };
-                FillRect(memDC, &rcAll, GetSysColorBrush(COLOR_BTNFACE));
-
                 int footerTop = std::max(0, clientH - ck->footerHeight);
-                int savedDC = SaveDC(memDC);
-                IntersectClipRect(memDC, 0, 0, clientW, footerTop);
-
-                SetBkMode(memDC, TRANSPARENT);
-                HFONT hRowFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-                HGDIOBJ hOldF = SelectObject(memDC, hRowFont);
-
-                HPEN hSepShadow = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-                HPEN hSepHilight = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
-                HPEN hRowSep = CreatePen(PS_SOLID, 1, RGB(218, 222, 228));
-                HGDIOBJ hOldP = SelectObject(memDC, hSepShadow);
-
-                int sy = ck->scrollY;
-                int padX = 16;
-                int rightEdge = clientW - padX;
-
-                for (size_t i = 0; i < ck->rows.size(); ++i) {
-                    const auto& r = ck->rows[i];
-                    int drawY = r.y - sy;
-                    if (drawY + r.h < 0 || drawY > footerTop) continue;
-
-                    if (r.isSeparator) {
-                        int lineY = drawY + r.h / 2;
-                        SelectObject(memDC, hSepShadow);
-                        MoveToEx(memDC, padX, lineY, nullptr);
-                        LineTo(memDC, rightEdge, lineY);
-                        SelectObject(memDC, hSepHilight);
-                        MoveToEx(memDC, padX, lineY + 1, nullptr);
-                        LineTo(memDC, rightEdge, lineY + 1);
-                    } else {
-                        if (i > 0 && !ck->rows[i - 1].isSeparator) {
-                            SelectObject(memDC, hRowSep);
-                            MoveToEx(memDC, padX, drawY, nullptr);
-                            LineTo(memDC, rightEdge, drawY);
-                        }
-
-                        int textLeft = padX;
-                        if (r.hasIcon) {
-                            Graphics gIcon(memDC);
-                            gIcon.SetSmoothingMode(SmoothingModeAntiAlias);
-                            gIcon.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-                            const int iconW = 26;
-                            const int iconH = 22;
-                            int iconX = padX;
-                            int iconY = drawY + (r.h - iconH) / 2;
-                            RectF rfIcon((float)iconX, (float)iconY, (float)iconW, (float)iconH);
-                            Color bgCol = r.iconBtn.isPrimaryAction ? Color(255, 239, 68, 68) : Color(245, 15, 23, 42);
-                            SolidBrush btnBg(bgCol);
-                            Pen btnBorder(r.iconBtn.isPrimaryAction ? Color(255, 252, 165, 165) : Color(220, 51, 65, 85), 1.0f);
-                            GraphicsState stB = gIcon.Save();
-                            gIcon.SetSmoothingMode(SmoothingModeNone);
-                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
-                            gIcon.FillRectangle(&btnBg, iconX, iconY, iconW, iconH);
-                            gIcon.Restore(stB);
-                            PepperSnapDaemon::DrawDockButtonIcon(gIcon, r.iconBtn, rfIcon);
-                            GraphicsState stO = gIcon.Save();
-                            gIcon.SetSmoothingMode(SmoothingModeNone);
-                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
-                            gIcon.DrawRectangle(&btnBorder, iconX, iconY, iconW - 1, iconH - 1);
-                            gIcon.Restore(stO);
-                            textLeft += iconW + 8;
-                        }
-
-                        SelectObject(memDC, hRowFont);
-                        SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
-                        RECT rcLbl = { textLeft, drawY, 250, drawY + r.h };
-                        DrawTextW(memDC, r.label.c_str(), -1, &rcLbl, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                    }
-                }
-
-                SelectObject(memDC, hOldP);
-                SelectObject(memDC, hOldF);
-                DeleteObject(hRowSep);
-                DeleteObject(hSepHilight);
-                DeleteObject(hSepShadow);
-                DeleteObject(hRowFont);
-
-                RestoreDC(memDC, savedDC);
-
                 RECT rcFooter = { 0, footerTop, clientW, clientH };
-                FillRect(memDC, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
-                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-                HGDIOBJ hOldFooterPen = SelectObject(memDC, hLinePen);
-                MoveToEx(memDC, 0, footerTop, nullptr);
-                LineTo(memDC, clientW, footerTop);
-                SelectObject(memDC, hOldFooterPen);
-                DeleteObject(hLinePen);
-
-                BitBlt(hdc, 0, 0, clientW, clientH, memDC, 0, 0, SRCCOPY);
-                SelectObject(memDC, oldBmp);
-                DeleteObject(memBmp);
-                DeleteDC(memDC);
+                FillRect(hdc, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
+                if (ck->hSepShadow) {
+                    HGDIOBJ hOldFooterPen = SelectObject(hdc, ck->hSepShadow);
+                    MoveToEx(hdc, 0, footerTop, nullptr);
+                    LineTo(hdc, clientW, footerTop);
+                    SelectObject(hdc, hOldFooterPen);
+                }
             }
             EndPaint(hWnd, &ps);
             return 0;
@@ -8869,12 +9555,12 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
                 RECT rcF;
                 GetClientRect(ck->hFooterBg, &rcF);
                 FillRect(hdcStatic, &rcF, GetSysColorBrush(COLOR_BTNFACE));
-                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-                HGDIOBJ hOldPen = SelectObject(hdcStatic, hLinePen);
-                MoveToEx(hdcStatic, 0, 0, nullptr);
-                LineTo(hdcStatic, rcF.right, 0);
-                SelectObject(hdcStatic, hOldPen);
-                DeleteObject(hLinePen);
+                if (ck->hSepShadow) {
+                    HGDIOBJ hOldPen = SelectObject(hdcStatic, ck->hSepShadow);
+                    MoveToEx(hdcStatic, 0, 0, nullptr);
+                    LineTo(hdcStatic, rcF.right, 0);
+                    SelectObject(hdcStatic, hOldPen);
+                }
                 return (LRESULT)GetStockObject(NULL_BRUSH);
             }
             break;
@@ -8899,9 +9585,10 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
         }
         case WM_SIZE: {
             if (ck && wParam != SIZE_MINIMIZED) {
-                LayoutCustomizeKeysFooter(hWnd, ck);
-                UpdateCustomizeKeysScroll(hWnd, ck, ck->scrollY);
-                InvalidateRect(hWnd, nullptr, FALSE);
+                UpdateCustomizeKeysScroll(hWnd, ck, ck->scrollY, false);
+                if (ck->hViewport) {
+                    InvalidateRect(ck->hViewport, nullptr, FALSE);
+                }
                 RECT rcW;
                 if (GetWindowRect(hWnd, &rcW)) {
                     ck->savedWinHeight = rcW.bottom - rcW.top;
@@ -8941,7 +9628,7 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
                     }
                     default: break;
                 }
-                UpdateCustomizeKeysScroll(hWnd, ck, target);
+                UpdateCustomizeKeysScroll(hWnd, ck, target, false);
                 return 0;
             }
             break;
@@ -8951,7 +9638,7 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 if (delta != 0) {
                     int step = -(delta * 48) / WHEEL_DELTA;
-                    UpdateCustomizeKeysScroll(hWnd, ck, ck->scrollY + step);
+                    UpdateCustomizeKeysScroll(hWnd, ck, ck->scrollY + step, false);
                 }
                 return 0;
             }
@@ -9039,6 +9726,9 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
         case WM_DESTROY:
             g_RecordingHotkeySlot = 0;
             HidePinnedBubbleTooltip();
+            if (ck) {
+                ck->FreeGdiCache();
+            }
             break;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -9054,6 +9744,14 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
 
     static bool reg = false;
     if (!reg) {
+        WNDCLASSEXW wcVp = { sizeof(WNDCLASSEXW) };
+        wcVp.lpfnWndProc = CustomizeKeysViewportWndProc;
+        wcVp.hInstance = g_Daemon.hInst;
+        wcVp.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wcVp.hbrBackground = nullptr;
+        wcVp.lpszClassName = L"PepperSnapCustomizeKeysViewport";
+        RegisterClassExW(&wcVp);
+
         WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
         wc.lpfnWndProc = CustomizeKeysDlgWndProc;
         wc.hInstance = g_Daemon.hInst;
@@ -9117,9 +9815,10 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         r.defaultBinding = defHk;
         ck.rows.push_back(r);
     };
-    auto addSep = [&]() {
+    auto addSectionHdr = [&](const std::wstring& title) {
         CustomizeKeyRow r;
         r.isSeparator = true;
+        r.label = title;
         ck.rows.push_back(r);
     };
     auto addToolRow = [&](OverlayTool tool, const std::wstring& lbl, HotkeyBinding* ptr, HotkeyBinding defHk) {
@@ -9147,14 +9846,14 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     };
 
     // Global capture & clipboard shortcuts
+    addSectionHdr(L"Global capture & clipboard shortcuts");
     addGlobalRow(L"Custom area",                       &ck.hkRegion,       { MOD_CONTROL, VK_SNAPSHOT });
     addGlobalRow(L"Instant fullscreen",                &ck.hkFull,         { MOD_SHIFT, VK_SNAPSHOT });
     addGlobalRow(L"Instant save previous custom area", &ck.hkPrev,         { MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT });
     addGlobalRow(L"Pin the image in clipboard on top", &ck.hkPinClipboard, { MOD_ALT, VK_SNAPSHOT });
 
-    addSep();
-
     // Custom area annotation tools
+    addSectionHdr(L"Custom area — annotation tools");
     addToolRow(OverlayTool::SelectMove,   L"Select mode",         &ck.hkToolSelect,    { 0, 'V' });
     addToolRow(OverlayTool::Pen,          L"Pen",                 &ck.hkToolPen,       { 0, 'P' });
     addToolRow(OverlayTool::Highlighter,  L"Stabilo highlighter", &ck.hkToolStabilo,   { 0, 'H' });
@@ -9168,9 +9867,8 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addToolRow(OverlayTool::MosaicSquare, L"Mosaic square",       &ck.hkToolMosaicSq,  { 0, 'X' });
     addToolRow(OverlayTool::MosaicCircle, L"Mosaic circle",       &ck.hkToolMosaicCir, { 0, 'M' });
 
-    addSep();
-
     // Custom area toolbar actions, multi-frame editor & export
+    addSectionHdr(L"Custom area — toolbar actions & multi-frame editor");
     addActRow(DBTN_ACT_UNDO,             false, L"Undo",                          &ck.hkActUndo,          { MOD_CONTROL, 'Z' });
     addActRow(DBTN_ACT_REDO,             false, L"Redo",                          &ck.hkActRedo,          { MOD_CONTROL, 'Y' });
     addActRow(DBTN_ACT_CLEAR,            false, L"Clear all annotations",         &ck.hkActClear,         { 0, 0 });
@@ -9183,9 +9881,8 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addActRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, L"Play / Pause frames (GIF/WebP)",&ck.hkFramePlayPause,   { 0, VK_SPACE });
     addActRow(DBTN_ACT_FRAME_TOGGLE,     false, L"Hide / Show frames (GIF/WebP)", &ck.hkFrameToggleStrip, { 0, 0 });
 
-    addSep();
-
     // Pinned image toolbar actions & export
+    addSectionHdr(L"Pin on top — toolbar actions & export");
     addActRow(DBTN_ACT_ZOOM_OUT,         false, L"Zoom out",                      &ck.hkPinZoomOut,       { 0, VK_OEM_MINUS });
     addActRow(DBTN_ACT_ZOOM_IN,          false, L"Zoom in",                       &ck.hkPinZoomIn,        { 0, VK_OEM_PLUS });
     addActRow(DBTN_ACT_ZOOM_RESET,       false, L"Reset to original size",        &ck.hkPinZoomReset,     { 0, '0' });
@@ -9198,10 +9895,11 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkPinCopy,          { MOD_CONTROL, 'C' });
     addActRow(DBTN_ACT_CLOSE,            false, L"Close pinned image",            &ck.hkPinClose,         { 0, VK_ESCAPE });
 
-    int curY = 8;
-    for (auto& r : ck.rows) {
+    int curY = 6;
+    for (size_t i = 0; i < ck.rows.size(); ++i) {
+        auto& r = ck.rows[i];
         r.y = curY;
-        r.h = r.isSeparator ? 14 : 32;
+        r.h = r.isSeparator ? ((i == 0) ? 28 : 36) : 32;
         curY += r.h;
     }
     ck.scrollContentHeight = curY + 8;
@@ -9381,6 +10079,10 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
                 }
             }
         }
+        if (g_Daemon.hShortcutsWnd && IsWindow(g_Daemon.hShortcutsWnd)) {
+            DestroyWindow(g_Daemon.hShortcutsWnd);
+            g_Daemon.hShortcutsWnd = nullptr;
+        }
         std::wstring appDataDir = PepperSnapDaemon::GetAppDataSettingsDir();
         g_Daemon.ShowTrayToast(
             L"Custom shortcut keys saved",
@@ -9397,21 +10099,31 @@ static void LayoutOptionsFooter(HWND hWnd, OptionsDlgState* st) {
     int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
     int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
     int footerTop = std::max(0, clientH - st->footerHeight);
-    if (st->hFooterBg) {
-        SetWindowPos(st->hFooterBg, HWND_TOP, 0, footerTop, clientW, st->footerHeight, SWP_NOACTIVATE);
+    if (footerTop == st->lastFooterTop) return;
+    st->lastFooterTop = footerTop;
+
+    if (st->hViewport) {
+        SetWindowPos(st->hViewport, nullptr, 0, 0, clientW, footerTop, SWP_NOZORDER | SWP_NOACTIVATE);
     }
-    if (st->hAppDataInfo) {
-        SetWindowPos(st->hAppDataInfo, HWND_TOP, 18, footerTop + 18, 296, 24, SWP_NOACTIVATE);
-    }
-    if (st->hOkBtn) {
-        SetWindowPos(st->hOkBtn, HWND_TOP, 318, footerTop + 11, 108, 34, SWP_NOACTIVATE);
-    }
-    if (st->hCancelBtn) {
-        SetWindowPos(st->hCancelBtn, HWND_TOP, 434, footerTop + 11, 100, 34, SWP_NOACTIVATE);
+    HDWP hdwp = BeginDeferWindowPos(4);
+    if (hdwp) {
+        if (st->hFooterBg) {
+            hdwp = DeferWindowPos(hdwp, st->hFooterBg, HWND_TOP, 0, footerTop, clientW, st->footerHeight, SWP_NOACTIVATE);
+        }
+        if (st->hAppDataInfo) {
+            hdwp = DeferWindowPos(hdwp, st->hAppDataInfo, HWND_TOP, 18, footerTop + 18, 296, 24, SWP_NOACTIVATE);
+        }
+        if (st->hOkBtn) {
+            hdwp = DeferWindowPos(hdwp, st->hOkBtn, HWND_TOP, 318, footerTop + 11, 108, 34, SWP_NOACTIVATE);
+        }
+        if (st->hCancelBtn) {
+            hdwp = DeferWindowPos(hdwp, st->hCancelBtn, HWND_TOP, 434, footerTop + 11, 100, 34, SWP_NOACTIVATE);
+        }
+        EndDeferWindowPos(hdwp);
     }
 }
 
-static void UpdateOptionsScroll(HWND hWnd, OptionsDlgState* st, int newScrollY) {
+static void UpdateOptionsScroll(HWND hWnd, OptionsDlgState* st, int newScrollY, bool forceReposition = false) {
     if (!hWnd || !st) return;
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
@@ -9422,18 +10134,28 @@ static void UpdateOptionsScroll(HWND hWnd, OptionsDlgState* st, int newScrollY) 
     int clamped = std::max(0, std::min(newScrollY, maxScroll));
     int dy = st->scrollY - clamped;
     st->scrollY = clamped;
-    if (dy != 0) {
-        for (HWND hChild = GetWindow(hWnd, GW_CHILD); hChild != nullptr; hChild = GetWindow(hChild, GW_HWNDNEXT)) {
-            if (hChild == st->hFooterBg || hChild == st->hAppDataInfo || hChild == st->hOkBtn || hChild == st->hCancelBtn) continue;
-            RECT rcCh;
-            if (GetWindowRect(hChild, &rcCh)) {
-                MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcCh, 2);
-                SetWindowPos(hChild, nullptr, rcCh.left, rcCh.top + dy, 0, 0,
-                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+    LayoutOptionsFooter(hWnd, st);
+
+    if ((dy != 0 || forceReposition) && !st->scrollControls.empty()) {
+        HDWP hdwp = BeginDeferWindowPos((int)st->scrollControls.size());
+        if (hdwp) {
+            HWND hRef = st->hViewport ? st->hViewport : hWnd;
+            for (const auto& item : st->scrollControls) {
+                HWND hCh = item.first;
+                int baseTop = item.second;
+                if (!hCh || !IsWindow(hCh)) continue;
+                RECT rcCh;
+                if (GetWindowRect(hCh, &rcCh)) {
+                    MapWindowPoints(HWND_DESKTOP, hRef, (LPPOINT)&rcCh, 2);
+                    hdwp = DeferWindowPos(hdwp, hCh, nullptr, rcCh.left, baseTop - st->scrollY, 0, 0,
+                                          SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
             }
+            EndDeferWindowPos(hdwp);
         }
     }
-    LayoutOptionsFooter(hWnd, st);
+
     SCROLLINFO si = { sizeof(SCROLLINFO) };
     si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
     si.nMin = 0;
@@ -9441,9 +10163,9 @@ static void UpdateOptionsScroll(HWND hWnd, OptionsDlgState* st, int newScrollY) 
     si.nPage = (UINT)viewportH;
     si.nPos = st->scrollY;
     SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
-    if (dy != 0) {
-        RECT rcInval = { 0, 0, clientW, clientH };
-        RedrawWindow(hWnd, &rcInval, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+
+    if (dy != 0 && st->hViewport) {
+        RedrawWindow(st->hViewport, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
     }
 }
 
@@ -9505,6 +10227,23 @@ static LRESULT CALLBACK AppDataLinkStaticWndProc(HWND hWnd, UINT msg, WPARAM wPa
     return origProc ? CallWindowProcW(origProc, hWnd, msg, wParam, lParam) : DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
+static LRESULT CALLBACK OptionsViewportWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_COMMAND:
+        case WM_HSCROLL:
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLORBTN:
+        case WM_MOUSEWHEEL: {
+            HWND hParent = GetParent(hWnd);
+            if (hParent) {
+                return SendMessageW(hParent, msg, wParam, lParam);
+            }
+            break;
+        }
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
 static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     OptionsDlgState* st = (OptionsDlgState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
     switch (msg) {
@@ -9512,58 +10251,62 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
             st = (OptionsDlgState*)cs->lpCreateParams;
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
+            if (!st) return 0;
 
-            HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            HFONT hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            st->InitGdiCache();
+            HFONT hFont = st->hFont;
+            HFONT hBoldFont = st->hBoldFont;
+            HFONT hLinkFont = st->hLinkFont;
+
+            st->hViewport = CreateWindowExW(0, L"PepperSnapOptionsViewport", L"",
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                0, 0, 552, 744, hWnd, nullptr, g_Daemon.hInst, st);
+            HWND hVp = st->hViewport ? st->hViewport : hWnd;
 
             // Save Folder Location
             HWND hLblFolder = CreateWindowExW(0, L"STATIC", L"Save screenshot to...",
-                WS_CHILD | WS_VISIBLE, 18, 14, 516, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 14, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblFolder, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hFolderEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st->folder.c_str(),
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 18, 40, 320, 26, hWnd, (HMENU)IDC_OPT_FOLDER_EDIT, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 18, 40, 320, 26, hVp, (HMENU)IDC_OPT_FOLDER_EDIT, nullptr, nullptr);
             SendMessageW(st->hFolderEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hBrowse = CreateWindowExW(0, L"BUTTON", L"Browse...",
-                WS_CHILD | WS_VISIBLE, 344, 39, 84, 28, hWnd, (HMENU)IDC_OPT_FOLDER_BROWSE, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 344, 39, 84, 28, hVp, (HMENU)IDC_OPT_FOLDER_BROWSE, nullptr, nullptr);
             SendMessageW(hBrowse, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hDeskDef = CreateWindowExW(0, L"BUTTON", L"Use desktop",
-                WS_CHILD | WS_VISIBLE, 434, 39, 100, 28, hWnd, (HMENU)IDC_OPT_FOLDER_DEFAULT, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 434, 39, 100, 28, hVp, (HMENU)IDC_OPT_FOLDER_DEFAULT, nullptr, nullptr);
             SendMessageW(hDeskDef, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Save Format & JPEG Quality Slider
             HWND hLblFormats = CreateWindowExW(0, L"STATIC", L"Save format",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 80, 516, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 80, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblFormats, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             HWND hLblReg = CreateWindowExW(0, L"STATIC", L"Selected area format:",
-                WS_CHILD | WS_VISIBLE, 18, 108, 155, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 108, 155, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblReg, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hComboRegion = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 104, 175, 140, hWnd, (HMENU)IDC_OPT_COMBO_REGION, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 104, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_REGION, nullptr, nullptr);
             SendMessageW(st->hComboRegion, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hLblFull = CreateWindowExW(0, L"STATIC", L"Instant fullscreen format:",
-                WS_CHILD | WS_VISIBLE, 18, 140, 155, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 140, 155, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblFull, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hComboFull = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 136, 175, 140, hWnd, (HMENU)IDC_OPT_COMBO_FULL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 136, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_FULL, nullptr, nullptr);
             SendMessageW(st->hComboFull, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hLblCopy = CreateWindowExW(0, L"STATIC", L"Copy format:",
-                WS_CHILD | WS_VISIBLE, 18, 172, 155, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 172, 155, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblCopy, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hComboCopy = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 168, 175, 140, hWnd, (HMENU)IDC_OPT_COMBO_COPY, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 168, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_COPY, nullptr, nullptr);
             SendMessageW(st->hComboCopy, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             const wchar_t* fmtItems[4] = { L"JPEG (.jpg)", L"PNG (.png)", L"WebP (.webp)", L"BMP (.bmp)" };
@@ -9579,11 +10322,11 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             // JPEG Quality Slider (10% - 100%)
             std::wstring qText = L"JPEG quality: " + std::to_wstring(st->jpgQuality) + L"%";
             st->hQualityValLbl = CreateWindowExW(0, L"STATIC", qText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 206, 150, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 206, 150, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hQualityValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hQualitySlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 172, 202, 362, 32, hWnd, (HMENU)IDC_OPT_QUALITY_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 172, 202, 362, 32, hVp, (HMENU)IDC_OPT_QUALITY_SLIDER, nullptr, nullptr);
             SendMessageW(st->hQualitySlider, TBM_SETRANGE, TRUE, MAKELONG(10, 100));
             SendMessageW(st->hQualitySlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hQualitySlider, TBM_SETPOS, TRUE, st->jpgQuality);
@@ -9591,45 +10334,45 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             // Timestamp Naming Pattern + Restore Default Button + Syntax Info (ⓘ) Button
             HWND hLblNaming = CreateWindowExW(0, L"STATIC",
                 L"Naming pattern:",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 244, 516, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 244, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblNaming, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hNamingEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st->naming.c_str(),
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 18, 270, 352, 26, hWnd, (HMENU)IDC_OPT_NAMING_EDIT, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 18, 270, 352, 26, hVp, (HMENU)IDC_OPT_NAMING_EDIT, nullptr, nullptr);
             SendMessageW(st->hNamingEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hRestoreNaming = CreateWindowExW(0, L"BUTTON", L"Restore default",
-                WS_CHILD | WS_VISIBLE, 376, 269, 122, 28, hWnd, (HMENU)IDC_OPT_NAMING_RESTORE, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 376, 269, 122, 28, hVp, (HMENU)IDC_OPT_NAMING_RESTORE, nullptr, nullptr);
             SendMessageW(hRestoreNaming, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hNamingSyntax = CreateWindowExW(0, L"BUTTON", L"\x24D8",
-                WS_CHILD | WS_VISIBLE, 504, 269, 30, 28, hWnd, (HMENU)IDC_OPT_NAMING_SYNTAX, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 504, 269, 30, 28, hVp, (HMENU)IDC_OPT_NAMING_SYNTAX, nullptr, nullptr);
             SendMessageW(hNamingSyntax, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hPreviewLbl = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 302, 516, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 302, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPreviewLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Shortcut keys: [Customize keys] button
             HWND hLblShortcuts = CreateWindowExW(0, L"STATIC",
                 L"Shortcut keys:",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 338, 108, 24, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 338, 108, 24, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblShortcuts, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCustomizeKeysBtn = CreateWindowExW(0, L"BUTTON", L"Customize keys",
-                WS_CHILD | WS_VISIBLE, 130, 334, 136, 28, hWnd, (HMENU)IDC_OPT_CUSTOMIZE_KEYS, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 130, 334, 136, 28, hVp, (HMENU)IDC_OPT_CUSTOMIZE_KEYS, nullptr, nullptr);
             SendMessageW(st->hCustomizeKeysBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Toggles at Bottom of Option Window (below Shortcut keys row):
             // 1. Check for updates (GitHub Releases)
             st->hAutoUpdateChk = CreateWindowExW(0, L"BUTTON",
                 L"Automatically check for updates (GitHub releases):",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 376, 310, 24, hWnd, (HMENU)IDC_OPT_AUTOUPDATE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 376, 310, 24, hVp, (HMENU)IDC_OPT_AUTOUPDATE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoUpdateChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoUpdateChk, BM_SETCHECK, st->autoUpdateEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             st->hComboUpdateInterval = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 332, 374, 98, 160, hWnd, (HMENU)IDC_OPT_UPDATE_INTERVAL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 332, 374, 98, 160, hVp, (HMENU)IDC_OPT_UPDATE_INTERVAL, nullptr, nullptr);
             SendMessageW(st->hComboUpdateInterval, WM_SETFONT, (WPARAM)hFont, TRUE);
             const wchar_t* intervalItems[5] = {
                 L"Every day",
@@ -9645,116 +10388,129 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             EnableWindow(st->hComboUpdateInterval, st->autoUpdateEnabled ? TRUE : FALSE);
 
             st->hCheckUpdateNowBtn = CreateWindowExW(0, L"BUTTON", L"Check now",
-                WS_CHILD | WS_VISIBLE, 436, 373, 98, 28, hWnd, (HMENU)IDC_OPT_CHECK_UPDATE_NOW, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 436, 373, 98, 28, hVp, (HMENU)IDC_OPT_CHECK_UPDATE_NOW, nullptr, nullptr);
             SendMessageW(st->hCheckUpdateNowBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // 2. Non-Stacking Highlighter
             st->hNonStackingChk = CreateWindowExW(0, L"BUTTON",
                 L"Non-stacking highlighter (prevent overlapping highlighter strokes from darkening)",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 408, 516, 24, hWnd, (HMENU)IDC_OPT_NONSTACK_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 408, 516, 24, hVp, (HMENU)IDC_OPT_NONSTACK_CHK, nullptr, nullptr);
             SendMessageW(st->hNonStackingChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hNonStackingChk, BM_SETCHECK, st->nonStackingHi ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 3. Also save screenshot when copying selected area
             st->hAutoSaveChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save screenshot when copying selected area",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 436, 516, 24, hWnd, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 436, 516, 24, hVp, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoSaveChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoSaveChk, BM_SETCHECK, st->autoSaveCopy ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 4. Also copy instant fullscreen
             st->hCopyFullChk = CreateWindowExW(0, L"BUTTON",
                 L"Also copy instant fullscreen",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 464, 516, 24, hWnd, (HMENU)IDC_OPT_NOCOPY_SAVE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 464, 516, 24, hVp, (HMENU)IDC_OPT_NOCOPY_SAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hCopyFullChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hCopyFullChk, BM_SETCHECK, st->alsoCopyFull ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 5. Also save pinned screenshot
             st->hSavePinChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save pinned screenshot",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 492, 516, 24, hWnd, (HMENU)IDC_OPT_SAVE_PIN_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 492, 516, 24, hVp, (HMENU)IDC_OPT_SAVE_PIN_CHK, nullptr, nullptr);
             SendMessageW(st->hSavePinChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hSavePinChk, BM_SETCHECK, st->alsoSavePin ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 6. Also save copied text
             st->hSaveOcrChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save copied text",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 520, 516, 24, hWnd, (HMENU)IDC_OPT_SAVE_OCR_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 520, 516, 24, hVp, (HMENU)IDC_OPT_SAVE_OCR_CHK, nullptr, nullptr);
             SendMessageW(st->hSaveOcrChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hSaveOcrChk, BM_SETCHECK, st->alsoSaveOcr ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 7. Keep cursor on screenshot
             st->hKeepCursorChk = CreateWindowExW(0, L"BUTTON",
                 L"Keep cursor on screenshot",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 548, 516, 24, hWnd, (HMENU)IDC_OPT_KEEP_CURSOR_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 548, 516, 24, hVp, (HMENU)IDC_OPT_KEEP_CURSOR_CHK, nullptr, nullptr);
             SendMessageW(st->hKeepCursorChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hKeepCursorChk, BM_SETCHECK, st->keepCursor ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // 8. Auto-hide frame list
             st->hAutoHideFramesChk = CreateWindowExW(0, L"BUTTON",
                 L"Auto-hide frame list",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 576, 516, 24, hWnd, (HMENU)IDC_OPT_AUTOHIDE_FRM_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 576, 516, 24, hVp, (HMENU)IDC_OPT_AUTOHIDE_FRM_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoHideFramesChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoHideFramesChk, BM_SETCHECK, st->autoHideFrames ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            // 9. Enable pen and highlighter smoothing.
+            // 9. Put pinned image above edit window (above Enable pen and highlighter smoothing)
+            st->hPinAboveEditChk = CreateWindowExW(0, L"BUTTON",
+                L"Put pinned image above edit window",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 604, 516, 24, hVp, (HMENU)IDC_OPT_PIN_ABOVE_EDIT_CHK, nullptr, nullptr);
+            SendMessageW(st->hPinAboveEditChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hPinAboveEditChk, BM_SETCHECK, st->pinAboveEdit ? BST_CHECKED : BST_UNCHECKED, 0);
+
+            // 10. Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 604, 516, 24, hWnd, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 632, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 636, 224, 22, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 664, 224, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 632, 290, 32, hWnd, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 660, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
-            // 10. Restore everything to default button (below smoothing strength, NOT in row with Save options)
+            // 11. Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 672, 218, 30, hWnd, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 700, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            st->scrollControls.clear();
+            for (HWND hCh = GetWindow(hVp, GW_CHILD); hCh != nullptr; hCh = GetWindow(hCh, GW_HWNDNEXT)) {
+                LONG stBits = GetWindowLongW(hCh, GWL_STYLE);
+                SetWindowLongW(hCh, GWL_STYLE, stBits | WS_CLIPSIBLINGS);
+                RECT rcCh;
+                if (GetWindowRect(hCh, &rcCh)) {
+                    MapWindowPoints(HWND_DESKTOP, hVp, (LPPOINT)&rcCh, 2);
+                    st->scrollControls.push_back({ hCh, rcCh.top });
+                }
+            }
 
             // Permanent pinned footer bar: clickable %appdata%\PepperSnap persistence link + Save options + Cancel
             st->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 716, 552, 56, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 744, 552, 56, hWnd, nullptr, nullptr, nullptr);
 
-            HFONT hLinkFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 734, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 762, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
             WNDPROC origStaticProc = (WNDPROC)SetWindowLongPtrW(st->hAppDataInfo, GWLP_WNDPROC, (LONG_PTR)AppDataLinkStaticWndProc);
             SetPropW(st->hAppDataInfo, L"PepperSnapOrigStaticProc", (HANDLE)origStaticProc);
 
             st->hOkBtn = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 727, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 755, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(st->hOkBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 727, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 755, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            for (HWND hCh = GetWindow(hWnd, GW_CHILD); hCh != nullptr; hCh = GetWindow(hCh, GW_HWNDNEXT)) {
-                LONG stBits = GetWindowLongW(hCh, GWL_STYLE);
-                SetWindowLongW(hCh, GWL_STYLE, stBits | WS_CLIPSIBLINGS);
-            }
-
-            st->scrollContentHeight = 716;
+            st->scrollContentHeight = 744;
             st->footerHeight = 56;
+            st->lastFooterTop = -1;
             UpdateOptionsPreviewLabel(st);
             LayoutOptionsFooter(hWnd, st);
-            UpdateOptionsScroll(hWnd, st, 0);
+            UpdateOptionsScroll(hWnd, st, 0, false);
             return 0;
         }
+        case WM_ERASEBKGND:
+            return 1;
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hWnd, &ps);
@@ -9766,12 +10522,12 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 int footerTop = std::max(0, clientH - st->footerHeight);
                 RECT rcFooter = { 0, footerTop, clientW, clientH };
                 FillRect(hdc, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
-                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-                HGDIOBJ hOldPen = SelectObject(hdc, hLinePen);
-                MoveToEx(hdc, 0, footerTop, nullptr);
-                LineTo(hdc, clientW, footerTop);
-                SelectObject(hdc, hOldPen);
-                DeleteObject(hLinePen);
+                if (st->hFooterLinePen) {
+                    HGDIOBJ hOldPen = SelectObject(hdc, st->hFooterLinePen);
+                    MoveToEx(hdc, 0, footerTop, nullptr);
+                    LineTo(hdc, clientW, footerTop);
+                    SelectObject(hdc, hOldPen);
+                }
             }
             EndPaint(hWnd, &ps);
             return 0;
@@ -9796,9 +10552,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         }
         case WM_SIZE: {
             if (st && wParam != SIZE_MINIMIZED) {
-                LayoutOptionsFooter(hWnd, st);
-                UpdateOptionsScroll(hWnd, st, st->scrollY);
-                InvalidateRect(hWnd, nullptr, TRUE);
+                UpdateOptionsScroll(hWnd, st, st->scrollY, false);
                 RECT rcW;
                 if (GetWindowRect(hWnd, &rcW)) {
                     st->savedWinHeight = rcW.bottom - rcW.top;
@@ -9832,7 +10586,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     }
                     default: break;
                 }
-                UpdateOptionsScroll(hWnd, st, target);
+                UpdateOptionsScroll(hWnd, st, target, false);
                 return 0;
             }
             break;
@@ -9842,7 +10596,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 if (delta != 0) {
                     int step = -(delta * 48) / WHEEL_DELTA;
-                    UpdateOptionsScroll(hWnd, st, st->scrollY + step);
+                    UpdateOptionsScroll(hWnd, st, st->scrollY + step, false);
                 }
                 return 0;
             }
@@ -9867,12 +10621,12 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 RECT rcF;
                 GetClientRect(st->hFooterBg, &rcF);
                 FillRect(hdcStatic, &rcF, GetSysColorBrush(COLOR_BTNFACE));
-                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-                HGDIOBJ hOldPen = SelectObject(hdcStatic, hLinePen);
-                MoveToEx(hdcStatic, 0, 0, nullptr);
-                LineTo(hdcStatic, rcF.right, 0);
-                SelectObject(hdcStatic, hOldPen);
-                DeleteObject(hLinePen);
+                if (st->hFooterLinePen) {
+                    HGDIOBJ hOldPen = SelectObject(hdcStatic, st->hFooterLinePen);
+                    MoveToEx(hdcStatic, 0, 0, nullptr);
+                    LineTo(hdcStatic, rcF.right, 0);
+                    SelectObject(hdcStatic, hOldPen);
+                }
                 return (LRESULT)GetStockObject(NULL_BRUSH);
             }
             break;
@@ -9998,8 +10752,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->alsoCopyFull  = true;
                 st->alsoSavePin   = true;
                 st->alsoSaveOcr   = true;
-                st->keepCursor    = false;
+                st->keepCursor     = false;
                 st->autoHideFrames = true;
+                st->pinAboveEdit   = true;
                 SendMessageW(st->hNonStackingChk,    BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hAutoSaveChk,       BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hCopyFullChk,       BM_SETCHECK, BST_CHECKED, 0);
@@ -10007,6 +10762,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 SendMessageW(st->hSaveOcrChk,        BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hKeepCursorChk,     BM_SETCHECK, BST_UNCHECKED, 0);
                 SendMessageW(st->hAutoHideFramesChk, BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hPinAboveEditChk,   BM_SETCHECK, BST_CHECKED, 0);
 
                 st->penSmoothEnabled = true;
                 st->penSmoothStrength = 15;
@@ -10128,8 +10884,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->alsoCopyFull  = (SendMessageW(st->hCopyFullChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->alsoSavePin   = (SendMessageW(st->hSavePinChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->alsoSaveOcr   = (SendMessageW(st->hSaveOcrChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                st->keepCursor    = (SendMessageW(st->hKeepCursorChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->keepCursor     = (SendMessageW(st->hKeepCursorChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoHideFrames = (SendMessageW(st->hAutoHideFramesChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->pinAboveEdit   = (SendMessageW(st->hPinAboveEditChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 int uSel = (int)SendMessageW(st->hComboUpdateInterval, CB_GETCURSEL, 0, 0);
                 if (uSel >= 0 && uSel <= 4) st->updateInterval = (UpdateCheckInterval)uSel;
@@ -10147,6 +10904,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         }
         case WM_DESTROY:
             g_RecordingHotkeySlot = 0;
+            if (st) {
+                st->FreeGdiCache();
+            }
             break;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -10166,6 +10926,14 @@ void PepperSnapDaemon::ShowOptionsModal() {
 
     static bool reg = false;
     if (!reg) {
+        WNDCLASSEXW wcVp = { sizeof(WNDCLASSEXW) };
+        wcVp.lpfnWndProc = OptionsViewportWndProc;
+        wcVp.hInstance = hInst;
+        wcVp.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wcVp.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wcVp.lpszClassName = L"PepperSnapOptionsViewport";
+        RegisterClassExW(&wcVp);
+
         WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
         wc.lpfnWndProc = OptionsDlgWndProc;
         wc.hInstance = hInst;
@@ -10188,9 +10956,10 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.alsoCopyFull = alsoCopyFullscreen;
     st.alsoSavePin  = alsoSavePinned;
     st.alsoSaveOcr  = alsoSaveOcrText;
-    st.keepCursor   = keepCursorOnScreenshot;
+    st.keepCursor     = keepCursorOnScreenshot;
     st.autoHideFrames = autoHideFrameList;
-    st.nonStackingHi = nonStackingHighlighter;
+    st.pinAboveEdit   = pinnedImageAboveEdit;
+    st.nonStackingHi  = nonStackingHighlighter;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
     st.autoUpdateEnabled = autoCheckUpdates;
@@ -10237,7 +11006,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = WS_EX_TOPMOST;
-    const int totalOptClientH = 716 + 56;
+    const int totalOptClientH = 744 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
@@ -10323,6 +11092,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         alsoSaveOcrText = st.alsoSaveOcr;
         keepCursorOnScreenshot = st.keepCursor;
         autoHideFrameList = st.autoHideFrames;
+        pinnedImageAboveEdit = st.pinAboveEdit;
         nonStackingHighlighter = st.nonStackingHi;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
@@ -10370,14 +11140,22 @@ void PepperSnapDaemon::ShowOptionsModal() {
             hidePinnedToolbar = false;
             hidePinnedOutline = false;
             smoothPinnedImage = false;
-            pinnedImageAboveEdit = false;
+            pinnedImageAboveEdit = true;
             activeColor = Color(255, 239, 68, 68);
             activeStroke = 4.0f;
         }
         ApplyGlobalHotkeys();
         CreateDirectoryW(saveFolder.c_str(), nullptr);
         SaveSettings();
-        if (hOverlayWnd) {
+        if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+            if (IsEditingOpenedImage()) {
+                if (pinnedImageAboveEdit) {
+                    RaisePinnedWindowsAboveOverlay();
+                } else {
+                    HidePinnedBubbleTooltip();
+                    SetWindowPos(hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                }
+            }
             BuildDockedHUD();
             InvalidateRect(hOverlayWnd, nullptr, FALSE);
         }
@@ -10415,6 +11193,7 @@ struct ShortcutEntry {
     bool isSectionHeader = false;
     bool hasIcon = false;
     DockButton iconBtn;
+    int iconAtlasY = -1;
     std::wstring keyCol;
     std::wstring descCol;
     int y = 0;
@@ -10435,24 +11214,280 @@ struct ShortcutsDlgParams {
     int minWinWidth = 740;
     int maxWinWidth = 1080;
     int fullWinHeight = 680;
-    int savedWinWidth = 880;
-    int savedWinHeight = 580;
+    int savedWinWidth = 900;
+    int savedWinHeight = 620;
+    int lastLayoutClientW = -1;
+    int lastOkBtnX = -1;
+    int lastOkBtnY = -1;
     HWND hFooterBg = nullptr;
     HWND hOkBtn = nullptr;
+
+    // Cached GDI resources, pre-rendered icon atlas, and full content bitmap cache for zero-lag resize & scroll
+    HFONT hTitleFont = nullptr;
+    HFONT hSectionFont = nullptr;
+    HFONT hKeyFont = nullptr;
+    HFONT hDescFont = nullptr;
+    HPEN hSepShadow = nullptr;
+    HPEN hSepHilight = nullptr;
+    HPEN hRowSep = nullptr;
+    HPEN hFooterLinePen = nullptr;
+    HDC hMeasureDC = nullptr;
+    HGDIOBJ hMeasureOldFont = nullptr;
+    HDC hIconAtlasDC = nullptr;
+    HBITMAP hIconAtlasBmp = nullptr;
+    HGDIOBJ hIconAtlasOldBmp = nullptr;
+    HDC hContentDC = nullptr;
+    HBITMAP hContentBmp = nullptr;
+    HGDIOBJ hContentOldBmp = nullptr;
+    int contentCapW = 0;
+    int contentCapH = 0;
+    int renderedContentW = -1;
+    int renderedContentH = -1;
+    HDC hBackDC = nullptr;
+    HBITMAP hBackBmp = nullptr;
+    HGDIOBJ hBackOldBmp = nullptr;
+    int backCapW = 0;
+    int backCapH = 0;
+
+    void InitGdiCache(HDC hdcRef) {
+        if (hTitleFont) return;
+        hTitleFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hSectionFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                   CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hKeyFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hSepShadow = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+        hSepHilight = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
+        hRowSep = CreatePen(PS_SOLID, 1, RGB(218, 222, 228));
+        hFooterLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+
+        hMeasureDC = CreateCompatibleDC(hdcRef);
+        if (hMeasureDC && hDescFont) {
+            hMeasureOldFont = SelectObject(hMeasureDC, hDescFont);
+        }
+
+        // Pre-render all row icons once into a GDI bitmap atlas so content cache build does fast BitBlt
+        const int iconW = 26;
+        const int iconH = 22;
+        int iconCount = 0;
+        for (auto& e : entries) {
+            if (!e.isSectionHeader && e.hasIcon) {
+                e.iconAtlasY = iconCount * iconH;
+                iconCount++;
+            } else {
+                e.iconAtlasY = -1;
+            }
+        }
+        if (iconCount > 0) {
+            int atlasH = iconCount * iconH;
+            hIconAtlasDC = CreateCompatibleDC(hdcRef);
+            hIconAtlasBmp = CreateCompatibleBitmap(hdcRef, iconW, atlasH);
+            hIconAtlasOldBmp = SelectObject(hIconAtlasDC, hIconAtlasBmp);
+            RECT rcAtlas = { 0, 0, iconW, atlasH };
+            FillRect(hIconAtlasDC, &rcAtlas, GetSysColorBrush(COLOR_BTNFACE));
+
+            Graphics gAtlas(hIconAtlasDC);
+            gAtlas.SetSmoothingMode(SmoothingModeAntiAlias);
+            gAtlas.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+            for (const auto& e : entries) {
+                if (!e.isSectionHeader && e.hasIcon && e.iconAtlasY >= 0) {
+                    int iy = e.iconAtlasY;
+                    RectF rfIcon(0.0f, (float)iy, (float)iconW, (float)iconH);
+                    Color bgCol = e.iconBtn.isPrimaryAction ? Color(255, 239, 68, 68) : Color(245, 15, 23, 42);
+                    SolidBrush btnBg(bgCol);
+                    Pen btnBorder(e.iconBtn.isPrimaryAction ? Color(255, 252, 165, 165) : Color(220, 51, 65, 85), 1.0f);
+                    GraphicsState stB = gAtlas.Save();
+                    gAtlas.SetSmoothingMode(SmoothingModeNone);
+                    gAtlas.SetPixelOffsetMode(PixelOffsetModeNone);
+                    gAtlas.FillRectangle(&btnBg, 0, iy, iconW, iconH);
+                    gAtlas.Restore(stB);
+                    PepperSnapDaemon::DrawDockButtonIcon(gAtlas, e.iconBtn, rfIcon);
+                    GraphicsState stO = gAtlas.Save();
+                    gAtlas.SetSmoothingMode(SmoothingModeNone);
+                    gAtlas.SetPixelOffsetMode(PixelOffsetModeNone);
+                    gAtlas.DrawRectangle(&btnBorder, 0, iy, iconW - 1, iconH - 1);
+                    gAtlas.Restore(stO);
+                }
+            }
+        }
+    }
+
+    void EnsureContentRendered(HDC hdcRef, int clientW) {
+        if (!hTitleFont) {
+            InitGdiCache(hdcRef);
+        }
+        int contentH = std::max(64, scrollContentHeight);
+        if (hContentDC && renderedContentW == clientW && renderedContentH == contentH) {
+            return;
+        }
+        if (!hContentDC || clientW > contentCapW || contentH > contentCapH) {
+            if (!hContentDC) {
+                hContentDC = CreateCompatibleDC(hdcRef);
+            } else if (hContentOldBmp) {
+                SelectObject(hContentDC, hContentOldBmp);
+                if (hContentBmp) DeleteObject(hContentBmp);
+            }
+            contentCapW = std::max(clientW + 128, maxWinWidth);
+            contentCapH = std::max(contentH + 256, 2800);
+            hContentBmp = CreateCompatibleBitmap(hdcRef, contentCapW, contentCapH);
+            hContentOldBmp = SelectObject(hContentDC, hContentBmp);
+        }
+
+        renderedContentW = clientW;
+        renderedContentH = contentH;
+
+        RECT rcFill = { 0, 0, clientW, contentH };
+        FillRect(hContentDC, &rcFill, GetSysColorBrush(COLOR_BTNFACE));
+        SetBkMode(hContentDC, TRANSPARENT);
+
+        int padX = 18;
+        int rightEdge = std::max(rightColX + 240, clientW - padX);
+
+        HGDIOBJ hOldF = SelectObject(hContentDC, hTitleFont);
+        SetTextColor(hContentDC, GetSysColor(COLOR_WINDOWTEXT));
+        RECT rcTitle = { padX, 14, rightEdge, 38 };
+        DrawTextW(hContentDC, mainTitle.c_str(), (int)mainTitle.size(), &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        HGDIOBJ hOldP = SelectObject(hContentDC, hSepShadow);
+        MoveToEx(hContentDC, padX, 42, nullptr);
+        LineTo(hContentDC, rightEdge, 42);
+        SelectObject(hContentDC, hSepHilight);
+        MoveToEx(hContentDC, padX, 43, nullptr);
+        LineTo(hContentDC, rightEdge, 43);
+
+        const int iconW = 26;
+        const int iconH = 22;
+
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const auto& e = entries[i];
+            int drawY = e.y;
+
+            if (e.isSectionHeader) {
+                if (i > 0) {
+                    int lineY = drawY + 6;
+                    SelectObject(hContentDC, hSepShadow);
+                    MoveToEx(hContentDC, padX, lineY, nullptr);
+                    LineTo(hContentDC, rightEdge, lineY);
+                    SelectObject(hContentDC, hSepHilight);
+                    MoveToEx(hContentDC, padX, lineY + 1, nullptr);
+                    LineTo(hContentDC, rightEdge, lineY + 1);
+                }
+                SelectObject(hContentDC, hSectionFont);
+                SetTextColor(hContentDC, RGB(15, 23, 42));
+                int hdrTop = (i > 0) ? (drawY + 14) : (drawY + 4);
+                RECT rcHdr = { padX, hdrTop, rightEdge, drawY + e.h };
+                DrawTextW(hContentDC, e.keyCol.c_str(), (int)e.keyCol.size(), &rcHdr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+            } else {
+                if (i > 0 && !entries[i - 1].isSectionHeader) {
+                    SelectObject(hContentDC, hRowSep);
+                    MoveToEx(hContentDC, leftColX, drawY, nullptr);
+                    LineTo(hContentDC, rightEdge, drawY);
+                }
+
+                int keyTextLeft = leftColX;
+                if (e.hasIcon) {
+                    int iconX = leftColX;
+                    int iconY = drawY + (e.h - iconH) / 2;
+                    if (hIconAtlasDC && e.iconAtlasY >= 0) {
+                        BitBlt(hContentDC, iconX, iconY, iconW, iconH, hIconAtlasDC, 0, e.iconAtlasY, SRCCOPY);
+                    }
+                    keyTextLeft += iconW + 8;
+                }
+
+                SelectObject(hContentDC, hKeyFont);
+                SetTextColor(hContentDC, RGB(30, 41, 59));
+                RECT rcKey = { keyTextLeft, drawY, leftColX + leftColW, drawY + e.h };
+                DrawTextW(hContentDC, e.keyCol.c_str(), (int)e.keyCol.size(), &rcKey, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                SelectObject(hContentDC, hDescFont);
+                SetTextColor(hContentDC, GetSysColor(COLOR_WINDOWTEXT));
+                int descTop = drawY + std::max(2, (e.h - e.textH) / 2);
+                RECT rcDesc = { rightColX, descTop, rightEdge, drawY + e.h };
+                DrawTextW(hContentDC, e.descCol.c_str(), (int)e.descCol.size(), &rcDesc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+            }
+        }
+
+        SelectObject(hContentDC, hOldP);
+        SelectObject(hContentDC, hOldF);
+    }
+
+    void FreeGdiCache() {
+        if (hContentDC) {
+            if (hContentOldBmp) SelectObject(hContentDC, hContentOldBmp);
+            if (hContentBmp) DeleteObject(hContentBmp);
+            DeleteDC(hContentDC);
+            hContentDC = nullptr;
+            hContentBmp = nullptr;
+            hContentOldBmp = nullptr;
+            contentCapW = contentCapH = 0;
+            renderedContentW = renderedContentH = -1;
+        }
+        if (hBackDC) {
+            if (hBackOldBmp) SelectObject(hBackDC, hBackOldBmp);
+            if (hBackBmp) DeleteObject(hBackBmp);
+            DeleteDC(hBackDC);
+            hBackDC = nullptr;
+            hBackBmp = nullptr;
+            hBackOldBmp = nullptr;
+            backCapW = backCapH = 0;
+        }
+        if (hIconAtlasDC) {
+            if (hIconAtlasOldBmp) SelectObject(hIconAtlasDC, hIconAtlasOldBmp);
+            if (hIconAtlasBmp) DeleteObject(hIconAtlasBmp);
+            DeleteDC(hIconAtlasDC);
+            hIconAtlasDC = nullptr;
+            hIconAtlasBmp = nullptr;
+            hIconAtlasOldBmp = nullptr;
+        }
+        if (hMeasureDC) {
+            if (hMeasureOldFont) SelectObject(hMeasureDC, hMeasureOldFont);
+            DeleteDC(hMeasureDC);
+            hMeasureDC = nullptr;
+            hMeasureOldFont = nullptr;
+        }
+        if (hFooterLinePen) { DeleteObject(hFooterLinePen); hFooterLinePen = nullptr; }
+        if (hRowSep)        { DeleteObject(hRowSep);        hRowSep = nullptr; }
+        if (hSepHilight)    { DeleteObject(hSepHilight);    hSepHilight = nullptr; }
+        if (hSepShadow)     { DeleteObject(hSepShadow);     hSepShadow = nullptr; }
+        if (hDescFont)      { DeleteObject(hDescFont);      hDescFont = nullptr; }
+        if (hKeyFont)       { DeleteObject(hKeyFont);       hKeyFont = nullptr; }
+        if (hSectionFont)   { DeleteObject(hSectionFont);   hSectionFont = nullptr; }
+        if (hTitleFont)     { DeleteObject(hTitleFont);     hTitleFont = nullptr; }
+    }
 };
 
-static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW) {
+static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW, bool forceRecalc = false) {
     if (!p) return;
+    if (!forceRecalc && clientW == p->lastLayoutClientW && p->scrollContentHeight > 0) {
+        return;
+    }
+    p->lastLayoutClientW = clientW;
+    p->renderedContentW = -1;
+
     int padX = 18;
     int rightEdge = std::max(p->rightColX + 240, clientW - padX);
     int availDescW = std::max(240, rightEdge - p->rightColX);
     p->rightColW = availDescW;
 
-    HDC hdc = hWnd ? GetDC(hWnd) : GetDC(nullptr);
-    HFONT hDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    HGDIOBJ hOldF = hdc ? SelectObject(hdc, hDescFont) : nullptr;
+    HDC hdcMeasure = p->hMeasureDC;
+    bool tempDC = false;
+    HFONT hTempFont = nullptr;
+    HGDIOBJ hOldF = nullptr;
+    if (!hdcMeasure) {
+        hdcMeasure = hWnd ? GetDC(hWnd) : GetDC(nullptr);
+        tempDC = true;
+        hTempFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        if (hdcMeasure) hOldF = SelectObject(hdcMeasure, hTempFont);
+    }
 
     int curY = 48;
     for (size_t i = 0; i < p->entries.size(); ++i) {
@@ -10463,9 +11498,9 @@ static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW)
             e.textH = 20;
         } else {
             int measuredH = 20;
-            if (hdc && !e.descCol.empty()) {
+            if (hdcMeasure && !e.descCol.empty()) {
                 RECT rcD = { 0, 0, availDescW, 0 };
-                DrawTextW(hdc, e.descCol.c_str(), -1, &rcD, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+                DrawTextW(hdcMeasure, e.descCol.c_str(), (int)e.descCol.size(), &rcD, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
                 measuredH = std::max(18, (int)(rcD.bottom - rcD.top));
             }
             e.textH = measuredH;
@@ -10474,11 +11509,13 @@ static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW)
         curY += e.h;
     }
 
-    if (hdc) {
-        SelectObject(hdc, hOldF);
-        ReleaseDC(hWnd, hdc);
+    if (tempDC) {
+        if (hdcMeasure) {
+            SelectObject(hdcMeasure, hOldF);
+            ReleaseDC(hWnd, hdcMeasure);
+        }
+        if (hTempFont) DeleteObject(hTempFont);
     }
-    DeleteObject(hDescFont);
 
     p->scrollContentHeight = curY + 12;
 
@@ -10499,11 +11536,16 @@ static void LayoutShortcutsFooter(HWND hWnd, ShortcutsDlgParams* p) {
     int footerTop = std::max(0, clientH - p->footerHeight);
     if (p->hOkBtn) {
         int btnX = std::max(16, clientW - 18 - 92);
-        SetWindowPos(p->hOkBtn, HWND_TOP, btnX, footerTop + 11, 92, 30, SWP_NOACTIVATE);
+        int btnY = footerTop + 11;
+        if (btnX != p->lastOkBtnX || btnY != p->lastOkBtnY) {
+            p->lastOkBtnX = btnX;
+            p->lastOkBtnY = btnY;
+            SetWindowPos(p->hOkBtn, HWND_TOP, btnX, btnY, 92, 30, SWP_NOACTIVATE | SWP_NOCOPYBITS);
+        }
     }
 }
 
-static void UpdateShortcutsScroll(HWND hWnd, ShortcutsDlgParams* p, int newScrollY) {
+static void UpdateShortcutsScroll(HWND hWnd, ShortcutsDlgParams* p, int newScrollY, bool redrawOnScroll = true) {
     if (!hWnd || !p) return;
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
@@ -10522,7 +11564,7 @@ static void UpdateShortcutsScroll(HWND hWnd, ShortcutsDlgParams* p, int newScrol
     si.nPage = (UINT)viewportH;
     si.nPos = p->scrollY;
     SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
-    if (dy != 0) {
+    if (dy != 0 && redrawOnScroll) {
         RECT rcInval = { 0, 0, clientW, clientH };
         RedrawWindow(hWnd, &rcInval, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
     }
@@ -10536,22 +11578,31 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
             p = (ShortcutsDlgParams*)cs->lpCreateParams;
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)p);
 
-            HFONT hBoldFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            if (p) {
+                HDC hdc = GetDC(hWnd);
+                p->InitGdiCache(hdc);
+                if (hdc) ReleaseDC(hWnd, hdc);
+            }
 
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"OK",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 400, 500, 92, 30, hWnd, (HMENU)IDOK, nullptr, nullptr);
-            SendMessageW(hOk, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+            if (p && p->hKeyFont) {
+                SendMessageW(hOk, WM_SETFONT, (WPARAM)p->hKeyFont, TRUE);
+            }
 
             if (p) {
                 p->hOkBtn = hOk;
                 RECT rcC;
                 GetClientRect(hWnd, &rcC);
                 int clientW = std::max(1, (int)(rcC.right - rcC.left));
-                RecalcShortcutsLayout(hWnd, p, clientW);
+                RecalcShortcutsLayout(hWnd, p, clientW, true);
+                HDC hdc = GetDC(hWnd);
+                if (hdc) {
+                    p->EnsureContentRendered(hdc, clientW);
+                    ReleaseDC(hWnd, hdc);
+                }
                 LayoutShortcutsFooter(hWnd, p);
-                UpdateShortcutsScroll(hWnd, p, 0);
+                UpdateShortcutsScroll(hWnd, p, 0, false);
             }
             return 0;
         }
@@ -10565,146 +11616,44 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
             int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
             int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
             if (p) {
-                HDC memDC = CreateCompatibleDC(hdc);
-                HBITMAP memBmp = CreateCompatibleBitmap(hdc, clientW, clientH);
-                HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
-
-                RECT rcAll = { 0, 0, clientW, clientH };
-                FillRect(memDC, &rcAll, GetSysColorBrush(COLOR_BTNFACE));
+                p->EnsureContentRendered(hdc, clientW);
+                if (!p->hBackDC || clientW > p->backCapW || clientH > p->backCapH) {
+                    if (!p->hBackDC) {
+                        p->hBackDC = CreateCompatibleDC(hdc);
+                    } else if (p->hBackOldBmp) {
+                        SelectObject(p->hBackDC, p->hBackOldBmp);
+                        if (p->hBackBmp) DeleteObject(p->hBackBmp);
+                    }
+                    p->backCapW = std::max(clientW + 128, p->maxWinWidth);
+                    p->backCapH = std::max(clientH + 128, GetSystemMetrics(SM_CYSCREEN));
+                    p->hBackBmp = CreateCompatibleBitmap(hdc, p->backCapW, p->backCapH);
+                    p->hBackOldBmp = SelectObject(p->hBackDC, p->hBackBmp);
+                }
+                HDC memDC = p->hBackDC;
 
                 int footerTop = std::max(0, clientH - p->footerHeight);
-                int savedDC = SaveDC(memDC);
-                IntersectClipRect(memDC, 0, 0, clientW, footerTop);
-
-                SetBkMode(memDC, TRANSPARENT);
-                HFONT hTitleFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-                HFONT hSectionFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-                HFONT hKeyFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-                HFONT hDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-
-                HPEN hSepShadow = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-                HPEN hSepHilight = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
-                HPEN hRowSep = CreatePen(PS_SOLID, 1, RGB(218, 222, 228));
-
                 int sy = p->scrollY;
-                int padX = 18;
-                int rightEdge = std::max(p->rightColX + 240, clientW - padX);
-
-                // Main header title + horizontal separator line
-                HGDIOBJ hOldF = SelectObject(memDC, hTitleFont);
-                SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
-                RECT rcTitle = { padX, 14 - sy, rightEdge, 38 - sy };
-                DrawTextW(memDC, p->mainTitle.c_str(), -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
-                HGDIOBJ hOldP = SelectObject(memDC, hSepShadow);
-                MoveToEx(memDC, padX, 42 - sy, nullptr);
-                LineTo(memDC, rightEdge, 42 - sy);
-                SelectObject(memDC, hSepHilight);
-                MoveToEx(memDC, padX, 43 - sy, nullptr);
-                LineTo(memDC, rightEdge, 43 - sy);
-
-                for (size_t i = 0; i < p->entries.size(); ++i) {
-                    const auto& e = p->entries[i];
-                    int drawY = e.y - sy;
-                    if (drawY + e.h < 0 || drawY > footerTop) continue;
-
-                    if (e.isSectionHeader) {
-                        if (i > 0) {
-                            int lineY = drawY + 6;
-                            SelectObject(memDC, hSepShadow);
-                            MoveToEx(memDC, padX, lineY, nullptr);
-                            LineTo(memDC, rightEdge, lineY);
-                            SelectObject(memDC, hSepHilight);
-                            MoveToEx(memDC, padX, lineY + 1, nullptr);
-                            LineTo(memDC, rightEdge, lineY + 1);
-                        }
-                        SelectObject(memDC, hSectionFont);
-                        SetTextColor(memDC, RGB(15, 23, 42));
-                        int hdrTop = (i > 0) ? (drawY + 14) : (drawY + 4);
-                        RECT rcHdr = { padX, hdrTop, rightEdge, drawY + e.h };
-                        DrawTextW(memDC, e.keyCol.c_str(), -1, &rcHdr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
-                    } else {
-                        // Subtle row separator between items inside the same section
-                        if (i > 0 && !p->entries[i - 1].isSectionHeader) {
-                            SelectObject(memDC, hRowSep);
-                            MoveToEx(memDC, p->leftColX, drawY, nullptr);
-                            LineTo(memDC, rightEdge, drawY);
-                        }
-
-                        int keyTextLeft = p->leftColX;
-                        if (e.hasIcon) {
-                            Graphics gIcon(memDC);
-                            gIcon.SetSmoothingMode(SmoothingModeAntiAlias);
-                            gIcon.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-                            const int iconW = 26;
-                            const int iconH = 22;
-                            int iconX = p->leftColX;
-                            int iconY = drawY + (e.h - iconH) / 2;
-                            RectF rfIcon((float)iconX, (float)iconY, (float)iconW, (float)iconH);
-                            Color bgCol = e.iconBtn.isPrimaryAction ? Color(255, 239, 68, 68) : Color(245, 15, 23, 42);
-                            SolidBrush btnBg(bgCol);
-                            Pen btnBorder(e.iconBtn.isPrimaryAction ? Color(255, 252, 165, 165) : Color(220, 51, 65, 85), 1.0f);
-                            GraphicsState stB = gIcon.Save();
-                            gIcon.SetSmoothingMode(SmoothingModeNone);
-                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
-                            gIcon.FillRectangle(&btnBg, iconX, iconY, iconW, iconH);
-                            gIcon.Restore(stB);
-                            PepperSnapDaemon::DrawDockButtonIcon(gIcon, e.iconBtn, rfIcon);
-                            GraphicsState stO = gIcon.Save();
-                            gIcon.SetSmoothingMode(SmoothingModeNone);
-                            gIcon.SetPixelOffsetMode(PixelOffsetModeNone);
-                            gIcon.DrawRectangle(&btnBorder, iconX, iconY, iconW - 1, iconH - 1);
-                            gIcon.Restore(stO);
-                            keyTextLeft += iconW + 8;
-                        }
-
-                        SelectObject(memDC, hKeyFont);
-                        SetTextColor(memDC, RGB(30, 41, 59));
-                        RECT rcKey = { keyTextLeft, drawY, p->leftColX + p->leftColW, drawY + e.h };
-                        DrawTextW(memDC, e.keyCol.c_str(), -1, &rcKey, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
-                        SelectObject(memDC, hDescFont);
-                        SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
-                        int descTop = drawY + std::max(2, (e.h - e.textH) / 2);
-                        RECT rcDesc = { p->rightColX, descTop, rightEdge, drawY + e.h };
-                        DrawTextW(memDC, e.descCol.c_str(), -1, &rcDesc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+                int copyH = 0;
+                if (p->hContentDC && p->renderedContentH > sy) {
+                    copyH = std::max(0, std::min(footerTop, p->renderedContentH - sy));
+                    if (copyH > 0) {
+                        BitBlt(memDC, 0, 0, clientW, copyH, p->hContentDC, 0, sy, SRCCOPY);
                     }
                 }
-
-                SelectObject(memDC, hOldP);
-                SelectObject(memDC, hOldF);
-                DeleteObject(hRowSep);
-                DeleteObject(hSepHilight);
-                DeleteObject(hSepShadow);
-                DeleteObject(hDescFont);
-                DeleteObject(hKeyFont);
-                DeleteObject(hSectionFont);
-                DeleteObject(hTitleFont);
-
-                RestoreDC(memDC, savedDC);
+                if (copyH < footerTop) {
+                    RECT rcRem = { 0, copyH, clientW, footerTop };
+                    FillRect(memDC, &rcRem, GetSysColorBrush(COLOR_BTNFACE));
+                }
 
                 // Permanent bottom footer bar + separating line
                 RECT rcFooter = { 0, footerTop, clientW, clientH };
                 FillRect(memDC, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
-                HPEN hLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
-                HGDIOBJ hOldFooterPen = SelectObject(memDC, hLinePen);
+                HGDIOBJ hOldFooterPen = SelectObject(memDC, p->hFooterLinePen);
                 MoveToEx(memDC, 0, footerTop, nullptr);
                 LineTo(memDC, clientW, footerTop);
                 SelectObject(memDC, hOldFooterPen);
-                DeleteObject(hLinePen);
 
                 BitBlt(hdc, 0, 0, clientW, clientH, memDC, 0, 0, SRCCOPY);
-                SelectObject(memDC, oldBmp);
-                DeleteObject(memBmp);
-                DeleteDC(memDC);
             }
             EndPaint(hWnd, &ps);
             return 0;
@@ -10728,10 +11677,10 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
                 RECT rcC;
                 GetClientRect(hWnd, &rcC);
                 int clientW = std::max(1, (int)(rcC.right - rcC.left));
-                RecalcShortcutsLayout(hWnd, p, clientW);
-                LayoutShortcutsFooter(hWnd, p);
-                UpdateShortcutsScroll(hWnd, p, p->scrollY);
+                RecalcShortcutsLayout(hWnd, p, clientW, false);
+                UpdateShortcutsScroll(hWnd, p, p->scrollY, false);
                 InvalidateRect(hWnd, nullptr, FALSE);
+                UpdateWindow(hWnd);
                 RECT rcW;
                 if (GetWindowRect(hWnd, &rcW)) {
                     p->savedWinWidth  = rcW.right - rcW.left;
@@ -10766,7 +11715,7 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
                     }
                     default: break;
                 }
-                UpdateShortcutsScroll(hWnd, p, target);
+                UpdateShortcutsScroll(hWnd, p, target, true);
                 return 0;
             }
             break;
@@ -10776,7 +11725,7 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 if (delta != 0) {
                     int step = -(delta * 48) / WHEEL_DELTA;
-                    UpdateShortcutsScroll(hWnd, p, p->scrollY + step);
+                    UpdateShortcutsScroll(hWnd, p, p->scrollY + step, true);
                 }
                 return 0;
             }
@@ -10791,6 +11740,11 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         case WM_CLOSE:
             DestroyWindow(hWnd);
             return 0;
+        case WM_NCDESTROY:
+            if (p) {
+                p->FreeGdiCache();
+            }
+            break;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
@@ -10864,16 +11818,26 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(FormatLabelWithShortcut(L"Instant fullscreen", hkFullSnap),                  L"Capture & save all monitors immediately (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Instant save previous custom area", hkPrevRegion), L"Capture & save previous custom area (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Pin the image in clipboard on top", hkPinClipboard), L"Pin the image currently in the clipboard directly on top as a floating window (also in tray menu; customizable in Customize keys)");
-    addRow(L"Options \x2192 Customize keys",            L"Customize any shortcut key (Esc to cancel, Delete to leave it empty; PrintScreen reserved)");
-    addRow(L"Options \x2192 Naming pattern (\x24D8)",   L"Click \x24D8 beside Restore default for acceptable syntax ({YYYY}, {MMMM}, {DDDD}, etc. — click or select any syntax to copy)");
-    addRow(L"Options \x2192 Restore everything to default", L"Reset all Options settings and shortcut keys back to factory defaults (with confirmation)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
-    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin (supports multi-select), Pin the image in clipboard on top, Put pinned image above / below edit, Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
-    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit\" is active, pinned images overlay the edit window and any pinned image in the selected area is included when saving/copying) or \"Pin on top\" (single or multi-selected images)");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin (supports multi-select), Pin the image in clipboard on top, Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
+    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit window\" is enabled in Options, pinned images overlay the edit window and any pinned image in the selected area is included when saving/copying) or \"Pin on top\" (single or multi-selected images)");
     addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
     addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
     addActionRow(DBTN_ACT_FRAME_TOGGLE,     false, FormatLabelWithShortcut(L"Hide / Show frames (GIF/WebP)",  hkFrameToggleStrip), L"Collapse or expand the bottom frame list in \"Edit with PepperSnap\" (or click the Hide / Show frames dropdown button)");
     addRow(L"Resize this info window",       L"Drag any window edge or corner to adjust width and height (text wraps & size persists)");
+
+    addSection(L"Options window & sub-option windows");
+    addRow(L"Save screenshot to... /Save format", L"Choose default save folder (Browse... or Use desktop), independent formats for Selected area, Instant fullscreen, and Copy format (JPEG, PNG, WebP, BMP), and JPEG quality slider (10%–100%)");
+    addRow(L"Naming pattern & (\x24D8) syntax window", L"Customize screenshot filename pattern with live preview, Restore default, or click \x24D8 to open the Naming pattern syntax sub-option window ({YYYY}, {MMMM}, {DDDD}, {h}, {ap}, {count}, etc. — click any row or select text to copy)");
+    addRow(L"Shortcut keys \x2192 Customize keys", L"Open the Customize keys sub-option window to rebind any global, custom area tool/action, multi-frame editor, or pinned image shortcut (Esc to cancel, Delete to leave it empty, PrintScreen reserved, or Restore defaults)");
+    addRow(L"Automatically check for updates", L"Toggle automatic GitHub release checks (Every day, 3-day, Every week, 2-weekly, Every month) or click Check now");
+    addRow(L"Non-stacking highlighter",      L"Prevent overlapping Stabilo highlighter strokes from darkening when drawing over existing highlights (on by default)");
+    addRow(L"Auto-save & auto-copy toggles", L"Toggle \"Also save screenshot when copying selected area\", \"Also copy instant fullscreen\", \"Also save pinned screenshot\", and \"Also save copied text\" (OCR .txt)");
+    addRow(L"Keep cursor & Auto-hide frames", L"Toggle \"Keep cursor on screenshot\" (captures mouse cursor in screenshots) and \"Auto-hide frame list\" (auto-collapses GIF/WebP frame list when focusing custom area/toolbar)");
+    addRow(L"Put pinned image above edit window", L"Checkbox in Options (on by default, above pen smoothing) that keeps pinned images above the \"Edit with PepperSnap\" window so any pinned image inside the selected area is included when saving or copying");
+    addRow(L"Enable pen & highlighter smoothing", L"Toggle freehand stroke smoothing and adjust smoothing strength slider (5%–100%: weak, balanced, strong, ultra smooth)");
+    addRow(L"Restore everything to default", L"Reset all Options settings, toggles, naming pattern, and shortcut keys back to factory defaults (with confirmation)");
+    addRow(L"\x24D8 settings.ini in %appdata%\\PepperSnap", L"Click the link in the Options footer to open the %appdata%\\PepperSnap folder in Explorer where settings.ini is persisted");
 
     addSection(L"Custom area — window selection, aiming & size input");
     addRow(L"Hold Shift then click (before selecting)",  L"Override pixel-grid snapping (with 1px crosshair gap), copy pixel RGB hex code (#RRGGBB) under magnifier & close");
@@ -10932,13 +11896,14 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Animated GIF & WebP support",   L"Pinned .gif and animated .webp images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
     addRow(L"Ctrl + Click / Ctrl + Shift + Click", L"Pause or play pinned animation on current frame (only shown & active on animated .gif / multi-frame animated .webp; hold Ctrl + Shift + click to pause/play all pinned animations)");
     addRow(L"Click W × H px or % indicator", L"Second toolbar row shows editable [W×H px | %] — click to type W×H, width only (200 or 200x), height only (xx200 or x200), or zoom % (keeps aspect ratio; Shift + Enter applies to all pinned images)");
+    addActionRow(DBTN_ACT_SCALE_RESET_100, false, L"Set to 100% (beside % indicator)", L"On the right side of the % scale indicator ([W×H px | % [reset icon]]) — click to set scale to 100% (hold Shift + click to set all pinned images to 100%)");
     addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", \"Middle-click to reset size\", \"Ctrl + middle-click to reset position\", \"Alt + click to multi-select (drag together)\", \"Ctrl + Click\" (on animations only), and Shift multi-pin hint");
     addRow(L"Alt + Left-click pinned image", L"Select or deselect pinned images for multi-selection (shows a blue outline on selected pinned images; pinning multiple images at once multi-selects them by default; drag any selected pinned image to move all selected pinned images together with group screen-edge snapping; left-click without Alt to clear selection)");
     addRow(L"Drag pinned image",             L"Move floating window (or all selected pinned images together; temporarily hides toolbar while dragging, snaps to screen edges; image can overflow screen)");
     addRow(L"Hold Shift + drag",             L"Temporarily disable screen-edge snapping while moving");
     addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar (hold Shift to apply to all pinned images; status persists; default: shown)");
     addRow(L"Double right-click pinned image", L"Close pinned image (hold Shift + double right-click to close all pinned images)");
-    addRow(L"Scroll / Shift + Scroll",       L"Zoom in or out (hits vertical & horizontal screen-fit resolutions; anchored to bottom-right corner by default, or to the snapped screen corner when snapped to bottom-left, top-left, or top-right; hold Shift + scroll to zoom all pinned images)");
+    addRow(L"Scroll / Shift + Scroll (smart anchor)", L"Zoom in or out (hits vertical & horizontal screen-fit resolutions; hold Shift + scroll to zoom all pinned images): when not snapped to any screen edge, uses the cursor position as the anchor point; when snapped to a corner, anchors that corner (bottom-right resizes upward & leftward, bottom-left upward & rightward, top-left downward & rightward, top-right downward & leftward); when snapped to one side, anchors the center of that side (left side resizes upward, rightward & downward; right side upward, leftward & downward; top side leftward, downward & rightward; bottom side leftward, upward & rightward)");
     addRow(L"Middle-click pinned image",     L"Reset pinned image to its original size when first pinned on click release (hold Shift + middle-click to reset all pinned images)");
     addRow(L"Ctrl + Middle-click pinned image", L"Reset pinned image to its original coordinate and size when first pinned (hold Ctrl + Shift + middle-click to reset coordinate and size of all pinned images)");
     addRow(FormatLabelWithShortcut(L"Zoom out",                   hkPinZoomOut),     L"Scale pinned image down via shortcut key or scroll down (hold Shift to apply to all pinned images)");
@@ -10946,7 +11911,6 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(FormatLabelWithShortcut(L"Reset to original size",     hkPinZoomReset),   L"Restore original size when first pinned via shortcut key or middle-click (hold Shift to apply to all pinned images)");
     addRow(FormatLabelWithShortcut(L"Reset to original position", hkPinPosReset),    L"Restore original coordinate and size when first pinned via shortcut key or Ctrl + middle-click (hold Shift to apply to all pinned images)");
     addRow(FormatLabelWithShortcut(L"Hide / Show toolbar",        hkPinHideToolbar), L"Hide or show floating toolbar on pinned image via shortcut key or double-click (hold Shift to apply to all pinned images)");
-    addRow(L"Put pinned image above / below edit", L"Tray menu button that cycles putting pinned images above or below the \"Edit with PepperSnap\" window (when above edit, pinned images in the selected area are included when saving/copying \"Edit with PepperSnap\" image; keeps tray menu open; default: below edit)");
     addRow(L"Smooth / Unsmooth all pinned image", L"Tray menu button that cycles smoothing or unsmoothing the image filter across all pinned images (keeps tray menu open)");
     addRow(L"Show / Hide toolbar on all pinned image", L"Tray menu button that cycles showing or hiding the toolbar across all pinned images (keeps tray menu open)");
     addRow(L"Show / Hide outline on all pinned image", L"Tray menu button that cycles showing or hiding the red outline across all pinned images (keeps tray menu open)");
@@ -11038,7 +12002,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     int nonClientW = (rcFrame.right - rcFrame.left) + vScrollW;
     int initClientW = std::max(minClientW, initW - nonClientW);
 
-    RecalcShortcutsLayout(nullptr, &params, initClientW);
+    RecalcShortcutsLayout(nullptr, &params, initClientW, true);
 
     int fullWinH = params.fullWinHeight;
     int maxAllowedH = std::min(fullWinH, std::max(320, sh - 24));
@@ -14678,6 +15642,9 @@ void PepperSnapDaemon::SnapshotDesktopWindows() {
             wcscmp(clsName, L"MSCTFIME UI") == 0 ||
             wcscmp(clsName, L"SysShadow") == 0 ||
             wcscmp(clsName, L"PepperSnapOverlayWnd") == 0 ||
+            wcscmp(clsName, L"PepperSnapOptionsModal") == 0 ||
+            wcscmp(clsName, L"PepperSnapShortcutsModal") == 0 ||
+            wcscmp(clsName, L"PepperSnapBubbleTipWnd") == 0 ||
             wcscmp(clsName, L"PepperSnapTrayDaemonClass") == 0) {
             continue;
         }
@@ -17208,9 +18175,6 @@ static void ShowTrayContextMenu(HWND hWnd) {
         std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);
         std::wstring prevMenu = L"Instant save previous custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPrevRegion);
         std::wstring pinClipMenu = L"Pin the image in clipboard on top\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPinClipboard);
-        const wchar_t* pinAboveEditMenu = g_Daemon.pinnedImageAboveEdit
-            ? L"Put pinned image below edit"
-            : L"Put pinned image above edit";
         const wchar_t* smoothPinsMenu = ShouldTrayMenuSmoothAllPins()
             ? L"Smooth all pinned image"
             : L"Unsmooth all pinned image";
@@ -17227,7 +18191,6 @@ static void ShowTrayContextMenu(HWND hWnd) {
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,        L"Open image to edit with PepperSnap...");
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE,    L"Open image to pin on top...");
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PIN_CLIPBOARD,     pinClipMenu.c_str());
-        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PIN_ABOVE_EDIT,    pinAboveEditMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SMOOTH_PINS,       smoothPinsMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_TOOLBAR_PINS, toolbarPinsMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_OUTLINE_PINS, outlinePinsMenu);
@@ -17254,8 +18217,7 @@ static void ShowTrayContextMenu(HWND hWnd) {
         int cmd = (int)TrackPopupMenu(hMenu, tpmFlags, anchorPt.x, anchorPt.y, 0, hWnd, nullptr);
         DestroyMenu(hMenu);
 
-        if (cmd == IDM_TRAY_PIN_ABOVE_EDIT ||
-            cmd == IDM_TRAY_SMOOTH_PINS ||
+        if (cmd == IDM_TRAY_SMOOTH_PINS ||
             cmd == IDM_TRAY_SHOW_TOOLBAR_PINS ||
             cmd == IDM_TRAY_SHOW_OUTLINE_PINS) {
             SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
@@ -17472,19 +18434,6 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     break;
                 case IDM_TRAY_OPTIONS:        g_Daemon.ShowOptionsModal(); break;
                 case IDM_TRAY_STARTUP_RUN:    g_Daemon.ToggleRunAtStartup(); break;
-                case IDM_TRAY_PIN_ABOVE_EDIT: {
-                    g_Daemon.pinnedImageAboveEdit = !g_Daemon.pinnedImageAboveEdit;
-                    g_Daemon.SaveSettings();
-                    if (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd) && g_Daemon.IsEditingOpenedImage()) {
-                        if (g_Daemon.pinnedImageAboveEdit) {
-                            g_Daemon.RaisePinnedWindowsAboveOverlay();
-                        } else {
-                            HidePinnedBubbleTooltip();
-                            SetWindowPos(g_Daemon.hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                        }
-                    }
-                    break;
-                }
                 case IDM_TRAY_SMOOTH_PINS: {
                     bool smoothNow = ShouldTrayMenuSmoothAllPins();
                     g_Daemon.smoothPinnedImage = smoothNow;
@@ -17709,19 +18658,70 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         if (!hOld || !IsWindow(hOld)) return;
         DWORD oldPid = 0;
         GetWindowThreadProcessId(hOld, &oldPid);
-        SendMessageTimeoutW(hOld, WM_COMMAND, IDM_TRAY_EXIT, 0, SMTO_ABORTIFHUNG, 1000, nullptr);
+        // Remove the old daemon's system tray icon directly (handles v2.0.1.0 where IDM_TRAY_EXIT had a different enum value)
+        NOTIFYICONDATAW oldNid = { sizeof(NOTIFYICONDATAW) };
+        oldNid.hWnd = hOld;
+        oldNid.uID = 1;
+        Shell_NotifyIconW(NIM_DELETE, &oldNid);
+        SendMessageTimeoutW(hOld, WM_COMMAND, IDM_TRAY_EXIT, 0, SMTO_ABORTIFHUNG, 500, nullptr);
+        SendMessageTimeoutW(hOld, WM_DESTROY, 0, 0, SMTO_ABORTIFHUNG, 500, nullptr);
         PostMessageW(hOld, WM_CLOSE, 0, 0);
-        for (int waitIter = 0; waitIter < 25; ++waitIter) {
-            if (!FindWindowW(L"PepperSnapTrayDaemonClass", nullptr)) break;
-            Sleep(40);
+        PostMessageW(hOld, WM_QUIT, 0, 0);
+        for (int waitIter = 0; waitIter < 20; ++waitIter) {
+            if (!IsWindow(hOld)) break;
+            Sleep(30);
         }
-        if (oldPid != 0 && FindWindowW(L"PepperSnapTrayDaemonClass", nullptr) != nullptr) {
+        if (oldPid != 0 && oldPid != GetCurrentProcessId()) {
             HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, oldPid);
             if (hProc) {
                 TerminateProcess(hProc, 0);
                 WaitForSingleObject(hProc, 500);
                 CloseHandle(hProc);
             }
+        }
+    };
+
+    auto shutdownAllOlderDaemons = [&]() {
+        for (int pass = 0; pass < 8; ++pass) {
+            HWND hCur = nullptr;
+            bool foundOld = false;
+            while ((hCur = FindWindowExW(nullptr, hCur, L"PepperSnapTrayDaemonClass", nullptr)) != nullptr) {
+                if (!isSameVersionDaemon(hCur)) {
+                    shutdownOlderDaemon(hCur);
+                    foundOld = true;
+                    break;
+                }
+            }
+            if (!foundOld) break;
+        }
+        // Also check for any lingering older PepperSnap.exe process from a different executable path
+        WCHAR selfExe[MAX_PATH] = {0};
+        GetModuleFileNameW(nullptr, selfExe, MAX_PATH);
+        DWORD selfPid = GetCurrentProcessId();
+        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnap != INVALID_HANDLE_VALUE) {
+            PROCESSENTRY32W pe = { sizeof(pe) };
+            if (Process32FirstW(hSnap, &pe)) {
+                do {
+                    if (pe.th32ProcessID != selfPid && _wcsicmp(pe.szExeFile, L"PepperSnap.exe") == 0) {
+                        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pe.th32ProcessID);
+                        if (hProc) {
+                            WCHAR otherExe[MAX_PATH] = {0};
+                            DWORD cch = MAX_PATH;
+                            bool isDifferentExe = false;
+                            if (QueryFullProcessImageNameW(hProc, 0, otherExe, &cch) && otherExe[0] != L'\0') {
+                                isDifferentExe = (_wcsicmp(otherExe, selfExe) != 0);
+                            }
+                            if (isDifferentExe) {
+                                TerminateProcess(hProc, 0);
+                                WaitForSingleObject(hProc, 300);
+                            }
+                            CloseHandle(hProc);
+                        }
+                    }
+                } while (Process32NextW(hSnap, &pe));
+            }
+            CloseHandle(hSnap);
         }
     };
 
@@ -17779,11 +18779,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         }
     }
 
-    // If an older version of PepperSnap is running in the tray, cleanly replace it with this newer version
-    HWND hExistingCheck = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr);
-    if (hExistingCheck && !isSameVersionDaemon(hExistingCheck)) {
-        shutdownOlderDaemon(hExistingCheck);
-    }
+    // If an older version of PepperSnap (such as v2.0.1.0) is running in the tray, cleanly replace it with this newer version
+    shutdownAllOlderDaemons();
 
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Global\\PepperSnap_TrayDaemon_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -17800,7 +18797,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
                 if (hMutex) CloseHandle(hMutex);
                 return 0;
             }
-            shutdownOlderDaemon(hExisting);
+            shutdownAllOlderDaemons();
         }
     }
     if (cliMsg == WM_COMMAND && cliWParam == IDM_TRAY_EXIT) {
@@ -17903,6 +18900,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     UnregisterHotKey(g_Daemon.hTrayWnd, HK_REGION_SNIP);
     UnregisterHotKey(g_Daemon.hTrayWnd, HK_FULL_SNAP);
     UnregisterHotKey(g_Daemon.hTrayWnd, HK_PREV_REGION);
+    UnregisterHotKey(g_Daemon.hTrayWnd, HK_PIN_CLIPBOARD);
 
     g_Daemon.DestroyCustomCursors();
     GdiplusShutdown(g_Daemon.gdiplusToken);

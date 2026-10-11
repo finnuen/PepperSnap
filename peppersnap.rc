@@ -14,11 +14,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "PepperSnap\0"
             VALUE "FileDescription", "PepperSnap\0"
-            VALUE "FileVersion", "3.9.4\0"
+            VALUE "FileVersion", "3.9.4.0\0"
             VALUE "InternalName", "PepperSnap\0"
             VALUE "OriginalFilename", "PepperSnap.exe\0"
             VALUE "ProductName", "PepperSnap\0"
-            VALUE "ProductVersion", "3.9.4\0"
+            VALUE "ProductVersion", "3.9.4.0\0"
         END
     END
     BLOCK "VarFileInfo"

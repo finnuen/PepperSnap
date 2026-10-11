@@ -24,21 +24,20 @@ if not os.path.exists(zig_bin):
 
 compile_win32_exe() {
   ensure_compiler
-  echo "[Win32 Resource] Compiling peppersnap.rc -> peppersnap.res..."
-  "$ZIG_BIN" rc -- peppersnap.rc peppersnap.res
-  echo "[C++17 Win32 Build] Compiling PepperSnap.cpp -> PepperSnap.exe (x86_64-windows-gnu, static CRT)..."
+  echo "[Win32 Resource] Compiling peppersnap.rc -> /tmp/peppersnap.res..."
+  "$ZIG_BIN" rc -- peppersnap.rc /tmp/peppersnap.res
+  echo "[C++17 Win32 Build] Compiling PepperSnap.cpp -> /tmp/PepperSnap.exe (x86_64-windows-gnu, static CRT)..."
   "$ZIG_BIN" c++ \
     -target x86_64-windows-gnu \
     -std=c++17 \
     -O2 \
     -s \
     -municode \
-    -mwindows \
     -Wl,--subsystem,windows \
     -static \
     PepperSnap.cpp \
-    peppersnap.res \
-    -o PepperSnap.exe \
+    /tmp/peppersnap.res \
+    -o /tmp/PepperSnap.exe \
     -lgdiplus \
     -lgdi32 \
     -luser32 \
@@ -52,8 +51,20 @@ compile_win32_exe() {
     -ladvapi32 \
     -lwininet \
     -lwindowscodecs
-  touch /tmp/peppersnap_built_v3_9_4
-  echo "[OK] Built standalone Windows PE32+ executable: PepperSnap.exe ($(wc -c < PepperSnap.exe) bytes)"
+  sha256sum PepperSnap.cpp PepperSnap.h peppersnap.rc peppersnap.ico > /tmp/peppersnap_build.sha256
+  echo "[OK] Built standalone Windows PE32+ executable: PepperSnap.exe ($(wc -c < /tmp/PepperSnap.exe) bytes)"
+}
+
+needs_rebuild() {
+  if [ ! -f /tmp/PepperSnap.exe ] || [ ! -f /tmp/peppersnap_build.sha256 ]; then
+    return 0
+  fi
+  CURRENT_HASH="$(sha256sum PepperSnap.cpp PepperSnap.h peppersnap.rc peppersnap.ico 2>/dev/null || true)"
+  SAVED_HASH="$(cat /tmp/peppersnap_build.sha256 2>/dev/null || true)"
+  if [ "$CURRENT_HASH" != "$SAVED_HASH" ]; then
+    return 0
+  fi
+  return 1
 }
 
 check_win32_syntax() {
@@ -72,7 +83,7 @@ check_win32_syntax() {
 
 run_native_cpp_host() {
   ensure_compiler
-  if [ ! -f /tmp/peppersnap_built_v3_9_4 ] || [ ! -f PepperSnap.exe ] || [ PepperSnap.cpp -nt PepperSnap.exe ] || [ PepperSnap.h -nt PepperSnap.exe ] || [ peppersnap.rc -nt PepperSnap.exe ]; then
+  if needs_rebuild; then
     compile_win32_exe
   fi
 
@@ -155,7 +166,8 @@ int main() {
 
         std::string req(buf, (size_t)n);
         if (req.find("GET /PepperSnap.exe") == 0 || req.find("GET /api/download/PepperSnap.exe") == 0) {
-            std::string exe = read_file_bytes("PepperSnap.exe");
+            std::string exe = read_file_bytes("/tmp/PepperSnap.exe");
+            if (exe.empty()) exe = read_file_bytes("PepperSnap.exe");
             std::ostringstream hdr;
             hdr << "HTTP/1.1 200 OK\r\n"
                 << "Content-Type: application/vnd.microsoft.portable-executable\r\n"
@@ -176,7 +188,8 @@ int main() {
         std::string hdrSrc = read_file_bytes("PepperSnap.h");
         std::string cmakeSrc = read_file_bytes("CMakeLists.txt");
         struct stat st{};
-        long exeBytes = (stat("PepperSnap.exe", &st) == 0) ? (long)st.st_size : 0;
+        long exeBytes = (stat("/tmp/PepperSnap.exe", &st) == 0) ? (long)st.st_size :
+                        ((stat("PepperSnap.exe", &st) == 0) ? (long)st.st_size : 0);
         long cppLines = 1;
         for (char c : cppSrc) if (c == '\n') cppLines++;
 

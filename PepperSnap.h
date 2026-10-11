@@ -22,6 +22,7 @@
 #include <wincodec.h>
 #include <uiautomation.h>
 #include <wininet.h>
+#include <tlhelp32.h>
 #include <gdiplus.h>
 
 #if defined(_MSC_VER)
@@ -107,7 +108,6 @@ enum TrayMenuID {
     IDM_TRAY_OPEN_IMAGE,
     IDM_TRAY_OPEN_PIN_IMAGE,
     IDM_TRAY_PIN_CLIPBOARD,
-    IDM_TRAY_PIN_ABOVE_EDIT,
     IDM_TRAY_OPEN_FOLDER,
     IDM_TRAY_OPTIONS,
     IDM_TRAY_STARTUP_RUN,
@@ -209,7 +209,20 @@ enum DockBtnID {
     DBTN_ACT_CLOSE,
     DBTN_ACT_DRAG_HUD,
     DBTN_ACT_FRAME_PLAY_PAUSE,
-    DBTN_ACT_FRAME_TOGGLE
+    DBTN_ACT_FRAME_TOGGLE,
+    DBTN_ACT_SCALE_RESET_100
+};
+
+enum class PinnedSnapMode {
+    None              = 0,
+    CornerBottomLeft  = 1,
+    CornerTopLeft     = 2,
+    CornerTopRight    = 3,
+    CornerBottomRight = 4,
+    SideLeft          = 5,
+    SideRight         = 6,
+    SideTop           = 7,
+    SideBottom        = 8
 };
 
 struct PinnedWindowData {
@@ -232,6 +245,7 @@ struct PinnedWindowData {
     int winH = 32;
     RECT imgRect{0, 0, 0, 0};
     RECT lastRgnImgRect{0, 0, 0, 0};
+    RECT lastRgnSliceRect{0, 0, 0, 0};
     RECT lastRgnStripRect{0, 0, 0, 0};
     bool lastRgnHideToolbar = false;
     bool hasAppliedRgn = false;
@@ -256,10 +270,14 @@ struct PinnedWindowData {
     RECT sizeRowRect{0, 0, 0, 0};
     RECT sizeBoxRect{0, 0, 0, 0};
     RECT pctBoxRect{0, 0, 0, 0};
+    RECT pctResetBtnRect{0, 0, 0, 0};
     int sizeTextLeftX = 0;
     int pctTextLeftX = 0;
     bool hoveredSizeBox = false;
     bool hoveredPctBox = false;
+    bool hoveredPctResetBtn = false;
+    bool pressedPctResetBtn = false;
+    bool pressedPctResetShift = false;
     bool isEditingSize = false;
     bool isDraggingSizeText = false;
     std::wstring editingSizeText;
@@ -276,10 +294,20 @@ struct PinnedWindowData {
     DWORD* cachePixels = nullptr;
     int cachedImgW = 0;
     int cachedImgH = 0;
+    int cachedViewX = 0;
+    int cachedViewY = 0;
+    int cachedViewW = 0;
+    int cachedViewH = 0;
     size_t cachedFrameIdx = (size_t)-1;
     bool cachedHideOutline = false;
     bool cachedSelected = false;
     bool cachedSmooth = false;
     bool cachedHq = false;
-    int zoomAnchorCorner = 0;
+    PinnedSnapMode zoomSnapMode = PinnedSnapMode::None;
+    double zoomSideCenterX = 0.0;
+    double zoomSideCenterY = 0.0;
+    POINT lastZoomCursorPt{ -999999, -999999 };
+    double zoomCursorRelX = 0.5;
+    double zoomCursorRelY = 0.5;
 };
+
