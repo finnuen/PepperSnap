@@ -19,16 +19,16 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.9.4";
+    static constexpr const wchar_t* APP_VERSION = L"3.10.1";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
-    // Configuration (Desktop default, JPEG default, unified Options modal)
+    // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
     std::wstring saveFolder;
     std::wstring namingPattern = L"PepperSnap_{YYYY}-{MM}-{DD}_{HH}-{mm}-{ss}";
     static constexpr const wchar_t* DEFAULT_NAMING_PATTERN = L"PepperSnap_{YYYY}-{MM}-{DD}_{HH}-{mm}-{ss}";
-    ImageFormat regionFormat = ImageFormat::JPEG;
+    ImageFormat regionFormat = ImageFormat::PNG;
     ImageFormat fullscreenFormat = ImageFormat::JPEG;
-    ImageFormat copyFormat = ImageFormat::JPEG;
+    ImageFormat copyFormat = ImageFormat::PNG;
     int jpegQuality = 90;
     bool nonStackingHighlighter = true;
     bool penSmoothingEnabled = true;
@@ -46,7 +46,8 @@ public:
     bool hidePinnedOutline = false;
     bool smoothPinnedImage = false;
     bool pinnedImageAboveEdit = true;
-    int optionsWindowHeight = 860;
+    bool keepEditWindowOpen = false;
+    int optionsWindowHeight = 888;
     int customizeKeysWindowHeight = 620;
     int shortcutsWindowWidth = 900;
     int shortcutsWindowHeight = 620;
@@ -108,6 +109,9 @@ public:
     // Previously Selected Custom Window Size & Position
     bool hasLastCustomSel = false;
     RECT lastCustomSelRect{ 0, 0, 0, 0 };
+    bool lastCustomSelHasQuad = false;
+    bool lastCustomSelHasEllipse = false;
+    POINT lastCustomSelQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
 
     // Virtual Screen Metrics
     int vScreenX = 0;
@@ -119,6 +123,12 @@ public:
     Bitmap* frozenDesktopBmp = nullptr;
     bool hasSelection = false;
     RECT selRect{0, 0, 0, 0};
+    bool hasCustomQuad = false;
+    bool hasEllipseSelection = false;
+    bool altHeldOnSelectionStart = false;
+    POINT selQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+    POINT dragOrigQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+    bool isDraggingSingleCorner = false;
     std::vector<RECT> desktopWindowRects;
     std::vector<HWND> suppressedAboveOverlayWindows;
     bool hasCtrlHoverWindow = false;
@@ -203,13 +213,15 @@ public:
         return false;
     }
 
-    bool GetActiveSelectionAspectRatio(WPARAM mouseWParam, int& outRatioW, int& outRatioH) const {
+    bool GetActiveSelectionAspectRatio(WPARAM mouseWParam, int& outRatioW, int& outRatioH, bool* outIsTempOverride = nullptr) const {
+        if (outIsTempOverride) *outIsTempOverride = false;
         bool rButtonDown = isRightMouseHeld || ((mouseWParam & MK_RBUTTON) != 0);
         bool shiftDownAfterAnchor = IsSelectionAnchorPlaced() &&
             (((mouseWParam & MK_SHIFT) != 0) || ((GetKeyState(VK_SHIFT) & 0x8000) != 0));
         if (rButtonDown || shiftDownAfterAnchor) {
             outRatioW = 1;
             outRatioH = 1;
+            if (outIsTempOverride) *outIsTempOverride = true;
             return true;
         }
         auto isKeyDown = [](int vk1, int vk2) -> bool {
@@ -219,21 +231,25 @@ public:
         if (isKeyDown('1', VK_NUMPAD1)) {
             outRatioW = 16;
             outRatioH = 9;
+            if (outIsTempOverride) *outIsTempOverride = true;
             return true;
         }
         if (isKeyDown('2', VK_NUMPAD2)) {
             outRatioW = 9;
             outRatioH = 16;
+            if (outIsTempOverride) *outIsTempOverride = true;
             return true;
         }
         if (isKeyDown('3', VK_NUMPAD3)) {
             outRatioW = 1;
             outRatioH = 2;
+            if (outIsTempOverride) *outIsTempOverride = true;
             return true;
         }
         if (isKeyDown('4', VK_NUMPAD4)) {
             outRatioW = 2;
             outRatioH = 1;
+            if (outIsTempOverride) *outIsTempOverride = true;
             return true;
         }
         if (hasCustomRatio && customRatioW > 0 && customRatioH > 0) {
@@ -250,6 +266,306 @@ public:
         if (!hasSelection) return false;
         if (dragMode == DragMode::CreatingSelection || dragMode == DragMode::PendingOutsideSelection) return false;
         return (selRect.right != selRect.left) && (selRect.bottom != selRect.top);
+    }
+
+    void SyncQuadFromSelRect() {
+        int x1 = std::min(selRect.left, selRect.right);
+        int y1 = std::min(selRect.top, selRect.bottom);
+        int x2 = std::max(selRect.left, selRect.right);
+        int y2 = std::max(selRect.top, selRect.bottom);
+        selQuad[0] = { x1, y1 };
+        selQuad[1] = { x2, y1 };
+        selQuad[2] = { x2, y2 };
+        selQuad[3] = { x1, y2 };
+        hasCustomQuad = false;
+    }
+
+    void SyncSelRectFromQuad() {
+        int minX = std::min(std::min((int)selQuad[0].x, (int)selQuad[1].x), std::min((int)selQuad[2].x, (int)selQuad[3].x));
+        int maxX = std::max(std::max((int)selQuad[0].x, (int)selQuad[1].x), std::max((int)selQuad[2].x, (int)selQuad[3].x));
+        int minY = std::min(std::min((int)selQuad[0].y, (int)selQuad[1].y), std::min((int)selQuad[2].y, (int)selQuad[3].y));
+        int maxY = std::max(std::max((int)selQuad[0].y, (int)selQuad[1].y), std::max((int)selQuad[2].y, (int)selQuad[3].y));
+        selRect = { minX, minY, maxX, maxY };
+        hasCustomQuad = !(selQuad[0].x == minX && selQuad[0].y == minY &&
+                          selQuad[1].x == maxX && selQuad[1].y == minY &&
+                          selQuad[2].x == maxX && selQuad[2].y == maxY &&
+                          selQuad[3].x == minX && selQuad[3].y == maxY);
+    }
+
+    void ScaleQuadFromOrigRect(const POINT origQuad[4], const RECT& origRect, const RECT& newRect) {
+        int ox0 = std::min(origRect.left, origRect.right);
+        int oy0 = std::min(origRect.top, origRect.bottom);
+        int ow  = std::max(1, (int)std::abs(origRect.right - origRect.left));
+        int oh  = std::max(1, (int)std::abs(origRect.bottom - origRect.top));
+        int nx0 = std::min(newRect.left, newRect.right);
+        int ny0 = std::min(newRect.top, newRect.bottom);
+        int nw  = std::max(1, (int)std::abs(newRect.right - newRect.left));
+        int nh  = std::max(1, (int)std::abs(newRect.bottom - newRect.top));
+        for (int i = 0; i < 4; ++i) {
+            double u = (double)(origQuad[i].x - ox0) / (double)ow;
+            double v = (double)(origQuad[i].y - oy0) / (double)oh;
+            selQuad[i].x = std::max(0, std::min(vScreenW, nx0 + (int)std::round(u * nw)));
+            selQuad[i].y = std::max(0, std::min(vScreenH, ny0 + (int)std::round(v * nh)));
+        }
+        SyncSelRectFromQuad();
+    }
+
+    void GetSelectionQuadPoints(POINT outPts[4]) const {
+        if (hasCustomQuad) {
+            for (int i = 0; i < 4; ++i) outPts[i] = selQuad[i];
+        } else {
+            int x1 = std::min(selRect.left, selRect.right);
+            int y1 = std::min(selRect.top, selRect.bottom);
+            int x2 = std::max(selRect.left, selRect.right);
+            int y2 = std::max(selRect.top, selRect.bottom);
+            outPts[0] = { x1, y1 };
+            outPts[1] = { x2, y1 };
+            outPts[2] = { x2, y2 };
+            outPts[3] = { x1, y2 };
+        }
+    }
+
+    void GetSelectionHandlePoints(POINT outHandles[8]) const {
+        POINT q[4];
+        GetSelectionQuadPoints(q);
+        outHandles[0] = q[0];                                                   // TL
+        outHandles[1] = { (q[0].x + q[1].x) / 2, (q[0].y + q[1].y) / 2 };       // T
+        outHandles[2] = q[1];                                                   // TR
+        outHandles[3] = { (q[1].x + q[2].x) / 2, (q[1].y + q[2].y) / 2 };       // R
+        outHandles[4] = q[2];                                                   // BR
+        outHandles[5] = { (q[2].x + q[3].x) / 2, (q[2].y + q[3].y) / 2 };       // B
+        outHandles[6] = q[3];                                                   // BL
+        outHandles[7] = { (q[3].x + q[0].x) / 2, (q[3].y + q[0].y) / 2 };       // L
+    }
+
+    void CanonicalizeSnappedQuad() {
+        auto samePt = [](POINT a, POINT b) { return a.x == b.x && a.y == b.y; };
+        if (samePt(selQuad[0], selQuad[2]) && !samePt(selQuad[1], selQuad[3])) {
+            selQuad[0] = selQuad[1];
+        } else if (samePt(selQuad[1], selQuad[3]) && !samePt(selQuad[0], selQuad[2])) {
+            selQuad[1] = selQuad[2];
+        }
+    }
+
+    int GetSelectionPolygonPoints(POINT outPts[4]) const {
+        POINT q[4];
+        GetSelectionQuadPoints(q);
+        int count = 0;
+        for (int i = 0; i < 4; ++i) {
+            bool dup = false;
+            for (int j = 0; j < count; ++j) {
+                if (q[i].x == outPts[j].x && q[i].y == outPts[j].y) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                outPts[count++] = q[i];
+            }
+        }
+        return count;
+    }
+
+    static long long QuadSignedArea2(const POINT q[4]) {
+        long long s = 0;
+        for (int i = 0; i < 4; ++i) {
+            int j = (i + 1) & 3;
+            s += (long long)q[i].x * (long long)q[j].y - (long long)q[j].x * (long long)q[i].y;
+        }
+        return s;
+    }
+
+    static bool SegmentsProperlyIntersect(POINT a, POINT b, POINT c, POINT d) {
+        auto cross = [](POINT o, POINT p, POINT q) -> long long {
+            return (long long)(p.x - o.x) * (long long)(q.y - o.y) -
+                   (long long)(p.y - o.y) * (long long)(q.x - o.x);
+        };
+        long long d1 = cross(c, d, a);
+        long long d2 = cross(c, d, b);
+        long long d3 = cross(a, b, c);
+        long long d4 = cross(a, b, d);
+        return (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+                ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)));
+    }
+
+    static bool IsQuadSelfIntersecting(const POINT q[4]) {
+        return SegmentsProperlyIntersect(q[0], q[1], q[2], q[3]) ||
+               SegmentsProperlyIntersect(q[1], q[2], q[3], q[0]);
+    }
+
+    bool IsPointInSelection(POINT pt) const {
+        if (!hasSelection) return false;
+        if (hasEllipseSelection) {
+            int x1 = std::min(selRect.left, selRect.right);
+            int y1 = std::min(selRect.top, selRect.bottom);
+            int x2 = std::max(selRect.left, selRect.right);
+            int y2 = std::max(selRect.top, selRect.bottom);
+            double rx = (double)(x2 - x1) * 0.5;
+            double ry = (double)(y2 - y1) * 0.5;
+            if (rx < 0.5 || ry < 0.5) return false;
+            double cx = (double)x1 + rx;
+            double cy = (double)y1 + ry;
+            double nx = ((double)pt.x + 0.5 - cx) / rx;
+            double ny = ((double)pt.y + 0.5 - cy) / ry;
+            return (nx * nx + ny * ny) <= 1.0;
+        }
+        if (!hasCustomQuad) {
+            RECT normSel = {
+                std::min(selRect.left, selRect.right),
+                std::min(selRect.top, selRect.bottom),
+                std::max(selRect.left, selRect.right),
+                std::max(selRect.top, selRect.bottom)
+            };
+            return PtInRect(&normSel, pt) != FALSE;
+        }
+        POINT polyPts[4];
+        int polyCount = GetSelectionPolygonPoints(polyPts);
+        if (polyCount < 3) return false;
+        bool inside = false;
+        double px = (double)pt.x + 0.5;
+        double py = (double)pt.y + 0.5;
+        for (int i = 0, j = polyCount - 1; i < polyCount; j = i++) {
+            double xi = (double)polyPts[i].x, yi = (double)polyPts[i].y;
+            double xj = (double)polyPts[j].x, yj = (double)polyPts[j].y;
+            if (((yi > py) != (yj > py)) &&
+                (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
+    bool IsHoveringSelectedCustomArea(POINT pt) const {
+        if (!HasCreatedCustomArea() || hasEllipseSelection) return false;
+        if (dragMode != DragMode::None) return false;
+        if (isEditingText || isEditingSize || isEditingRatio || isEditingStroke) return false;
+        if (isDraggingStrokeText || isDraggingSizeText || isDraggingRatioText || isDraggingTextBoxSel) return false;
+        if (hoveredBtnId != -1 || pressedBtnId != -1) return false;
+        if (lastPillHover || lastRatioResetHover || lastStrokeHover) return false;
+        if (PtInRect(&dimPillRect, pt) || PtInRect(&ratioPillRect, pt) ||
+            (hasCustomRatio && PtInRect(&ratioResetBtnRect, pt)) ||
+            PtInRect(&customStrokeRect, pt)) {
+            return false;
+        }
+        for (const auto& b : dockButtons) {
+            if (PtInRect(&b.rect, pt)) return false;
+        }
+        if (HasOverlayMultiFrames()) {
+            if (PtInRect(&overlayFrameStripToggleBtnRect, pt)) return false;
+            if (!overlayFrameStripCollapsed &&
+                (PtInRect(&overlayFrameStripResizeRect, pt) || PtInRect(&overlayFrameStripPanelRect, pt))) {
+                return false;
+            }
+        }
+        return IsPointInSelection(pt) || (HitTestSelectionHandles(pt.x, pt.y) != DragMode::None);
+    }
+
+    static bool IsAltModifierHeld() {
+        return ((GetKeyState(VK_MENU) & 0x8000) != 0) ||
+               ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
+               ((GetAsyncKeyState(VK_LMENU) & 0x8000) != 0) ||
+               ((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
+    }
+
+    static void ApplyEllipseMaskToBitmap(Bitmap* bmp) {
+        if (!bmp) return;
+        int rw = (int)bmp->GetWidth();
+        int rh = (int)bmp->GetHeight();
+        if (rw < 1 || rh < 1) return;
+
+        Bitmap maskBmp(rw, rh, PixelFormat32bppARGB);
+        {
+            Graphics gMask(&maskBmp);
+            gMask.SetCompositingMode(CompositingModeSourceCopy);
+            gMask.Clear(Color(0, 0, 0, 0));
+            gMask.SetCompositingMode(CompositingModeSourceOver);
+            gMask.SetSmoothingMode(SmoothingModeAntiAlias);
+            gMask.SetPixelOffsetMode(PixelOffsetModeHalf);
+            SolidBrush whiteBrush(Color(255, 255, 255, 255));
+            gMask.FillEllipse(&whiteBrush, 0.0f, 0.0f, (REAL)rw, (REAL)rh);
+        }
+
+        Rect lockRc(0, 0, rw, rh);
+        BitmapData bdOut = {}, bdMask = {};
+        if (bmp->LockBits(&lockRc, ImageLockModeRead | ImageLockModeWrite, PixelFormat32bppARGB, &bdOut) == Ok) {
+            if (maskBmp.LockBits(&lockRc, ImageLockModeRead, PixelFormat32bppARGB, &bdMask) == Ok) {
+                for (int y = 0; y < rh; ++y) {
+                    DWORD* outRow = (DWORD*)((BYTE*)bdOut.Scan0 + (size_t)y * bdOut.Stride);
+                    const DWORD* maskRow = (const DWORD*)((const BYTE*)bdMask.Scan0 + (size_t)y * bdMask.Stride);
+                    for (int x = 0; x < rw; ++x) {
+                        DWORD mAlpha = (maskRow[x] >> 24) & 0xFFu;
+                        if (mAlpha == 0) {
+                            outRow[x] = 0x00000000u;
+                        } else if (mAlpha < 255u) {
+                            DWORD origA = (outRow[x] >> 24) & 0xFFu;
+                            DWORD newA = (origA * mAlpha + 127u) / 255u;
+                            outRow[x] = (outRow[x] & 0x00FFFFFFu) | (newA << 24);
+                        }
+                    }
+                }
+                maskBmp.UnlockBits(&bdMask);
+            }
+            bmp->UnlockBits(&bdOut);
+        }
+    }
+
+    static void ApplyQuadPolygonMaskToBitmap(Bitmap* bmp, const POINT quadPts[4], int rx, int ry) {
+        if (!bmp) return;
+        int rw = (int)bmp->GetWidth();
+        int rh = (int)bmp->GetHeight();
+        if (rw < 1 || rh < 1) return;
+
+        PointF localPts[4];
+        int polyCount = 0;
+        for (int i = 0; i < 4; ++i) {
+            PointF pt((REAL)(quadPts[i].x - rx), (REAL)(quadPts[i].y - ry));
+            bool dup = false;
+            for (int j = 0; j < polyCount; ++j) {
+                if (std::abs(pt.X - localPts[j].X) < 0.01f && std::abs(pt.Y - localPts[j].Y) < 0.01f) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                localPts[polyCount++] = pt;
+            }
+        }
+        if (polyCount < 3) return;
+
+        Bitmap maskBmp(rw, rh, PixelFormat32bppARGB);
+        {
+            Graphics gMask(&maskBmp);
+            gMask.SetCompositingMode(CompositingModeSourceCopy);
+            gMask.Clear(Color(0, 0, 0, 0));
+            gMask.SetCompositingMode(CompositingModeSourceOver);
+            gMask.SetSmoothingMode(SmoothingModeAntiAlias);
+            gMask.SetPixelOffsetMode(PixelOffsetModeHalf);
+            SolidBrush whiteBrush(Color(255, 255, 255, 255));
+            gMask.FillPolygon(&whiteBrush, localPts, polyCount, FillModeWinding);
+        }
+
+        Rect lockRc(0, 0, rw, rh);
+        BitmapData bdOut = {}, bdMask = {};
+        if (bmp->LockBits(&lockRc, ImageLockModeRead | ImageLockModeWrite, PixelFormat32bppARGB, &bdOut) == Ok) {
+            if (maskBmp.LockBits(&lockRc, ImageLockModeRead, PixelFormat32bppARGB, &bdMask) == Ok) {
+                for (int y = 0; y < rh; ++y) {
+                    DWORD* outRow = (DWORD*)((BYTE*)bdOut.Scan0 + (size_t)y * bdOut.Stride);
+                    const DWORD* maskRow = (const DWORD*)((const BYTE*)bdMask.Scan0 + (size_t)y * bdMask.Stride);
+                    for (int x = 0; x < rw; ++x) {
+                        DWORD mAlpha = (maskRow[x] >> 24) & 0xFFu;
+                        if (mAlpha == 0) {
+                            outRow[x] = 0x00000000u;
+                        } else if (mAlpha < 255u) {
+                            DWORD origA = (outRow[x] >> 24) & 0xFFu;
+                            DWORD newA = (origA * mAlpha + 127u) / 255u;
+                            outRow[x] = (outRow[x] & 0x00FFFFFFu) | (newA << 24);
+                        }
+                    }
+                }
+                maskBmp.UnlockBits(&bdMask);
+            }
+            bmp->UnlockBits(&bdOut);
+        }
     }
 
     bool IsCtrlTempSelectActive() const {
@@ -412,6 +728,9 @@ public:
     DWORD* backBufferPixels = nullptr;
     bool lastPillHover = false;
     bool lastStrokeHover = false;
+    bool showingCustomAreaHoverTip = false;
+    POINT lastCustomAreaHoverMouse{ -10000, -10000 };
+    POINT customAreaHoverTipPt{ 0, 0 };
 
     struct SavedEditOverlaySession {
         bool active = false;
@@ -428,6 +747,9 @@ public:
         bool overlayFramesPlaying = false;
         bool hasSelection = false;
         RECT selRect{0, 0, 0, 0};
+        bool hasCustomQuad = false;
+        bool hasEllipseSelection = false;
+        POINT selQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
         std::vector<Annotation> annotations;
         std::vector<std::vector<Annotation>> undoStack;
         std::vector<std::vector<Annotation>> redoStack;
@@ -631,6 +953,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"SmoothPinnedImage", smoothPinnedImage ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PinnedImageAboveEdit", pinnedImageAboveEdit ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PinAboveEditDefaultV1", L"1", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"KeepEditWindowOpen", keepEditWindowOpen ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowWidth", std::to_wstring(shortcutsWindowWidth).c_str(), iniPath.c_str());
@@ -695,6 +1018,14 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelTop", std::to_wstring(lastCustomSelRect.top).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelRight", std::to_wstring(lastCustomSelRect.right).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelBottom", std::to_wstring(lastCustomSelRect.bottom).c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelHasQuad", lastCustomSelHasQuad ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelHasEllipse", lastCustomSelHasEllipse ? L"1" : L"0", iniPath.c_str());
+    for (int i = 0; i < 4; ++i) {
+        std::wstring kx = L"LastCustomQuadX" + std::to_wstring(i);
+        std::wstring ky = L"LastCustomQuadY" + std::to_wstring(i);
+        WritePrivateProfileStringW(L"PepperSnap", kx.c_str(), std::to_wstring(lastCustomSelQuad[i].x).c_str(), iniPath.c_str());
+        WritePrivateProfileStringW(L"PepperSnap", ky.c_str(), std::to_wstring(lastCustomSelQuad[i].y).c_str(), iniPath.c_str());
+    }
 }
 
 void PepperSnapDaemon::LoadSettings() {
@@ -738,8 +1069,9 @@ void PepperSnapDaemon::LoadSettings() {
     } else {
         pinnedImageAboveEdit = (GetPrivateProfileIntW(L"PepperSnap", L"PinnedImageAboveEdit", 1, iniPath.c_str()) != 0);
     }
-    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 860, iniPath.c_str());
-    if (optWinH == 716 || optWinH == 744 || optWinH == 772 || optWinH == 800) optWinH = 860;
+    keepEditWindowOpen = (GetPrivateProfileIntW(L"PepperSnap", L"KeepEditWindowOpen", 0, iniPath.c_str()) != 0);
+    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 888, iniPath.c_str());
+    if (optWinH == 716 || optWinH == 744 || optWinH == 772 || optWinH == 800 || optWinH == 860) optWinH = 888;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
     int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 620, iniPath.c_str());
     if (ckWinH == 560) ckWinH = 620;
@@ -873,8 +1205,18 @@ void PepperSnapDaemon::LoadSettings() {
     lastCustomSelRect.top    = (LONG)GetPrivateProfileIntW(L"PepperSnap", L"LastCustomSelTop",    0, iniPath.c_str());
     lastCustomSelRect.right  = (LONG)GetPrivateProfileIntW(L"PepperSnap", L"LastCustomSelRight",  0, iniPath.c_str());
     lastCustomSelRect.bottom = (LONG)GetPrivateProfileIntW(L"PepperSnap", L"LastCustomSelBottom", 0, iniPath.c_str());
+    lastCustomSelHasQuad = (GetPrivateProfileIntW(L"PepperSnap", L"LastCustomSelHasQuad", 0, iniPath.c_str()) != 0);
+    lastCustomSelHasEllipse = (GetPrivateProfileIntW(L"PepperSnap", L"LastCustomSelHasEllipse", 0, iniPath.c_str()) != 0);
+    for (int i = 0; i < 4; ++i) {
+        std::wstring kx = L"LastCustomQuadX" + std::to_wstring(i);
+        std::wstring ky = L"LastCustomQuadY" + std::to_wstring(i);
+        lastCustomSelQuad[i].x = (LONG)GetPrivateProfileIntW(L"PepperSnap", kx.c_str(), 0, iniPath.c_str());
+        lastCustomSelQuad[i].y = (LONG)GetPrivateProfileIntW(L"PepperSnap", ky.c_str(), 0, iniPath.c_str());
+    }
     if (lastCustomSelRect.right <= lastCustomSelRect.left || lastCustomSelRect.bottom <= lastCustomSelRect.top) {
         hasLastCustomSel = false;
+        lastCustomSelHasQuad = false;
+        lastCustomSelHasEllipse = false;
     }
 }
 
@@ -2638,19 +2980,65 @@ bool PepperSnapDaemon::CopyBitmapToClipboard(Bitmap* bmp) {
     memcpy(lpbitmap, &bi, sizeof(BITMAPINFOHEADER));
 
     BYTE* dstBase = lpbitmap + sizeof(BITMAPINFOHEADER);
+    bool hasTransparency = false;
     for (int y = 0; y < bh; ++y) {
         const BYTE* srcRow = (const BYTE*)bd.Scan0 + (size_t)(bh - 1 - y) * bd.Stride;
         memcpy(dstBase + (size_t)y * rowBytes, srcRow, rowBytes);
+        if (!hasTransparency) {
+            for (int x = 0; x < bw; ++x) {
+                if (srcRow[x * 4 + 3] < 255) {
+                    hasTransparency = true;
+                    break;
+                }
+            }
+        }
     }
 
     GlobalUnlock(hDIB);
     bmp->UnlockBits(&bd);
 
+    HGLOBAL hPngClip = nullptr;
+    UINT cfPng = RegisterClipboardFormatW(L"PNG");
+    if ((hasTransparency || copyFormat == ImageFormat::PNG) && cfPng) {
+        CLSID pngClsid;
+        if (GetGdiPlusEncoderClsid(L"image/png", &pngClsid)) {
+            IStream* memStream = nullptr;
+            if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &memStream)) && memStream) {
+                if (bmp->Save(memStream, &pngClsid, nullptr) == Ok) {
+                    HGLOBAL hStreamMem = nullptr;
+                    if (SUCCEEDED(GetHGlobalFromStream(memStream, &hStreamMem)) && hStreamMem) {
+                        SIZE_T pngSz = GlobalSize(hStreamMem);
+                        const void* pPngSrc = GlobalLock(hStreamMem);
+                        if (pPngSrc && pngSz > 0) {
+                            hPngClip = GlobalAlloc(GMEM_MOVEABLE, pngSz);
+                            if (hPngClip) {
+                                void* pPngDst = GlobalLock(hPngClip);
+                                if (pPngDst) {
+                                    memcpy(pPngDst, pPngSrc, pngSz);
+                                    GlobalUnlock(hPngClip);
+                                } else {
+                                    GlobalFree(hPngClip);
+                                    hPngClip = nullptr;
+                                }
+                            }
+                        }
+                        if (pPngSrc) GlobalUnlock(hStreamMem);
+                    }
+                }
+                memStream->Release();
+            }
+        }
+    }
+
     if (!OpenClipboard(hTrayWnd)) {
+        if (hPngClip) GlobalFree(hPngClip);
         GlobalFree(hDIB);
         return false;
     }
     EmptyClipboard();
+    if (hPngClip && cfPng) {
+        SetClipboardData(cfPng, hPngClip);
+    }
     SetClipboardData(CF_DIB, hDIB);
     CloseClipboard();
     return true;
@@ -2718,6 +3106,8 @@ void PepperSnapDaemon::InstantFullscreenCapture() {
             CloseRegionSnipOverlay();
         }
         if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+            KillTimer(hOverlayWnd, 4);
+            showingCustomAreaHoverTip = false;
             CommitActiveTextBox();
             CommitActiveSizeInput();
             CommitActiveRatioInput();
@@ -2761,6 +3151,9 @@ void PepperSnapDaemon::RecordLastCustomSelection() {
     if (sx1 - sx0 >= 1 && sy1 - sy0 >= 1) {
         hasLastCustomSel = true;
         lastCustomSelRect = { sx0, sy0, sx1, sy1 };
+        lastCustomSelHasQuad = hasCustomQuad;
+        lastCustomSelHasEllipse = hasEllipseSelection;
+        GetSelectionQuadPoints(lastCustomSelQuad);
         SaveSettings();
     }
 }
@@ -2807,6 +3200,11 @@ void PepperSnapDaemon::InstantPreviousRegionCapture() {
     Bitmap* cropped = fullBmp->Clone(rx, ry, rw, rh, PixelFormat32bppARGB);
     delete fullBmp;
     if (!cropped) return;
+    if (lastCustomSelHasEllipse) {
+        ApplyEllipseMaskToBitmap(cropped);
+    } else if (lastCustomSelHasQuad) {
+        ApplyQuadPolygonMaskToBitmap(cropped, lastCustomSelQuad, rx, ry);
+    }
 
     CopyBitmapToClipboard(cropped);
 
@@ -3763,7 +4161,16 @@ void PepperSnapDaemon::CommitActiveSizeInput() {
         }
         newW = std::min(maxW, std::max(1, newW));
         newH = std::min(maxH, std::max(1, newH));
-        selRect = { sx, sy, sx + newW, sy + newH };
+        RECT prevRect = { sx, sy, sx + curW, sy + curH };
+        RECT nextRect = { sx, sy, sx + newW, sy + newH };
+        if (hasCustomQuad) {
+            POINT prevQuad[4];
+            GetSelectionQuadPoints(prevQuad);
+            ScaleQuadFromOrigRect(prevQuad, prevRect, nextRect);
+        } else {
+            selRect = nextRect;
+            SyncQuadFromSelRect();
+        }
         hasSelection = true;
         hasCustomHudPos = false;
         activeSelectionRatioW = 0;
@@ -3862,7 +4269,16 @@ void PepperSnapDaemon::CommitActiveRatioInput() {
         }
         newW = std::min(maxW, std::max(1, newW));
         newH = std::min(maxH, std::max(1, newH));
-        selRect = { sx, sy, sx + newW, sy + newH };
+        RECT prevRect = { sx, sy, sx + curW, sy + curH };
+        RECT nextRect = { sx, sy, sx + newW, sy + newH };
+        if (hasCustomQuad) {
+            POINT prevQuad[4];
+            GetSelectionQuadPoints(prevQuad);
+            ScaleQuadFromOrigRect(prevQuad, prevRect, nextRect);
+        } else {
+            selRect = nextRect;
+            SyncQuadFromSelRect();
+        }
         hasSelection = true;
         hasCustomHudPos = false;
     }
@@ -4578,6 +4994,11 @@ Bitmap* PepperSnapDaemon::RenderCroppedRegionBitmap() {
             ann.tool != OverlayTool::Highlighter) {
             DrawVectorAnnotation(g, ann, rx, ry, false, false);
         }
+    }
+    if (hasEllipseSelection) {
+        ApplyEllipseMaskToBitmap(out);
+    } else if (hasCustomQuad) {
+        ApplyQuadPolygonMaskToBitmap(out, selQuad, rx, ry);
     }
     return out;
 }
@@ -5323,26 +5744,23 @@ void PepperSnapDaemon::BuildDockedHUD() {
 
 DragMode PepperSnapDaemon::HitTestSelectionHandles(int mx, int my) const {
     if (!hasSelection) return DragMode::None;
-    int x1 = std::min(selRect.left, selRect.right);
-    int y1 = std::min(selRect.top, selRect.bottom);
-    int x2 = std::max(selRect.left, selRect.right);
-    int y2 = std::max(selRect.top, selRect.bottom);
-    int xm = (x1 + x2) / 2;
-    int ym = (y1 + y2) / 2;
+    POINT handles[8];
+    GetSelectionHandlePoints(handles);
     const int r = 7;
 
-    auto nearPt = [&](int px, int py) {
-        return std::abs(mx - px) <= r && std::abs(my - py) <= r;
+    auto nearPt = [&](POINT p) {
+        return std::abs(mx - p.x) <= r && std::abs(my - p.y) <= r;
     };
 
-    if (nearPt(x1, y1)) return DragMode::ResizeTL;
-    if (nearPt(xm, y1)) return DragMode::ResizeT;
-    if (nearPt(x2, y1)) return DragMode::ResizeTR;
-    if (nearPt(x2, ym)) return DragMode::ResizeR;
-    if (nearPt(x2, y2)) return DragMode::ResizeBR;
-    if (nearPt(xm, y2)) return DragMode::ResizeB;
-    if (nearPt(x1, y2)) return DragMode::ResizeBL;
-    if (nearPt(x1, ym)) return DragMode::ResizeL;
+    // Prioritize corner handles first, then edge midpoint handles
+    if (nearPt(handles[0])) return DragMode::ResizeTL;
+    if (nearPt(handles[2])) return DragMode::ResizeTR;
+    if (nearPt(handles[4])) return DragMode::ResizeBR;
+    if (nearPt(handles[6])) return DragMode::ResizeBL;
+    if (nearPt(handles[1])) return DragMode::ResizeT;
+    if (nearPt(handles[3])) return DragMode::ResizeR;
+    if (nearPt(handles[5])) return DragMode::ResizeB;
+    if (nearPt(handles[7])) return DragMode::ResizeL;
     return DragMode::None;
 }
 
@@ -5644,13 +6062,13 @@ static void ShowPinnedImageHoverTooltip(HWND hPinWnd, const PinnedWindowData* da
         L"to reset position"
     };
     if (data->isSelected) {
-        lines.push_back(L"Alt + click to deselect");
+        lines.push_back(L"Ctrl + click to deselect");
     } else {
-        lines.push_back(L"Alt + click to");
+        lines.push_back(L"Ctrl + click to");
         lines.push_back(L"multi-select (drag together)");
     }
     if (isAnim) {
-        lines.push_back(data->animPaused ? L"Ctrl + click to play" : L"Ctrl + click to pause");
+        lines.push_back(data->animPaused ? L"Alt + click to play" : L"Alt + click to pause");
     }
     int shiftStartIdx = (int)lines.size();
     lines.push_back(L"Hold Shift + action / key");
@@ -5893,23 +6311,59 @@ static void EnsurePinnedWindowCache(PinnedWindowData* data, int imgW, int imgH, 
 
         if (selected || !hideOutline) {
             g.SetCompositingMode(CompositingModeSourceOver);
-            g.SetSmoothingMode(SmoothingModeNone);
-            g.SetPixelOffsetMode(PixelOffsetModeNone);
             Color outlineCol = selected ? Color(255, 59, 130, 246) : Color(255, 239, 68, 68);
-            Pen border1px(outlineCol, 1.0f);
-            g.DrawRectangle(&border1px, -viewX, -viewY, imgW - 1, imgH - 1);
-            if (imgW >= 4 && imgH >= 4) {
-                g.DrawRectangle(&border1px, 1 - viewX, 1 - viewY, imgW - 3, imgH - 3);
+            if (data->hasEllipseMask) {
+                g.SetSmoothingMode(SmoothingModeAntiAlias);
+                g.SetPixelOffsetMode(PixelOffsetModeHalf);
+                Pen border2px(outlineCol, 2.0f);
+                g.DrawEllipse(&border2px, 1.0f - (float)viewX, 1.0f - (float)viewY,
+                              (float)std::max(1, imgW - 2), (float)std::max(1, imgH - 2));
+            } else if (data->hasCustomQuad) {
+                g.SetSmoothingMode(SmoothingModeAntiAlias);
+                g.SetPixelOffsetMode(PixelOffsetModeHalf);
+                PointF polyPts[4];
+                int polyCount = 0;
+                for (int i = 0; i < 4; ++i) {
+                    PointF pt(
+                        data->normQuad[i].X * (float)std::max(1, imgW - 1) - (float)viewX,
+                        data->normQuad[i].Y * (float)std::max(1, imgH - 1) - (float)viewY
+                    );
+                    bool dup = false;
+                    for (int j = 0; j < polyCount; ++j) {
+                        if (std::abs(pt.X - polyPts[j].X) < 0.1f && std::abs(pt.Y - polyPts[j].Y) < 0.1f) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                    if (!dup) {
+                        polyPts[polyCount++] = pt;
+                    }
+                }
+                if (polyCount >= 3) {
+                    Pen border2px(outlineCol, 2.0f);
+                    border2px.SetLineJoin(LineJoinRound);
+                    g.DrawPolygon(&border2px, polyPts, polyCount);
+                }
+            } else {
+                g.SetSmoothingMode(SmoothingModeNone);
+                g.SetPixelOffsetMode(PixelOffsetModeNone);
+                Pen border1px(outlineCol, 1.0f);
+                g.DrawRectangle(&border1px, -viewX, -viewY, imgW - 1, imgH - 1);
+                if (imgW >= 4 && imgH >= 4) {
+                    g.DrawRectangle(&border1px, 1 - viewX, 1 - viewY, imgW - 3, imgH - 3);
+                }
             }
         }
     }
 
     // Ensure transparent pixels inside the visible image slice have alpha >= 1 (0.39% opacity, visually 100% transparent
     // over desktop while remaining mouse-interactive for dragging, zooming, and double-clicking)
-    size_t totalPx = (size_t)viewW * (size_t)viewH;
-    for (size_t i = 0; i < totalPx; ++i) {
-        if ((data->cachePixels[i] >> 24) == 0) {
-            data->cachePixels[i] = 0x01000000u;
+    if (!data->hasCustomQuad && !data->hasEllipseMask) {
+        size_t totalPx = (size_t)viewW * (size_t)viewH;
+        for (size_t i = 0; i < totalPx; ++i) {
+            if ((data->cachePixels[i] >> 24) == 0) {
+                data->cachePixels[i] = 0x01000000u;
+            }
         }
     }
 
@@ -7400,12 +7854,12 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 data->pressedPctResetShift = false;
                 HidePinnedBubbleTooltip();
 
-                if (IsPinAltHeld() && PtInRect(&data->imgRect, pt)) {
+                if (IsPinCtrlHeld() && PtInRect(&data->imgRect, pt)) {
                     SetPinnedWindowSelected(hWnd, data, !data->isSelected);
                     SetFocus(hWnd);
                     return 0;
                 }
-                if (!data->isSelected && !IsPinAltHeld()) {
+                if (!data->isSelected && !IsPinCtrlHeld() && !IsPinAltHeld()) {
                     ClearAllSelectedPinnedWindows();
                 }
 
@@ -7505,13 +7959,13 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     }
                 }
                 HidePinnedBubbleTooltip();
-                if (IsPinAltHeld() && PtInRect(&data->imgRect, pt)) {
+                if (IsPinCtrlHeld() && PtInRect(&data->imgRect, pt)) {
                     SetPinnedWindowSelected(hWnd, data, !data->isSelected);
                     SetFocus(hWnd);
                     return 0;
                 }
-                if (IsPinCtrlHeld()) {
-                    // Rapid Ctrl + click (or Ctrl + Shift + click) toggles pause/play on release instead of toggling toolbar
+                if (IsPinAltHeld()) {
+                    // Rapid Alt + click (or Alt + Shift + click) toggles pause/play on release instead of toggling toolbar
                     data->pendingLeftDblClickToggleToolbar = false;
                     data->dragging = true;
                     data->dragMoved = false;
@@ -7643,9 +8097,13 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             break;
         }
+        case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             if (data && data->dragging && (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
                 UpdatePinnedDragPosition(hWnd, data);
+                return 0;
+            }
+            if (wParam == VK_MENU || wParam == VK_LMENU || wParam == VK_RMENU) {
                 return 0;
             }
             if (data) {
@@ -7749,9 +8207,13 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             break;
         }
+        case WM_SYSKEYUP:
         case WM_KEYUP:
             if (data && data->dragging && (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT)) {
                 UpdatePinnedDragPosition(hWnd, data);
+                return 0;
+            }
+            if (wParam == VK_MENU || wParam == VK_LMENU || wParam == VK_RMENU) {
                 return 0;
             }
             break;
@@ -8047,9 +8509,9 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     if (wasMoved) {
                         UpdatePinnedWindowLayout(hWnd, data, true);
                         RenderPinnedLayeredWindow(hWnd, data);
-                    } else if (PtInRect(&data->imgRect, pt) && IsPinCtrlHeld()) {
+                    } else if (PtInRect(&data->imgRect, pt) && IsPinAltHeld()) {
                         TogglePinnedWindowAnimation(hWnd, data, IsPinShiftHeld());
-                    } else if (PtInRect(&data->imgRect, pt) && !IsPinAltHeld() && data->isSelected) {
+                    } else if (PtInRect(&data->imgRect, pt) && !IsPinCtrlHeld() && data->isSelected) {
                         ClearAllSelectedPinnedWindows();
                     }
                     if (PtInRect(&data->imgRect, pt)) {
@@ -8185,8 +8647,21 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
 void PepperSnapDaemon::ActionPinToDesktop() {
     Bitmap* cropped = RenderCroppedRegionBitmap();
     if (!cropped) return;
-    int sx = vScreenX + std::min(selRect.left, selRect.right);
-    int sy = vScreenY + std::min(selRect.top, selRect.bottom);
+    int rx = std::max(0, (int)std::min(selRect.left, selRect.right));
+    int ry = std::max(0, (int)std::min(selRect.top, selRect.bottom));
+    int rw = std::max(1, (int)cropped->GetWidth());
+    int rh = std::max(1, (int)cropped->GetHeight());
+    int sx = vScreenX + rx;
+    int sy = vScreenY + ry;
+    bool pinHasCustomQuad = hasCustomQuad;
+    bool pinHasEllipseMask = hasEllipseSelection;
+    PointF pinNormQuad[4];
+    if (pinHasCustomQuad) {
+        for (int i = 0; i < 4; ++i) {
+            pinNormQuad[i].X = std::max(0.0f, std::min(1.0f, (float)(selQuad[i].x - rx) / (float)std::max(1, rw - 1)));
+            pinNormQuad[i].Y = std::max(0.0f, std::min(1.0f, (float)(selQuad[i].y - ry) / (float)std::max(1, rh - 1)));
+        }
+    }
 
     std::wstring savedNote;
     if (alsoSavePinned) {
@@ -8200,16 +8675,28 @@ void PepperSnapDaemon::ActionPinToDesktop() {
     }
 
     CloseRegionSnipOverlay();
-    CreatePinnedWindow(cropped, sx, sy, 1.0f);
+    HWND hPin = CreatePinnedWindow(cropped, sx, sy, 1.0f);
+    if (hPin && (pinHasCustomQuad || pinHasEllipseMask)) {
+        PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
+        if (pData) {
+            pData->hasCustomQuad = pinHasCustomQuad;
+            pData->hasEllipseMask = pinHasEllipseMask;
+            if (pinHasCustomQuad) {
+                for (int i = 0; i < 4; ++i) pData->normQuad[i] = pinNormQuad[i];
+            }
+            FreePinnedWindowCache(pData);
+            RenderPinnedLayeredWindow(hPin, pData);
+        }
+    }
     ShowTrayToast(L"Pinned on top", savedNote + L"Drag to move · Scroll wheel to scale.");
 }
 
 // Unified Options Modal (Save Folder, Default Formats, JPEG Quality Slider, Naming Pattern + Restore Default, Non-Stacking Highlighter)
 struct OptionsDlgState {
     std::wstring folder;
-    ImageFormat regionFmt = ImageFormat::JPEG;
+    ImageFormat regionFmt = ImageFormat::PNG;
     ImageFormat fullFmt = ImageFormat::JPEG;
-    ImageFormat copyFmt = ImageFormat::JPEG;
+    ImageFormat copyFmt = ImageFormat::PNG;
     int jpgQuality = 90;
     std::wstring naming;
     bool autoSaveCopy = true;
@@ -8219,6 +8706,7 @@ struct OptionsDlgState {
     bool keepCursor = false;
     bool autoHideFrames = true;
     bool pinAboveEdit = true;
+    bool keepEditOpen = false;
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 15;
@@ -8266,11 +8754,11 @@ struct OptionsDlgState {
     bool openedAppData = false;
     bool restoredAllDefaults = false;
     int scrollY = 0;
-    int scrollContentHeight = 744;
+    int scrollContentHeight = 772;
     int footerHeight = 56;
     int fixedWinWidth = 580;
-    int fullWinHeight = 860;
-    int savedWinHeight = 860;
+    int fullWinHeight = 888;
+    int savedWinHeight = 888;
     int lastFooterTop = -1;
 
     HWND hViewport = nullptr;
@@ -8295,6 +8783,7 @@ struct OptionsDlgState {
     HWND hKeepCursorChk = nullptr;
     HWND hAutoHideFramesChk = nullptr;
     HWND hPinAboveEditChk = nullptr;
+    HWND hKeepEditOpenChk = nullptr;
     HWND hNonStackingChk = nullptr;
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
@@ -8303,6 +8792,7 @@ struct OptionsDlgState {
     HWND hComboUpdateInterval = nullptr;
     HWND hCheckUpdateNowBtn = nullptr;
     HWND hCustomizeKeysBtn = nullptr;
+    HWND hShortcutsInfoBtn = nullptr;
     HWND hRestoreAllBtn = nullptr;
     HWND hFooterBg = nullptr;
     HWND hAppDataInfo = nullptr;
@@ -8357,6 +8847,8 @@ struct OptionsDlgState {
 #define IDC_OPT_KEEP_CURSOR_CHK  1027
 #define IDC_OPT_AUTOHIDE_FRM_CHK 1028
 #define IDC_OPT_PIN_ABOVE_EDIT_CHK 1029
+#define IDC_OPT_KEEP_EDIT_OPEN_CHK 1030
+#define IDC_OPT_SHORTCUTS_INFO     1031
 
 #define IDC_CK_BTN_BASE          2100
 #define IDC_CK_RESTORE_DEFAULTS  2201
@@ -9069,9 +9561,10 @@ static void ShowNamingSyntaxModal(HWND hParentOptWnd) {
         EnableWindow(hParentOptWnd, FALSE);
     }
 
+    std::wstring syntaxTitle = L"PepperSnap v" + std::wstring(PepperSnapDaemon::APP_VERSION) + L" — naming pattern syntax";
     HWND hDlg = CreateWindowExW(
         dwExStyle, L"PepperSnapNamingSyntaxModal",
-        L"PepperSnap — naming pattern syntax",
+        syntaxTitle.c_str(),
         dwStyle,
         posX, std::max(10, posY), fixedW, winH,
         hParentOptWnd, nullptr, g_Daemon.hInst, &st
@@ -9924,9 +10417,10 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         EnableWindow(hParentOptWnd, FALSE);
     }
 
+    std::wstring ckTitle = L"PepperSnap v" + std::wstring(PepperSnapDaemon::APP_VERSION) + L" — customize keys";
     HWND hDlg = CreateWindowExW(
         dwExStyle, L"PepperSnapCustomizeKeysModal",
-        L"PepperSnap — customize keys",
+        ckTitle.c_str(),
         dwStyle,
         (sw - fixedW) / 2, std::max(10, (sh - initH) / 2), fixedW, initH,
         hParentOptWnd, nullptr, g_Daemon.hInst, &ck
@@ -10184,7 +10678,7 @@ static void UpdateOptionsPreviewLabel(OptionsDlgState* st) {
     WCHAR buf[512] = {0};
     GetWindowTextW(st->hNamingEdit, buf, 511);
     int selFmt = st->hComboRegion ? (int)SendMessageW(st->hComboRegion, CB_GETCURSEL, 0, 0) : (int)st->regionFmt;
-    if (selFmt < 0 || selFmt > 3) selFmt = 0;
+    if (selFmt < 0 || selFmt > 3) selFmt = (int)ImageFormat::PNG;
     std::wstring preview = L"Live preview:  " +
         PepperSnapDaemon::FormatFilenameWithPattern(buf, g_Daemon.captureCounter) +
         PepperSnapDaemon::GetFormatExtension((ImageFormat)selFmt) +
@@ -10260,7 +10754,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             st->hViewport = CreateWindowExW(0, L"PepperSnapOptionsViewport", L"",
                 WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-                0, 0, 552, 744, hWnd, nullptr, g_Daemon.hInst, st);
+                0, 0, 552, 772, hWnd, nullptr, g_Daemon.hInst, st);
             HWND hVp = st->hViewport ? st->hViewport : hWnd;
 
             // Save Folder Location
@@ -10285,29 +10779,29 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 80, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblFormats, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
-            HWND hLblReg = CreateWindowExW(0, L"STATIC", L"Selected area format:",
-                WS_CHILD | WS_VISIBLE, 18, 108, 155, 22, hVp, nullptr, nullptr, nullptr);
-            SendMessageW(hLblReg, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            st->hComboRegion = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 104, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_REGION, nullptr, nullptr);
-            SendMessageW(st->hComboRegion, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            HWND hLblFull = CreateWindowExW(0, L"STATIC", L"Instant fullscreen format:",
-                WS_CHILD | WS_VISIBLE, 18, 140, 155, 22, hVp, nullptr, nullptr, nullptr);
-            SendMessageW(hLblFull, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-            st->hComboFull = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 136, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_FULL, nullptr, nullptr);
-            SendMessageW(st->hComboFull, WM_SETFONT, (WPARAM)hFont, TRUE);
-
             HWND hLblCopy = CreateWindowExW(0, L"STATIC", L"Copy format:",
-                WS_CHILD | WS_VISIBLE, 18, 172, 155, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 108, 155, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblCopy, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hComboCopy = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 168, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_COPY, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 104, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_COPY, nullptr, nullptr);
             SendMessageW(st->hComboCopy, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            HWND hLblReg = CreateWindowExW(0, L"STATIC", L"Custom area format:",
+                WS_CHILD | WS_VISIBLE, 18, 140, 155, 22, hVp, nullptr, nullptr, nullptr);
+            SendMessageW(hLblReg, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            st->hComboRegion = CreateWindowExW(0, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 136, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_REGION, nullptr, nullptr);
+            SendMessageW(st->hComboRegion, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            HWND hLblFull = CreateWindowExW(0, L"STATIC", L"Instant fullscreen format:",
+                WS_CHILD | WS_VISIBLE, 18, 172, 155, 22, hVp, nullptr, nullptr, nullptr);
+            SendMessageW(hLblFull, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            st->hComboFull = CreateWindowExW(0, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 168, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_FULL, nullptr, nullptr);
+            SendMessageW(st->hComboFull, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             const wchar_t* fmtItems[4] = { L"JPEG (.jpg)", L"PNG (.png)", L"WebP (.webp)", L"BMP (.bmp)" };
             for (int i = 0; i < 4; ++i) {
@@ -10353,7 +10847,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 302, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPreviewLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            // Shortcut keys: [Customize keys] button
+            // Shortcut keys: [Customize keys] + [Keyboard shortcuts and info] buttons
             HWND hLblShortcuts = CreateWindowExW(0, L"STATIC",
                 L"Shortcut keys:",
                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 338, 108, 24, hVp, nullptr, nullptr, nullptr);
@@ -10362,6 +10856,10 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             st->hCustomizeKeysBtn = CreateWindowExW(0, L"BUTTON", L"Customize keys",
                 WS_CHILD | WS_VISIBLE, 130, 334, 136, 28, hVp, (HMENU)IDC_OPT_CUSTOMIZE_KEYS, nullptr, nullptr);
             SendMessageW(st->hCustomizeKeysBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            st->hShortcutsInfoBtn = CreateWindowExW(0, L"BUTTON", L"Keyboard shortcuts and info",
+                WS_CHILD | WS_VISIBLE, 274, 334, 210, 28, hVp, (HMENU)IDC_OPT_SHORTCUTS_INFO, nullptr, nullptr);
+            SendMessageW(st->hShortcutsInfoBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Toggles at Bottom of Option Window (below Shortcut keys row):
             // 1. Check for updates (GitHub Releases)
@@ -10398,9 +10896,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hNonStackingChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hNonStackingChk, BM_SETCHECK, st->nonStackingHi ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            // 3. Also save screenshot when copying selected area
+            // 3. Also save screenshot when copying custom area
             st->hAutoSaveChk = CreateWindowExW(0, L"BUTTON",
-                L"Also save screenshot when copying selected area",
+                L"Also save screenshot when copying custom area",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 436, 516, 24, hVp, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoSaveChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoSaveChk, BM_SETCHECK, st->autoSaveCopy ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -10447,28 +10945,35 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hPinAboveEditChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPinAboveEditChk, BM_SETCHECK, st->pinAboveEdit ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            // 10. Enable pen and highlighter smoothing.
+            // 10. Keep edit window open after save and copy
+            st->hKeepEditOpenChk = CreateWindowExW(0, L"BUTTON",
+                L"Keep edit window open after save and copy",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 632, 516, 24, hVp, (HMENU)IDC_OPT_KEEP_EDIT_OPEN_CHK, nullptr, nullptr);
+            SendMessageW(st->hKeepEditOpenChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hKeepEditOpenChk, BM_SETCHECK, st->keepEditOpen ? BST_CHECKED : BST_UNCHECKED, 0);
+
+            // 11. Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 632, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 660, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 664, 224, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 692, 224, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 660, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 688, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
-            // 11. Restore everything to default button (below smoothing strength, NOT in row with Save options)
+            // 12. Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 700, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 728, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->scrollControls.clear();
@@ -10484,24 +10989,24 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             // Permanent pinned footer bar: clickable %appdata%\PepperSnap persistence link + Save options + Cancel
             st->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 744, 552, 56, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 772, 552, 56, hWnd, nullptr, nullptr, nullptr);
 
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 762, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 790, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
             WNDPROC origStaticProc = (WNDPROC)SetWindowLongPtrW(st->hAppDataInfo, GWLP_WNDPROC, (LONG_PTR)AppDataLinkStaticWndProc);
             SetPropW(st->hAppDataInfo, L"PepperSnapOrigStaticProc", (HANDLE)origStaticProc);
 
             st->hOkBtn = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 755, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 783, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(st->hOkBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 755, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 783, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            st->scrollContentHeight = 744;
+            st->scrollContentHeight = 772;
             st->footerHeight = 56;
             st->lastFooterTop = -1;
             UpdateOptionsPreviewLabel(st);
@@ -10673,6 +11178,10 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 ShowCustomizeKeysModal(hWnd, st);
                 return 0;
             }
+            if (id == IDC_OPT_SHORTCUTS_INFO) {
+                g_Daemon.ShowShortcutsModal();
+                return 0;
+            }
             if (id == IDC_OPT_RESTORE_ALL_DEF) {
                 int ans = MessageBoxW(
                     hWnd,
@@ -10687,9 +11196,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->folder = PepperSnapDaemon::GetDefaultDesktopFolder();
                 SetWindowTextW(st->hFolderEdit, st->folder.c_str());
 
-                st->regionFmt = ImageFormat::JPEG;
+                st->regionFmt = ImageFormat::PNG;
                 st->fullFmt   = ImageFormat::JPEG;
-                st->copyFmt   = ImageFormat::JPEG;
+                st->copyFmt   = ImageFormat::PNG;
                 SendMessageW(st->hComboRegion, CB_SETCURSEL, (WPARAM)st->regionFmt, 0);
                 SendMessageW(st->hComboFull,   CB_SETCURSEL, (WPARAM)st->fullFmt, 0);
                 SendMessageW(st->hComboCopy,   CB_SETCURSEL, (WPARAM)st->copyFmt, 0);
@@ -10755,6 +11264,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->keepCursor     = false;
                 st->autoHideFrames = true;
                 st->pinAboveEdit   = true;
+                st->keepEditOpen   = false;
                 SendMessageW(st->hNonStackingChk,    BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hAutoSaveChk,       BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hCopyFullChk,       BM_SETCHECK, BST_CHECKED, 0);
@@ -10763,6 +11273,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 SendMessageW(st->hKeepCursorChk,     BM_SETCHECK, BST_UNCHECKED, 0);
                 SendMessageW(st->hAutoHideFramesChk, BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hPinAboveEditChk,   BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hKeepEditOpenChk,   BM_SETCHECK, BST_UNCHECKED, 0);
 
                 st->penSmoothEnabled = true;
                 st->penSmoothStrength = 15;
@@ -10887,6 +11398,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->keepCursor     = (SendMessageW(st->hKeepCursorChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoHideFrames = (SendMessageW(st->hAutoHideFramesChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->pinAboveEdit   = (SendMessageW(st->hPinAboveEditChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->keepEditOpen   = (SendMessageW(st->hKeepEditOpenChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 int uSel = (int)SendMessageW(st->hComboUpdateInterval, CB_GETCURSEL, 0, 0);
                 if (uSel >= 0 && uSel <= 4) st->updateInterval = (UpdateCheckInterval)uSel;
@@ -10959,6 +11471,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.keepCursor     = keepCursorOnScreenshot;
     st.autoHideFrames = autoHideFrameList;
     st.pinAboveEdit   = pinnedImageAboveEdit;
+    st.keepEditOpen   = keepEditWindowOpen;
     st.nonStackingHi  = nonStackingHighlighter;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
@@ -11006,7 +11519,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = WS_EX_TOPMOST;
-    const int totalOptClientH = 744 + 56;
+    const int totalOptClientH = 772 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
@@ -11093,6 +11606,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         keepCursorOnScreenshot = st.keepCursor;
         autoHideFrameList = st.autoHideFrames;
         pinnedImageAboveEdit = st.pinAboveEdit;
+        keepEditWindowOpen = st.keepEditOpen;
         nonStackingHighlighter = st.nonStackingHi;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
@@ -11141,6 +11655,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
             hidePinnedOutline = false;
             smoothPinnedImage = false;
             pinnedImageAboveEdit = true;
+            keepEditWindowOpen = false;
             activeColor = Color(255, 239, 68, 68);
             activeStroke = 4.0f;
         }
@@ -11816,25 +12331,26 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addSection(L"Global capture hotkeys & system integration");
     addRow(FormatLabelWithShortcut(L"Custom area", hkRegionSnip),                       L"Start custom area snip & annotate (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Instant fullscreen", hkFullSnap),                  L"Capture & save all monitors immediately (customizable in Customize keys)");
-    addRow(FormatLabelWithShortcut(L"Instant save previous custom area", hkPrevRegion), L"Capture & save previous custom area (customizable in Customize keys)");
+    addRow(FormatLabelWithShortcut(L"Instant save previous custom area", hkPrevRegion), L"Capture & save previous custom area — preserves rectangle, irregular quad / triangle, or circle / ellipse mask (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Pin the image in clipboard on top", hkPinClipboard), L"Pin the image currently in the clipboard directly on top as a floating window (also in tray menu; customizable in Customize keys)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
-    addRow(L"Right-click system tray icon",  L"Open tray menu (Open image to edit / pin (supports multi-select), Pin the image in clipboard on top, Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, etc.)");
-    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit window\" is enabled in Options, pinned images overlay the edit window and any pinned image in the selected area is included when saving/copying) or \"Pin on top\" (single or multi-selected images)");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Pin the image in clipboard on top, Open image to edit / pin (supports multi-select), Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, Keyboard shortcuts and info, etc.)");
+    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image on a checkerboard transparency background; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit window\" is enabled in Options, pinned images overlay the edit window and any pinned image in the custom area is included when saving/copying) or \"Pin on top\" (single or multi-selected images)");
     addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
     addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
     addActionRow(DBTN_ACT_FRAME_TOGGLE,     false, FormatLabelWithShortcut(L"Hide / Show frames (GIF/WebP)",  hkFrameToggleStrip), L"Collapse or expand the bottom frame list in \"Edit with PepperSnap\" (or click the Hide / Show frames dropdown button)");
     addRow(L"Resize this info window",       L"Drag any window edge or corner to adjust width and height (text wraps & size persists)");
 
     addSection(L"Options window & sub-option windows");
-    addRow(L"Save screenshot to... /Save format", L"Choose default save folder (Browse... or Use desktop), independent formats for Selected area, Instant fullscreen, and Copy format (JPEG, PNG, WebP, BMP), and JPEG quality slider (10%–100%)");
+    addRow(L"Save screenshot to... / Save format", L"Choose default save folder (Browse... or Use desktop), independent formats ordered as Copy format (default: PNG), Custom area format (default: PNG), and Instant fullscreen format (default: JPEG) across JPEG, PNG, WebP, and BMP, plus JPEG quality slider (10%–100%)");
     addRow(L"Naming pattern & (\x24D8) syntax window", L"Customize screenshot filename pattern with live preview, Restore default, or click \x24D8 to open the Naming pattern syntax sub-option window ({YYYY}, {MMMM}, {DDDD}, {h}, {ap}, {count}, etc. — click any row or select text to copy)");
-    addRow(L"Shortcut keys \x2192 Customize keys", L"Open the Customize keys sub-option window to rebind any global, custom area tool/action, multi-frame editor, or pinned image shortcut (Esc to cancel, Delete to leave it empty, PrintScreen reserved, or Restore defaults)");
+    addRow(L"Shortcut keys \x2192 Customize keys & info", L"Click Customize keys to open the sub-option window and rebind any global, custom area tool/action, multi-frame editor, or pinned image shortcut (Esc to cancel, Delete to leave it empty, PrintScreen reserved, or Restore defaults), or click Keyboard shortcuts and info");
     addRow(L"Automatically check for updates", L"Toggle automatic GitHub release checks (Every day, 3-day, Every week, 2-weekly, Every month) or click Check now");
     addRow(L"Non-stacking highlighter",      L"Prevent overlapping Stabilo highlighter strokes from darkening when drawing over existing highlights (on by default)");
-    addRow(L"Auto-save & auto-copy toggles", L"Toggle \"Also save screenshot when copying selected area\", \"Also copy instant fullscreen\", \"Also save pinned screenshot\", and \"Also save copied text\" (OCR .txt)");
+    addRow(L"Auto-save & auto-copy toggles", L"Toggle \"Also save screenshot when copying custom area\", \"Also copy instant fullscreen\", \"Also save pinned screenshot\", and \"Also save copied text\" (OCR .txt)");
     addRow(L"Keep cursor & Auto-hide frames", L"Toggle \"Keep cursor on screenshot\" (captures mouse cursor in screenshots) and \"Auto-hide frame list\" (auto-collapses GIF/WebP frame list when focusing custom area/toolbar)");
-    addRow(L"Put pinned image above edit window", L"Checkbox in Options (on by default, above pen smoothing) that keeps pinned images above the \"Edit with PepperSnap\" window so any pinned image inside the selected area is included when saving or copying");
+    addRow(L"Put pinned image above edit window", L"Checkbox in Options (on by default) that keeps pinned images above the \"Edit with PepperSnap\" window so any pinned image inside the custom area is included when saving or copying");
+    addRow(L"Keep edit window open after save and copy", L"Checkbox in Options that keeps the \"Edit with PepperSnap\" window open after Quick save, Save as, or Copy to clipboard instead of closing");
     addRow(L"Enable pen & highlighter smoothing", L"Toggle freehand stroke smoothing and adjust smoothing strength slider (5%–100%: weak, balanced, strong, ultra smooth)");
     addRow(L"Restore everything to default", L"Reset all Options settings, toggles, naming pattern, and shortcut keys back to factory defaults (with confirmation)");
     addRow(L"\x24D8 settings.ini in %appdata%\\PepperSnap", L"Click the link in the Options footer to open the %appdata%\\PepperSnap folder in Explorer where settings.ini is persisted");
@@ -11845,13 +12361,16 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Arrow keys (before or while dragging)",     L"Jump 1 pixel up, down, left, or right before selecting or while holding click to drag/resize selection");
     addRow(L"Hold Ctrl then click (before selecting)",   L"Auto-detect, highlight & select any window, notification pop-up, or sidebar");
     addRow(L"Hold Ctrl (after selecting)",   L"Temporarily switch active tool to Select mode while Ctrl is held");
-    addRow(L"Hold Shift (after anchor point placed)", L"Constrain selection or resize to 1:1 square ratio after the anchor point is placed in custom size mode (releasing Shift returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
+    addRow(L"Hold Alt + drag (when selecting)",          L"Create a circle / ellipse custom area instead of a rectangle (saved, copied & pinned with anti-aliased transparent corners)");
+    addRow(L"Hold Alt + Shift + drag (when selecting)",  L"Create a 1:1 circle custom area");
+    addRow(L"Hold Shift (after anchor point placed)", L"Constrain selection or resize to 1:1 square ratio (or 1:1 circle when holding Alt) after the anchor point is placed in custom size mode (releasing Shift returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"Left-click + Right-click",      L"Constrain selection or resize to 1:1 square ratio (releasing right-click returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"1 + Left-click",                L"Constrain selection or resize to 16:9 ratio (releasing 1 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"2 + Left-click",                L"Constrain selection or resize to 9:16 ratio (releasing 2 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"3 + Left-click",                L"Constrain selection or resize to 1:2 ratio (releasing 3 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"4 + Left-click",                L"Constrain selection or resize to 2:1 ratio (releasing 4 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
-    addRow(L"Drag 8 resize handles",         L"Resize existing selected area with a 1:1 square magnification window at the active resize point");
+    addRow(L"Drag 8 resize handles",         L"Resize existing custom area (rectangle, irregular quad / triangle bounding box, or circle / ellipse) with a 1:1 square magnification window at the active resize point");
+    addRow(L"Ctrl + Left-click corner point", L"Move any corner point individually to reshape the capture rectangle into an irregular quad, or snap a corner point onto another corner point to create a triangle without distorting the image");
     addRow(L"Click [W × H px | ratio] indicator", L"Dynamic pill permanently shows [W×H px | ratio] (whole-integer ratio) — click W×H px to type custom W×H, width only (200 or 200x), or height only (xx200 or x200); after placing a custom area, click ratio to type a custom ratio (e.g. 16:9, ratio only like 4 or 4:, or height ratio like ::3 or :3), which turns the ratio indicator red (#EF4444) and locks the aspect ratio until you click the Reset ratio trash icon on the right side");
     addActionRow(DBTN_ACT_CLEAR, false, L"Reset ratio (beside custom ratio)", L"Appears on the right side of the ratio indicator ([W×H px | ratio [trash icon]]) after inputting a custom ratio — click to reset (unlink) the custom ratio while keeping the current custom area size");
 
@@ -11881,11 +12400,11 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_DRAG_HUD, false,  L"Drag toolbar handle",                                                     L"Drag 4-way arrow button to move toolbar (resets when selection moves)");
     addActionRow(DBTN_ACT_UNDO,     false,  FormatLabelWithShortcut(L"Undo",                      hkActUndo),           L"Undo last annotation action");
     addActionRow(DBTN_ACT_REDO,     false,  FormatLabelWithShortcut(L"Redo",                      hkActRedo),           L"Redo undone annotation action");
-    addActionRow(DBTN_ACT_CLEAR,    false,  FormatLabelWithShortcut(L"Clear all annotations",     hkActClear),          L"Remove all annotations from current selection");
+    addActionRow(DBTN_ACT_CLEAR,    false,  FormatLabelWithShortcut(L"Clear all annotations",     hkActClear),          L"Remove all annotations from current custom area");
     addActionRow(DBTN_ACT_OPTIONS,  false,  FormatLabelWithShortcut(L"Options",                   hkActOptions),        L"Open PepperSnap Options window");
-    addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",                hkActPin),            L"Pin selected capture as a floating topmost desktop window");
-    addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in selection via Windows OCR & copy to clipboard");
-    addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for selected region");
+    addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",                hkActPin),            L"Pin custom area capture as a floating topmost desktop window (preserves rectangle, irregular quad / triangle, or circle / ellipse transparency)");
+    addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in custom area via Windows OCR & copy to clipboard");
+    addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for custom area");
     addActionRow(DBTN_ACT_SAVE,     false,  FormatLabelWithShortcut(L"Quick save",                hkActSave),           L"Save capture directly to default folder & close");
     addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close");
     addActionRow(DBTN_ACT_CLOSE,    false,  L"Close / Select mode (Esc)",                                               L"Switch active drawing tool to Select mode, or exit custom area");
@@ -11894,11 +12413,11 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"You can pin multiple image at once", L"Pin multiple captures, multi-select images in \"Open image to pin on top...\", use \"Pin the image in clipboard on top\" (" + FormatHotkeyString(hkPinClipboard) + L" or tray menu), or multi-select images in Explorer and click \"Pin on top\" (auto-tiled so they don't overlap, fit-to-screen capped at 40% of screen size, and multi-selected by default so you can immediately move them all together)");
     addRow(L"Hold Shift + any action / key / button", L"Apply any pinned image button, mouse action, size/percentage input, or shortcut key (including Shift + Save As) to all pinned images at once (e.g. Shift + Copy copies all pinned images to clipboard; Shift + double right-click closes all)");
     addRow(L"Animated GIF & WebP support",   L"Pinned .gif and animated .webp images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
-    addRow(L"Ctrl + Click / Ctrl + Shift + Click", L"Pause or play pinned animation on current frame (only shown & active on animated .gif / multi-frame animated .webp; hold Ctrl + Shift + click to pause/play all pinned animations)");
+    addRow(L"Ctrl + Left-click pinned image", L"Select or deselect pinned images for multi-selection (shows a blue outline on selected pinned images; pinning multiple images at once multi-selects them by default; drag any selected pinned image to move all selected pinned images together with group screen-edge snapping; left-click without Ctrl to clear selection)");
+    addRow(L"Alt + Click / Alt + Shift + Click", L"Pause or play pinned animation on current frame (only shown & active on animated .gif / multi-frame animated .webp; hold Alt + Shift + click to pause/play all pinned animations)");
     addRow(L"Click W × H px or % indicator", L"Second toolbar row shows editable [W×H px | %] — click to type W×H, width only (200 or 200x), height only (xx200 or x200), or zoom % (keeps aspect ratio; Shift + Enter applies to all pinned images)");
     addActionRow(DBTN_ACT_SCALE_RESET_100, false, L"Set to 100% (beside % indicator)", L"On the right side of the % scale indicator ([W×H px | % [reset icon]]) — click to set scale to 100% (hold Shift + click to set all pinned images to 100%)");
-    addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", \"Middle-click to reset size\", \"Ctrl + middle-click to reset position\", \"Alt + click to multi-select (drag together)\", \"Ctrl + Click\" (on animations only), and Shift multi-pin hint");
-    addRow(L"Alt + Left-click pinned image", L"Select or deselect pinned images for multi-selection (shows a blue outline on selected pinned images; pinning multiple images at once multi-selects them by default; drag any selected pinned image to move all selected pinned images together with group screen-edge snapping; left-click without Alt to clear selection)");
+    addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", \"Middle-click to reset size\", \"Ctrl + middle-click to reset position\", \"Ctrl + click to multi-select (drag together)\", \"Alt + click to pause/play\" (on animations only), and Shift multi-pin hint");
     addRow(L"Drag pinned image",             L"Move floating window (or all selected pinned images together; temporarily hides toolbar while dragging, snaps to screen edges; image can overflow screen)");
     addRow(L"Hold Shift + drag",             L"Temporarily disable screen-edge snapping while moving");
     addRow(L"Double-click pinned image",     L"Hide or show the pin-on-top toolbar (hold Shift to apply to all pinned images; status persists; default: shown)");
@@ -12016,9 +12535,14 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         ? hOptionsWnd
         : hTrayWnd;
 
+    std::wstring scWinTitle = L"PepperSnap v" + std::wstring(APP_VERSION) + L" — keyboard shortcuts and info";
+    if (hOptionsWnd && IsWindow(hOptionsWnd)) {
+        EnableWindow(hOptionsWnd, FALSE);
+    }
+
     HWND hDlg = CreateWindowExW(
         dwExStyle, L"PepperSnapShortcutsModal",
-        L"PepperSnap — keyboard shortcuts and info",
+        scWinTitle.c_str(),
         dwStyle,
         std::max(10, (sw - initW) / 2), std::max(10, (sh - initH) / 2), initW, initH, hOwner, nullptr, hInst, &params
     );
@@ -12040,6 +12564,12 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         DispatchMessageW(&msg);
     }
     hShortcutsWnd = nullptr;
+    if (hOptionsWnd && IsWindow(hOptionsWnd)) {
+        EnableWindow(hOptionsWnd, TRUE);
+        BringWindowToTop(hOptionsWnd);
+        SetForegroundWindow(hOptionsWnd);
+        SetActiveWindow(hOptionsWnd);
+    }
     bool sizeChanged = false;
     if (params.savedWinWidth >= params.minWinWidth && params.savedWinWidth != shortcutsWindowWidth) {
         shortcutsWindowWidth = params.savedWinWidth;
@@ -12104,7 +12634,14 @@ void PepperSnapDaemon::ActionCopyAndClose() {
         }
     }
     delete bmp;
-    CloseRegionSnipOverlay();
+    if (IsEditingOpenedImage() && keepEditWindowOpen) {
+        SaveSettings();
+        if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+            InvalidateRect(hOverlayWnd, nullptr, FALSE);
+        }
+    } else {
+        CloseRegionSnipOverlay();
+    }
     ShowTrayToast(
         L"Copied to clipboard (" + std::to_wstring(w) + L"×" + std::to_wstring(h) + L" px)",
         L"Ready to paste (Ctrl+V)." + savedNote
@@ -12170,7 +12707,14 @@ void PepperSnapDaemon::ActionQuickSaveAndClose() {
         );
     }
     delete bmp;
-    CloseRegionSnipOverlay();
+    if (IsEditingOpenedImage() && keepEditWindowOpen) {
+        SaveSettings();
+        if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+            InvalidateRect(hOverlayWnd, nullptr, FALSE);
+        }
+    } else {
+        CloseRegionSnipOverlay();
+    }
 }
 
 void PepperSnapDaemon::ActionSaveAsAndClose() {
@@ -12210,7 +12754,16 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
             ShowTrayToast(L"Saved capture", std::wstring(szFile) + L"\n(click to open in Explorer)");
         }
         delete bmp;
-        CloseRegionSnipOverlay();
+        if (IsEditingOpenedImage() && keepEditWindowOpen) {
+            SaveSettings();
+            if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+                SetForegroundWindow(hOverlayWnd);
+                SetFocus(hOverlayWnd);
+                InvalidateRect(hOverlayWnd, nullptr, FALSE);
+            }
+        } else {
+            CloseRegionSnipOverlay();
+        }
     } else {
         delete bmp;
         if (hOverlayWnd && IsWindow(hOverlayWnd)) {
@@ -12527,7 +13080,7 @@ void PepperSnapDaemon::ActionOcrAndClose() {
     if (!ok || recognized.empty()) {
         ShowTrayToast(
             L"No text detected",
-            L"Windows OCR did not find any readable text in the selected area."
+            L"Windows OCR did not find any readable text in the custom area."
         );
         return;
     }
@@ -12619,9 +13172,24 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
         int sw0 = std::min(W - sx0, (int)std::abs(g_Daemon.selRect.right - g_Daemon.selRect.left));
         int sh0 = std::min(H - sy0, (int)std::abs(g_Daemon.selRect.bottom - g_Daemon.selRect.top));
         if (sw0 >= 1 && sh0 >= 1) {
+            POINT polyPtsRgn[4];
+            int polyCountRgn = g_Daemon.hasCustomQuad ? g_Daemon.GetSelectionPolygonPoints(polyPtsRgn) : 0;
+            HRGN hShapeRgn = nullptr;
+            if (g_Daemon.hasEllipseSelection) {
+                hShapeRgn = CreateEllipticRgn(sx0, sy0, sx0 + sw0, sy0 + sh0);
+            } else if (g_Daemon.hasCustomQuad && polyCountRgn >= 3) {
+                hShapeRgn = CreatePolygonRgn(polyPtsRgn, polyCountRgn, WINDING);
+            }
+            if (hShapeRgn) {
+                SelectClipRgn(memDC, hShapeRgn);
+            }
             BitBlt(memDC, sx0, sy0, sw0, sh0, g_Daemon.hBrightDesktopDC, sx0, sy0, SRCCOPY);
+            if (hShapeRgn) {
+                SelectClipRgn(memDC, nullptr);
+            }
             if (g_Daemon.backBufferPixels) {
                 GdiFlush();
+                bool appliedAnyMosaic = false;
                 auto applyMosaicClipped = [&](const Annotation& ma) {
                     int px = (int)std::min(ma.startPt.x, ma.endPt.x);
                     int py = (int)std::min(ma.startPt.y, ma.endPt.y);
@@ -12635,6 +13203,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                         PepperSnapDaemon::GetMosaicBlockSize(ma.strokeWidth),
                         ma.tool == OverlayTool::MosaicCircle
                     );
+                    appliedAnyMosaic = true;
                 };
                 for (const auto& ann : g_Daemon.annotations) {
                     if (ann.tool == OverlayTool::MosaicSquare || ann.tool == OverlayTool::MosaicCircle) {
@@ -12645,6 +13214,19 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                     (g_Daemon.draftAnn.tool == OverlayTool::MosaicSquare || g_Daemon.draftAnn.tool == OverlayTool::MosaicCircle)) {
                     applyMosaicClipped(g_Daemon.draftAnn);
                 }
+                if (appliedAnyMosaic && hShapeRgn && g_Daemon.hDimmedDesktopDC) {
+                    HRGN hBoxRgn = CreateRectRgn(sx0, sy0, sx0 + sw0, sy0 + sh0);
+                    if (hBoxRgn) {
+                        CombineRgn(hBoxRgn, hBoxRgn, hShapeRgn, RGN_DIFF);
+                        SelectClipRgn(memDC, hBoxRgn);
+                        BitBlt(memDC, sx0, sy0, sw0, sh0, g_Daemon.hDimmedDesktopDC, sx0, sy0, SRCCOPY);
+                        SelectClipRgn(memDC, nullptr);
+                        DeleteObject(hBoxRgn);
+                    }
+                }
+            }
+            if (hShapeRgn) {
+                DeleteObject(hShapeRgn);
             }
         }
     }
@@ -12676,8 +13258,28 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             int sh = std::min(H - sy, (int)std::abs(g_Daemon.selRect.bottom - g_Daemon.selRect.top));
 
             if (sw >= 1 && sh >= 1 && g_Daemon.frozenDesktopBmp) {
-                // Clip Highlighter & vector annotations to selection region in a single Rect clip
-                g.SetClip(Rect(sx, sy, sw, sh), CombineModeReplace);
+                // Clip Highlighter & vector annotations to selection region (ellipse, polygon/triangle, or rectangle)
+                if (g_Daemon.hasEllipseSelection) {
+                    GraphicsPath ellipseClipPath(FillModeWinding);
+                    ellipseClipPath.AddEllipse((REAL)sx, (REAL)sy, (REAL)sw, (REAL)sh);
+                    g.SetClip(&ellipseClipPath, CombineModeReplace);
+                } else if (g_Daemon.hasCustomQuad) {
+                    POINT polyPtsClip[4];
+                    int polyCountClip = g_Daemon.GetSelectionPolygonPoints(polyPtsClip);
+                    if (polyCountClip >= 3) {
+                        PointF quadPtsF[4];
+                        for (int i = 0; i < polyCountClip; ++i) {
+                            quadPtsF[i] = PointF((REAL)polyPtsClip[i].x, (REAL)polyPtsClip[i].y);
+                        }
+                        GraphicsPath polyClipPath(FillModeWinding);
+                        polyClipPath.AddPolygon(quadPtsF, polyCountClip);
+                        g.SetClip(&polyClipPath, CombineModeReplace);
+                    } else {
+                        g.SetClip(Rect(sx, sy, sw, sh), CombineModeReplace);
+                    }
+                } else {
+                    g.SetClip(Rect(sx, sy, sw, sh), CombineModeReplace);
+                }
                 const Annotation* draftHi = (g_Daemon.dragMode == DragMode::DrawingAnnotation && g_Daemon.draftAnn.tool == OverlayTool::Highlighter)
                     ? &g_Daemon.draftAnn
                     : nullptr;
@@ -12768,25 +13370,65 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             }
             g.ResetClip();
 
-            // Selection Frame + 8 Resize Handles (Clamped to screen boundaries so border hits screen sides cleanly)
+            // Selection Frame + 8 Resize Handles (Supports circles/ellipses, rectangles, irregular quadrilaterals, and snapped triangles)
             Pen selBorder(Color(255, 239, 68, 68), 1.8f);
-            selBorder.SetAlignment(PenAlignmentInset);
-            int drawX = std::max(0, sx);
-            int drawY = std::max(0, sy);
-            int drawR = std::min(W - 1, sx + sw);
-            int drawB = std::min(H - 1, sy + sh);
-            g.DrawRectangle(&selBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
+            if (g_Daemon.hasEllipseSelection) {
+                int drawX = std::max(0, sx);
+                int drawY = std::max(0, sy);
+                int drawR = std::min(W - 1, sx + sw);
+                int drawB = std::min(H - 1, sy + sh);
+                g.DrawEllipse(&selBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
+            } else if (g_Daemon.hasCustomQuad) {
+                selBorder.SetLineJoin(LineJoinRound);
+                POINT polyPtsDraw[4];
+                int polyCountDraw = g_Daemon.GetSelectionPolygonPoints(polyPtsDraw);
+                if (polyCountDraw >= 3) {
+                    PointF borderPts[4];
+                    for (int i = 0; i < polyCountDraw; ++i) {
+                        borderPts[i] = PointF(
+                            (REAL)std::max(0, std::min(W - 1, (int)polyPtsDraw[i].x)),
+                            (REAL)std::max(0, std::min(H - 1, (int)polyPtsDraw[i].y))
+                        );
+                    }
+                    g.DrawPolygon(&selBorder, borderPts, polyCountDraw);
+                }
+            } else {
+                selBorder.SetAlignment(PenAlignmentInset);
+                int drawX = std::max(0, sx);
+                int drawY = std::max(0, sy);
+                int drawR = std::min(W - 1, sx + sw);
+                int drawB = std::min(H - 1, sy + sh);
+                g.DrawRectangle(&selBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
+            }
 
-            int xm = sx + sw / 2, ym = sy + sh / 2;
-            POINT handles[8] = {
-                {sx, sy}, {xm, sy}, {sx + sw, sy},
-                {sx + sw, ym}, {sx + sw, sy + sh}, {xm, sy + sh},
-                {sx, sy + sh}, {sx, ym}
-            };
+            POINT handles[8];
+            g_Daemon.GetSelectionHandlePoints(handles);
             SolidBrush handleFill(Color(255, 255, 255, 255));
+            SolidBrush snappedCornerFill(Color(255, 254, 240, 138));
             Pen handleOutline(Color(255, 239, 68, 68), 1.5f);
-            for (const auto& pt : handles) {
-                g.FillRectangle(&handleFill, pt.x - 4, pt.y - 4, 8, 8);
+            for (int hi = 0; hi < 8; ++hi) {
+                const auto& pt = handles[hi];
+                bool alreadyDrawn = false;
+                for (int prev = 0; prev < hi; ++prev) {
+                    if (handles[prev].x == pt.x && handles[prev].y == pt.y) {
+                        alreadyDrawn = true;
+                        break;
+                    }
+                }
+                if (alreadyDrawn) continue;
+                bool isStackedCorner = false;
+                if ((hi % 2) == 0 && g_Daemon.hasCustomQuad) {
+                    int cIdx = hi / 2;
+                    for (int other = 0; other < 4; ++other) {
+                        if (other != cIdx &&
+                            g_Daemon.selQuad[other].x == pt.x &&
+                            g_Daemon.selQuad[other].y == pt.y) {
+                            isStackedCorner = true;
+                            break;
+                        }
+                    }
+                }
+                g.FillRectangle((isStackedCorner && g_Daemon.isDraggingSingleCorner) ? &snappedCornerFill : &handleFill, pt.x - 4, pt.y - 4, 8, 8);
                 g.DrawRectangle(&handleOutline, pt.x - 4, pt.y - 4, 8, 8);
             }
 
@@ -13060,6 +13702,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             Pen crossPen(Color(150, 239, 68, 68), 1.0f);
             crossPen.SetDashStyle(DashStyleDash);
             bool shiftHeldCross = (g_Daemon.dragMode == DragMode::None || g_Daemon.pendingShiftColorPick) &&
+                                  !PepperSnapDaemon::IsAltModifierHeld() &&
                                   (((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
                                    ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
                                    ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
@@ -13107,8 +13750,9 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
 
         const wchar_t* hintRow1 = L"Hold Shift then click to pick color";
         const wchar_t* hintRow2 = L"Hold Ctrl then click to select window";
-        const wchar_t* hintRow3 = L"Press Esc to exit";
-        RectF bHex, b1, b2, b3;
+        const wchar_t* hintRow3 = L"Hold Alt + drag for circle area";
+        const wchar_t* hintRow4 = L"Press Esc to exit";
+        RectF bHex, b1, b2, b3, b4;
         int imgW = 110;
         int imgH = 110;
         int loupeW = imgW + 12;
@@ -13118,12 +13762,13 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             g.MeasureString(hintRow1, -1, &smallFont, PointF(0.0f, 0.0f), &b1);
             g.MeasureString(hintRow2, -1, &smallFont, PointF(0.0f, 0.0f), &b2);
             g.MeasureString(hintRow3, -1, &smallFont, PointF(0.0f, 0.0f), &b3);
-            int maxHintW = (int)std::ceil(std::max(b1.Width, std::max(b2.Width, b3.Width))) + 4;
+            g.MeasureString(hintRow4, -1, &smallFont, PointF(0.0f, 0.0f), &b4);
+            int maxHintW = (int)std::ceil(std::max(std::max(b1.Width, b2.Width), std::max(b3.Width, b4.Width))) + 4;
             int minHexRowW = (int)std::ceil(bHex.Width) + 44;
             imgW = std::max(120, ((std::max(maxHintW, minHexRowW) + 2) + 1) & ~1);
             imgH = 90;
             loupeW = imgW + 12;
-            loupeH = 170;
+            loupeH = 186;
         }
 
         int lx = (mx + 24 + loupeW < W) ? (mx + 24) : (mx - loupeW - 24);
@@ -13144,7 +13789,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                                 ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
             bool overrideGridSnap = (!g_Daemon.hasSelection &&
                                      (g_Daemon.dragMode == DragMode::None || g_Daemon.pendingShiftColorPick) &&
-                                     shiftHeldNow && !ctrlHeldNow);
+                                     shiftHeldNow && !ctrlHeldNow && !PepperSnapDaemon::IsAltModifierHeld());
             int mag = g_Daemon.hasSelection ? 5 : std::max(1, std::min(210, g_Daemon.loupeMagnification));
             double scaleX = 1.0 / (double)mag;
             double scaleY = 1.0 / (double)mag;
@@ -13224,6 +13869,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 g.DrawString(hintRow1, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 118)), &mutedBrush);
                 g.DrawString(hintRow2, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 134)), &mutedBrush);
                 g.DrawString(hintRow3, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 150)), &mutedBrush);
+                g.DrawString(hintRow4, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 166)), &mutedBrush);
             }
         }
         g.DrawRectangle(&loupeBorder, lx, ly, loupeW, loupeH);
@@ -13232,6 +13878,55 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
     // Render Multi-Frame GIF / WebP Selector Strip ON TOP of custom area and its toolbar!
     if (g_Daemon.HasOverlayMultiFrames()) {
         g_Daemon.RenderOverlayFrameStrip(g, W, H);
+    }
+
+    // Render Pop-Up Info when hovering selected custom area (similar to pinned image pop-up info)
+    if (g_Daemon.showingCustomAreaHoverTip && g_Daemon.IsHoveringSelectedCustomArea(g_Daemon.mousePt)) {
+        const wchar_t* tipText = L"Ctrl + click to drag corner point individually";
+        Font tipFont(&ff, 11.5f, FontStyleBold, UnitPixel);
+        RectF measured;
+        g.MeasureString(tipText, -1, &tipFont, PointF(0.0f, 0.0f), &measured);
+
+        int bw = (int)std::ceil(measured.Width) + 18;
+        int bh = 8 + 18;
+        int tailH = 7;
+        int totalW = bw + 4;
+        int totalH = bh + tailH + 4;
+
+        POINT ptCur = g_Daemon.customAreaHoverTipPt;
+        bool placeBelow = (ptCur.y + 18 + totalH <= H - 6);
+        int winX = std::max(6, std::min(W - totalW - 6, (int)ptCur.x - totalW / 2));
+        int winY = placeBelow ? (ptCur.y + 18) : (ptCur.y - totalH - 8);
+        float localMidX = (float)std::max(10, std::min(totalW - 10, (int)ptCur.x - winX));
+
+        float rx = (float)winX + 2.0f;
+        float ry = (float)winY + (placeBelow ? (float)tailH : 2.0f);
+        float rw = (float)bw;
+        float rh = (float)bh;
+
+        PointF tail[3];
+        if (placeBelow) {
+            tail[0] = PointF((float)winX + localMidX, (float)winY + 1.0f);
+            tail[1] = PointF((float)winX + localMidX - 5.5f, ry + 1.0f);
+            tail[2] = PointF((float)winX + localMidX + 5.5f, ry + 1.0f);
+        } else {
+            tail[0] = PointF((float)winX + localMidX, ry + rh + (float)tailH - 1.0f);
+            tail[1] = PointF((float)winX + localMidX - 5.5f, ry + rh - 1.0f);
+            tail[2] = PointF((float)winX + localMidX + 5.5f, ry + rh - 1.0f);
+        }
+
+        SolidBrush bubbleBg(Color(248, 15, 23, 42));
+        Pen bubbleBorder(Color(255, 239, 68, 68), 1.4f);
+        g.FillPolygon(&bubbleBg, tail, 3);
+        g.FillRectangle(&bubbleBg, rx, ry, rw, rh);
+        g.DrawRectangle(&bubbleBorder, rx, ry, rw, rh);
+
+        StringFormat sf;
+        sf.SetAlignment(StringAlignmentCenter);
+        sf.SetLineAlignment(StringAlignmentCenter);
+        SolidBrush textBr(Color(255, 248, 250, 252));
+        RectF lineRc(rx, ry + 4.0f, rw, 18.0f);
+        g.DrawString(tipText, -1, &tipFont, lineRc, &sf, &textBr);
     }
     } // Graphics g(memDC) scope ends and flushes before BitBlt to screen
 
@@ -13420,6 +14115,26 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     SetTimer(hWnd, 3, (UINT)delayMs, nullptr);
                     InvalidateRect(hWnd, nullptr, FALSE);
                 }
+            } else if (wParam == 4) {
+                KillTimer(hWnd, 4);
+                if ((!g_Daemon.hOptionsWnd || !IsWindow(g_Daemon.hOptionsWnd)) &&
+                    (!g_Daemon.hCustomizeKeysWnd || !IsWindow(g_Daemon.hCustomizeKeysWnd)) &&
+                    (!g_Daemon.hNamingSyntaxWnd || !IsWindow(g_Daemon.hNamingSyntaxWnd)) &&
+                    (!g_Daemon.hShortcutsWnd || !IsWindow(g_Daemon.hShortcutsWnd)) &&
+                    !g_Daemon.isSavingAsModalOpen) {
+                    POINT ptScreen;
+                    if (GetCursorPos(&ptScreen)) {
+                        HWND hHit = WindowFromPoint(ptScreen);
+                        if (!hHit || !g_Daemon.IsPinnedWindow(hHit)) {
+                            POINT ptOverlay = { ptScreen.x - g_Daemon.vScreenX, ptScreen.y - g_Daemon.vScreenY };
+                            if (g_Daemon.IsHoveringSelectedCustomArea(ptOverlay)) {
+                                g_Daemon.showingCustomAreaHoverTip = true;
+                                g_Daemon.customAreaHoverTipPt = ptOverlay;
+                                InvalidateRect(hWnd, nullptr, FALSE);
+                            }
+                        }
+                    }
+                }
             }
             return 0;
 
@@ -13442,6 +14157,11 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_RBUTTONDOWN: {
+            KillTimer(hWnd, 4);
+            if (g_Daemon.showingCustomAreaHoverTip) {
+                g_Daemon.showingCustomAreaHoverTip = false;
+                InvalidateRect(hWnd, nullptr, FALSE);
+            }
             SetFocus(hWnd);
             int mx = GET_X_LPARAM(lParam);
             int my = GET_Y_LPARAM(lParam);
@@ -13479,6 +14199,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_MOUSEWHEEL: {
+            KillTimer(hWnd, 4);
+            g_Daemon.showingCustomAreaHoverTip = false;
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             if (g_Daemon.HasOverlayMultiFrames() && !g_Daemon.overlayFrameStripCollapsed &&
                 PtInRect(&g_Daemon.overlayFrameStripPanelRect, g_Daemon.mousePt)) {
@@ -13539,6 +14261,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_LBUTTONDBLCLK: {
+            KillTimer(hWnd, 4);
+            g_Daemon.showingCustomAreaHoverTip = false;
             int mx = GET_X_LPARAM(lParam);
             int my = GET_Y_LPARAM(lParam);
             POINT pt{ mx, my };
@@ -13604,6 +14328,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 g_Daemon.hasCustomRatio = false;
                 g_Daemon.customRatioW = 0;
                 g_Daemon.customRatioH = 0;
+                g_Daemon.activeSelectionRatioW = 0;
+                g_Daemon.activeSelectionRatioH = 0;
                 g_Daemon.ratioResetBtnRect = { 0, 0, 0, 0 };
                 g_Daemon.lastRatioResetHover = false;
                 g_Daemon.UpdateOverlayCursor(mx, my);
@@ -13680,6 +14406,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_LBUTTONDOWN: {
+            KillTimer(hWnd, 4);
+            g_Daemon.showingCustomAreaHoverTip = false;
             if (GetForegroundWindow() != hWnd) {
                 SetForegroundWindow(hWnd);
                 SetActiveWindow(hWnd);
@@ -13826,6 +14554,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 g_Daemon.hasCustomRatio = false;
                 g_Daemon.customRatioW = 0;
                 g_Daemon.customRatioH = 0;
+                g_Daemon.activeSelectionRatioW = 0;
+                g_Daemon.activeSelectionRatioH = 0;
                 g_Daemon.ratioResetBtnRect = { 0, 0, 0, 0 };
                 g_Daemon.lastRatioResetHover = false;
                 g_Daemon.UpdateOverlayCursor(mx, my);
@@ -13926,13 +14656,24 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 InvalidateRect(hWnd, nullptr, FALSE);
             }
 
-            // 2. Check 8 Selection Resize Handles
+            // 2. Check 8 Selection Resize Handles (Ctrl + Left-Click on a corner handle moves that corner individually!)
             DragMode handleHit = g_Daemon.HitTestSelectionHandles(mx, my);
             if (handleHit != DragMode::None) {
                 autoHideFrameStripOnFocus();
                 g_Daemon.isRightMouseHeld = ((wParam & MK_RBUTTON) != 0) || ((GetKeyState(VK_RBUTTON) & 0x8000) != 0);
+                bool ctrlHeldOnHandle = ((wParam & MK_CONTROL) != 0) ||
+                                        ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
+                                        ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
+                                        ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
+                                        ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+                bool isCornerHandle = (handleHit == DragMode::ResizeTL ||
+                                       handleHit == DragMode::ResizeTR ||
+                                       handleHit == DragMode::ResizeBR ||
+                                       handleHit == DragMode::ResizeBL);
+                g_Daemon.isDraggingSingleCorner = (isCornerHandle && ctrlHeldOnHandle && !g_Daemon.hasEllipseSelection);
                 g_Daemon.dragMode = handleHit;
                 g_Daemon.dragStartPt = pt;
+                g_Daemon.GetSelectionQuadPoints(g_Daemon.dragOrigQuad);
                 g_Daemon.dragOrigRect = {
                     std::min(g_Daemon.selRect.left, g_Daemon.selRect.right),
                     std::min(g_Daemon.selRect.top, g_Daemon.selRect.bottom),
@@ -13946,7 +14687,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 return 0;
             }
 
-            // 3. Inside Selection Box
+            // 3. Inside Selection Box / Polygon
             if (g_Daemon.hasSelection) {
                 RECT normSel = {
                     std::min(g_Daemon.selRect.left, g_Daemon.selRect.right),
@@ -13954,7 +14695,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     std::max(g_Daemon.selRect.left, g_Daemon.selRect.right),
                     std::max(g_Daemon.selRect.top, g_Daemon.selRect.bottom)
                 };
-                if (PtInRect(&normSel, pt)) {
+                if (g_Daemon.IsPointInSelection(pt)) {
                     autoHideFrameStripOnFocus();
                     OverlayTool effectiveTool = g_Daemon.GetEffectiveTool();
                     if (effectiveTool == OverlayTool::SelectMove) {
@@ -14014,6 +14755,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                             g_Daemon.dragMode = DragMode::MovingSelection;
                             g_Daemon.dragStartPt = pt;
                             g_Daemon.dragOrigRect = normSel;
+                            g_Daemon.GetSelectionQuadPoints(g_Daemon.dragOrigQuad);
                         }
                         SetCapture(hWnd);
                         InvalidateRect(hWnd, nullptr, FALSE);
@@ -14095,10 +14837,12 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                    ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
                                    ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
                                    ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
-            if (!g_Daemon.hasSelection && shiftHeldOnDown && !ctrlHeldOnDown) {
+            bool altHeldOnDown = PepperSnapDaemon::IsAltModifierHeld();
+            g_Daemon.altHeldOnSelectionStart = altHeldOnDown;
+            if (!g_Daemon.hasSelection && shiftHeldOnDown && !ctrlHeldOnDown && !altHeldOnDown) {
                 g_Daemon.pendingShiftColorPick = true;
                 g_Daemon.pendingCtrlWindowSelect = false;
-            } else if (!g_Daemon.hasSelection && ctrlHeldOnDown) {
+            } else if (!g_Daemon.hasSelection && ctrlHeldOnDown && !altHeldOnDown) {
                 g_Daemon.pendingShiftColorPick = false;
                 g_Daemon.UpdateCtrlWindowHover();
                 g_Daemon.pendingCtrlWindowSelect = g_Daemon.hasCtrlHoverWindow;
@@ -14241,6 +14985,20 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 g_Daemon.lastPillHover = pillHover;
                 g_Daemon.lastRatioResetHover = ratioResetHover;
                 g_Daemon.lastStrokeHover = strokeHover;
+                if (g_Daemon.IsHoveringSelectedCustomArea(pt)) {
+                    bool movedHoverMouse = (pt.x != g_Daemon.lastCustomAreaHoverMouse.x || pt.y != g_Daemon.lastCustomAreaHoverMouse.y);
+                    g_Daemon.lastCustomAreaHoverMouse = pt;
+                    if (!g_Daemon.showingCustomAreaHoverTip && movedHoverMouse) {
+                        SetTimer(hWnd, 4, 500, nullptr);
+                    }
+                } else {
+                    KillTimer(hWnd, 4);
+                    g_Daemon.lastCustomAreaHoverMouse = { -10000, -10000 };
+                    if (g_Daemon.showingCustomAreaHoverTip) {
+                        g_Daemon.showingCustomAreaHoverTip = false;
+                        hoverChanged = true;
+                    }
+                }
                 g_Daemon.UpdateOverlayCursor(mx, my);
                 if (!g_Daemon.hasSelection || hoverChanged) {
                     InvalidateRect(hWnd, nullptr, FALSE);
@@ -14248,17 +15006,21 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 return 0;
             }
 
+            KillTimer(hWnd, 4);
+            g_Daemon.showingCustomAreaHoverTip = false;
             int clampedMx = std::max(0, std::min(g_Daemon.vScreenW, mx));
             int clampedMy = std::max(0, std::min(g_Daemon.vScreenH, my));
             int dx = mx - g_Daemon.dragStartPt.x;
             int dy = my - g_Daemon.dragStartPt.y;
             g_Daemon.isRightMouseHeld = ((wParam & MK_RBUTTON) != 0);
             int ratioW = 0, ratioH = 0;
-            bool hasRatioConstrain = g_Daemon.GetActiveSelectionAspectRatio(wParam, ratioW, ratioH);
+            bool isTempRatioOverride = false;
+            bool hasRatioConstrain = !g_Daemon.isDraggingSingleCorner &&
+                                     g_Daemon.GetActiveSelectionAspectRatio(wParam, ratioW, ratioH, &isTempRatioOverride);
             if (g_Daemon.dragMode == DragMode::CreatingSelection ||
                 (g_Daemon.dragMode >= DragMode::ResizeTL && g_Daemon.dragMode <= DragMode::ResizeL)) {
-                g_Daemon.activeSelectionRatioW = hasRatioConstrain ? ratioW : 0;
-                g_Daemon.activeSelectionRatioH = hasRatioConstrain ? ratioH : 0;
+                g_Daemon.activeSelectionRatioW = (hasRatioConstrain && isTempRatioOverride) ? ratioW : 0;
+                g_Daemon.activeSelectionRatioH = (hasRatioConstrain && isTempRatioOverride) ? ratioH : 0;
             }
 
             auto applyRatioCorner = [&](int anchorX, int anchorY) {
@@ -14363,16 +15125,17 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     break;
                 }
                 case DragMode::PendingOutsideSelection: {
+                    bool altHeldMove = PepperSnapDaemon::IsAltModifierHeld();
                     if (!hasRatioConstrain) {
                         bool ctrlHeldMove = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                             ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                             ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
                                             ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
-                        if (!g_Daemon.hasSelection && g_Daemon.pendingShiftColorPick && !ctrlHeldMove) {
+                        if (!g_Daemon.hasSelection && g_Daemon.pendingShiftColorPick && !ctrlHeldMove && !altHeldMove) {
                             InvalidateRect(hWnd, nullptr, FALSE);
                             return 0;
                         }
-                        if (!g_Daemon.hasSelection && ctrlHeldMove) {
+                        if (!g_Daemon.hasSelection && ctrlHeldMove && !altHeldMove) {
                             if (g_Daemon.UpdateCtrlWindowHover()) {
                                 g_Daemon.pendingCtrlWindowSelect = g_Daemon.hasCtrlHoverWindow;
                                 g_Daemon.pendingCtrlWindowRect = g_Daemon.ctrlHoverWindowRect;
@@ -14390,6 +15153,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                             g_Daemon.LayoutOverlayFrameStrip(g_Daemon.vScreenW, g_Daemon.vScreenH);
                         }
                         g_Daemon.hasSelection = true;
+                        g_Daemon.hasEllipseSelection = g_Daemon.altHeldOnSelectionStart || altHeldMove;
                         g_Daemon.hasCustomHudPos = false;
                         g_Daemon.activeTool = OverlayTool::SelectMove;
                         g_Daemon.annotations.clear();
@@ -14401,14 +15165,17 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
                         int startY = std::max(0, std::min(g_Daemon.vScreenH, (int)g_Daemon.dragStartPt.y));
                         g_Daemon.dragOrigRect = { startX, startY, startX, startY };
-                        g_Daemon.activeSelectionRatioW = hasRatioConstrain ? ratioW : 0;
-                        g_Daemon.activeSelectionRatioH = hasRatioConstrain ? ratioH : 0;
+                        hasRatioConstrain = !g_Daemon.isDraggingSingleCorner &&
+                                            g_Daemon.GetActiveSelectionAspectRatio(wParam, ratioW, ratioH, &isTempRatioOverride);
+                        g_Daemon.activeSelectionRatioW = (hasRatioConstrain && isTempRatioOverride) ? ratioW : 0;
+                        g_Daemon.activeSelectionRatioH = (hasRatioConstrain && isTempRatioOverride) ? ratioH : 0;
                         if (hasRatioConstrain) {
                             applyRatioCorner(startX, startY);
                         } else {
                             g_Daemon.selRect = { startX, startY, clampedMx, clampedMy };
                             g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
                         }
+                        g_Daemon.SyncQuadFromSelRect();
                     } else {
                         return 0;
                     }
@@ -14416,6 +15183,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 case DragMode::CreatingSelection:
                     g_Daemon.hasCustomHudPos = false;
+                    g_Daemon.hasEllipseSelection = g_Daemon.altHeldOnSelectionStart || PepperSnapDaemon::IsAltModifierHeld();
                     if (hasRatioConstrain) {
                         int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
                         int startY = std::max(0, std::min(g_Daemon.vScreenH, (int)g_Daemon.dragStartPt.y));
@@ -14426,6 +15194,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                         g_Daemon.selRect = { startX, startY, clampedMx, clampedMy };
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
                     }
+                    g_Daemon.SyncQuadFromSelRect();
                     break;
                 case DragMode::MovingSelection: {
                     g_Daemon.hasCustomHudPos = false;
@@ -14435,80 +15204,245 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.selRect.top    = g_Daemon.dragOrigRect.top + cDy;
                     g_Daemon.selRect.right  = g_Daemon.dragOrigRect.right + cDx;
                     g_Daemon.selRect.bottom = g_Daemon.dragOrigRect.bottom + cDy;
+                    for (int i = 0; i < 4; ++i) {
+                        g_Daemon.selQuad[i].x = g_Daemon.dragOrigQuad[i].x + cDx;
+                        g_Daemon.selQuad[i].y = g_Daemon.dragOrigQuad[i].y + cDy;
+                    }
                     break;
                 }
                 case DragMode::ResizeTL:
-                    g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom);
-                    } else {
-                        g_Daemon.selRect = { clampedMx, clampedMy, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
-                        g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
-                    }
-                    break;
                 case DragMode::ResizeT:
-                    g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioEdgeY(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.bottom);
-                    } else {
-                        g_Daemon.selRect = { g_Daemon.dragOrigRect.left, clampedMy, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
-                        g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
-                    }
-                    break;
                 case DragMode::ResizeTR:
-                    g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.bottom);
-                    } else {
-                        g_Daemon.selRect = { g_Daemon.dragOrigRect.left, clampedMy, clampedMx, g_Daemon.dragOrigRect.bottom };
-                        g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
-                    }
-                    break;
                 case DragMode::ResizeR:
-                    g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioEdgeX(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
-                    } else {
-                        g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, clampedMx, g_Daemon.dragOrigRect.bottom };
-                        g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
-                    }
-                    break;
                 case DragMode::ResizeBR:
-                    g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
-                    } else {
-                        g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, clampedMx, clampedMy };
-                        g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
-                    }
-                    break;
                 case DragMode::ResizeB:
-                    g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioEdgeY(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
-                    } else {
-                        g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, clampedMy };
-                        g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
-                    }
-                    break;
                 case DragMode::ResizeBL:
+                case DragMode::ResizeL: {
                     g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.top);
-                    } else {
-                        g_Daemon.selRect = { clampedMx, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, clampedMy };
+                    if (g_Daemon.isDraggingSingleCorner) {
+                        for (int i = 0; i < 4; ++i) g_Daemon.selQuad[i] = g_Daemon.dragOrigQuad[i];
+                        int cornerIdx = 0;
+                        if (g_Daemon.dragMode == DragMode::ResizeTL) cornerIdx = 0;
+                        else if (g_Daemon.dragMode == DragMode::ResizeTR) cornerIdx = 1;
+                        else if (g_Daemon.dragMode == DragMode::ResizeBR) cornerIdx = 2;
+                        else if (g_Daemon.dragMode == DragMode::ResizeBL) cornerIdx = 3;
+
+                        int targetX = clampedMx;
+                        int targetY = clampedMy;
+                        const double kCornerSnapDist = 12.0;
+                        double bestDist = kCornerSnapDist + 0.001;
+                        int snappedOtherIdx = -1;
+                        for (int i = 0; i < 4; ++i) {
+                            if (i == cornerIdx) continue;
+                            bool startedCoincident = (g_Daemon.dragOrigQuad[i].x == g_Daemon.dragOrigQuad[cornerIdx].x &&
+                                                      g_Daemon.dragOrigQuad[i].y == g_Daemon.dragOrigQuad[cornerIdx].y);
+                            double maxSnap = startedCoincident ? 2.5 : kCornerSnapDist;
+                            double d = std::hypot((double)(clampedMx - g_Daemon.dragOrigQuad[i].x),
+                                                  (double)(clampedMy - g_Daemon.dragOrigQuad[i].y));
+                            if (d <= maxSnap && d < bestDist) {
+                                POINT testQuad[4];
+                                for (int k = 0; k < 4; ++k) testQuad[k] = g_Daemon.dragOrigQuad[k];
+                                testQuad[cornerIdx] = g_Daemon.dragOrigQuad[i];
+                                int uniqueCnt = 0;
+                                POINT uniq[4];
+                                for (int k = 0; k < 4; ++k) {
+                                    bool dup = false;
+                                    for (int u = 0; u < uniqueCnt; ++u) {
+                                        if (testQuad[k].x == uniq[u].x && testQuad[k].y == uniq[u].y) {
+                                            dup = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!dup) uniq[uniqueCnt++] = testQuad[k];
+                                }
+                                if (uniqueCnt >= 3) {
+                                    bestDist = d;
+                                    snappedOtherIdx = i;
+                                }
+                            }
+                        }
+                        if (snappedOtherIdx >= 0) {
+                            targetX = g_Daemon.dragOrigQuad[snappedOtherIdx].x;
+                            targetY = g_Daemon.dragOrigQuad[snappedOtherIdx].y;
+                        }
+
+                        int moveIdx = cornerIdx;
+                        int adjCoincidentIdx = -1;
+                        int prevIdx = (cornerIdx + 3) & 3;
+                        int nextIdx = (cornerIdx + 1) & 3;
+                        if (g_Daemon.dragOrigQuad[prevIdx].x == g_Daemon.dragOrigQuad[cornerIdx].x &&
+                            g_Daemon.dragOrigQuad[prevIdx].y == g_Daemon.dragOrigQuad[cornerIdx].y) {
+                            adjCoincidentIdx = prevIdx;
+                        } else if (g_Daemon.dragOrigQuad[nextIdx].x == g_Daemon.dragOrigQuad[cornerIdx].x &&
+                                   g_Daemon.dragOrigQuad[nextIdx].y == g_Daemon.dragOrigQuad[cornerIdx].y) {
+                            adjCoincidentIdx = nextIdx;
+                        }
+                        if (adjCoincidentIdx >= 0 &&
+                            (targetX != g_Daemon.dragOrigQuad[cornerIdx].x || targetY != g_Daemon.dragOrigQuad[cornerIdx].y)) {
+                            POINT candA[4], candB[4];
+                            for (int i = 0; i < 4; ++i) {
+                                candA[i] = g_Daemon.dragOrigQuad[i];
+                                candB[i] = g_Daemon.dragOrigQuad[i];
+                            }
+                            candA[cornerIdx] = { targetX, targetY };
+                            candB[adjCoincidentIdx] = { targetX, targetY };
+                            bool interA = PepperSnapDaemon::IsQuadSelfIntersecting(candA);
+                            bool interB = PepperSnapDaemon::IsQuadSelfIntersecting(candB);
+                            if (interA && !interB) {
+                                moveIdx = adjCoincidentIdx;
+                            } else if (!interA && !interB) {
+                                if (std::llabs(PepperSnapDaemon::QuadSignedArea2(candB)) >
+                                    std::llabs(PepperSnapDaemon::QuadSignedArea2(candA))) {
+                                    moveIdx = adjCoincidentIdx;
+                                }
+                            }
+                        }
+
+                        g_Daemon.selQuad[moveIdx] = { targetX, targetY };
+                        g_Daemon.selectionTargetPt = { targetX, targetY };
+                        g_Daemon.SyncSelRectFromQuad();
+                    } else if (g_Daemon.hasCustomQuad && !hasRatioConstrain) {
+                        for (int i = 0; i < 4; ++i) g_Daemon.selQuad[i] = g_Daemon.dragOrigQuad[i];
+                        auto clampX = [&](int v) { return std::max(0, std::min(g_Daemon.vScreenW, v)); };
+                        auto clampY = [&](int v) { return std::max(0, std::min(g_Daemon.vScreenH, v)); };
+                        switch (g_Daemon.dragMode) {
+                            case DragMode::ResizeTL: {
+                                int cdx = clampedMx - g_Daemon.dragOrigQuad[0].x;
+                                int cdy = clampedMy - g_Daemon.dragOrigQuad[0].y;
+                                g_Daemon.selQuad[0] = { clampedMx, clampedMy };
+                                g_Daemon.selQuad[1].y = clampY(g_Daemon.dragOrigQuad[1].y + cdy);
+                                g_Daemon.selQuad[3].x = clampX(g_Daemon.dragOrigQuad[3].x + cdx);
+                                break;
+                            }
+                            case DragMode::ResizeTR: {
+                                int cdx = clampedMx - g_Daemon.dragOrigQuad[1].x;
+                                int cdy = clampedMy - g_Daemon.dragOrigQuad[1].y;
+                                g_Daemon.selQuad[1] = { clampedMx, clampedMy };
+                                g_Daemon.selQuad[0].y = clampY(g_Daemon.dragOrigQuad[0].y + cdy);
+                                g_Daemon.selQuad[2].x = clampX(g_Daemon.dragOrigQuad[2].x + cdx);
+                                break;
+                            }
+                            case DragMode::ResizeBR: {
+                                int cdx = clampedMx - g_Daemon.dragOrigQuad[2].x;
+                                int cdy = clampedMy - g_Daemon.dragOrigQuad[2].y;
+                                g_Daemon.selQuad[2] = { clampedMx, clampedMy };
+                                g_Daemon.selQuad[1].x = clampX(g_Daemon.dragOrigQuad[1].x + cdx);
+                                g_Daemon.selQuad[3].y = clampY(g_Daemon.dragOrigQuad[3].y + cdy);
+                                break;
+                            }
+                            case DragMode::ResizeBL: {
+                                int cdx = clampedMx - g_Daemon.dragOrigQuad[3].x;
+                                int cdy = clampedMy - g_Daemon.dragOrigQuad[3].y;
+                                g_Daemon.selQuad[3] = { clampedMx, clampedMy };
+                                g_Daemon.selQuad[0].x = clampX(g_Daemon.dragOrigQuad[0].x + cdx);
+                                g_Daemon.selQuad[2].y = clampY(g_Daemon.dragOrigQuad[2].y + cdy);
+                                break;
+                            }
+                            case DragMode::ResizeT:
+                                g_Daemon.selQuad[0].y = clampY(g_Daemon.dragOrigQuad[0].y + dy);
+                                g_Daemon.selQuad[1].y = clampY(g_Daemon.dragOrigQuad[1].y + dy);
+                                break;
+                            case DragMode::ResizeR:
+                                g_Daemon.selQuad[1].x = clampX(g_Daemon.dragOrigQuad[1].x + dx);
+                                g_Daemon.selQuad[2].x = clampX(g_Daemon.dragOrigQuad[2].x + dx);
+                                break;
+                            case DragMode::ResizeB:
+                                g_Daemon.selQuad[2].y = clampY(g_Daemon.dragOrigQuad[2].y + dy);
+                                g_Daemon.selQuad[3].y = clampY(g_Daemon.dragOrigQuad[3].y + dy);
+                                break;
+                            case DragMode::ResizeL:
+                                g_Daemon.selQuad[3].x = clampX(g_Daemon.dragOrigQuad[3].x + dx);
+                                g_Daemon.selQuad[0].x = clampX(g_Daemon.dragOrigQuad[0].x + dx);
+                                break;
+                            default:
+                                break;
+                        }
+                        // Preserve any snapped/coincident corner pairs during non-Ctrl resize
+                        for (int i = 0; i < 4; ++i) {
+                            for (int j = i + 1; j < 4; ++j) {
+                                if (g_Daemon.dragOrigQuad[i].x == g_Daemon.dragOrigQuad[j].x &&
+                                    g_Daemon.dragOrigQuad[i].y == g_Daemon.dragOrigQuad[j].y) {
+                                    bool iMoved = (g_Daemon.selQuad[i].x != g_Daemon.dragOrigQuad[i].x ||
+                                                   g_Daemon.selQuad[i].y != g_Daemon.dragOrigQuad[i].y);
+                                    if (iMoved) {
+                                        g_Daemon.selQuad[j] = g_Daemon.selQuad[i];
+                                    } else {
+                                        g_Daemon.selQuad[i] = g_Daemon.selQuad[j];
+                                    }
+                                }
+                            }
+                        }
                         g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                        g_Daemon.SyncSelRectFromQuad();
+                    } else {
+                        switch (g_Daemon.dragMode) {
+                            case DragMode::ResizeTL:
+                                if (hasRatioConstrain) applyRatioCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom);
+                                else {
+                                    g_Daemon.selRect = { clampedMx, clampedMy, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            case DragMode::ResizeT:
+                                if (hasRatioConstrain) applyRatioEdgeY(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.bottom);
+                                else {
+                                    g_Daemon.selRect = { g_Daemon.dragOrigRect.left, clampedMy, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            case DragMode::ResizeTR:
+                                if (hasRatioConstrain) applyRatioCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.bottom);
+                                else {
+                                    g_Daemon.selRect = { g_Daemon.dragOrigRect.left, clampedMy, clampedMx, g_Daemon.dragOrigRect.bottom };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            case DragMode::ResizeR:
+                                if (hasRatioConstrain) applyRatioEdgeX(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
+                                else {
+                                    g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, clampedMx, g_Daemon.dragOrigRect.bottom };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            case DragMode::ResizeBR:
+                                if (hasRatioConstrain) applyRatioCorner(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
+                                else {
+                                    g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, clampedMx, clampedMy };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            case DragMode::ResizeB:
+                                if (hasRatioConstrain) applyRatioEdgeY(g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top);
+                                else {
+                                    g_Daemon.selRect = { g_Daemon.dragOrigRect.left, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, clampedMy };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            case DragMode::ResizeBL:
+                                if (hasRatioConstrain) applyRatioCorner(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.top);
+                                else {
+                                    g_Daemon.selRect = { clampedMx, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, clampedMy };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            case DragMode::ResizeL:
+                                if (hasRatioConstrain) applyRatioEdgeX(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.top);
+                                else {
+                                    g_Daemon.selRect = { clampedMx, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
+                                    g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
+                                }
+                                break;
+                            default:
+                                break;
+                        }
+                        if (g_Daemon.hasCustomQuad) {
+                            g_Daemon.ScaleQuadFromOrigRect(g_Daemon.dragOrigQuad, g_Daemon.dragOrigRect, g_Daemon.selRect);
+                        } else {
+                            g_Daemon.SyncQuadFromSelRect();
+                        }
                     }
                     break;
-                case DragMode::ResizeL:
-                    g_Daemon.hasCustomHudPos = false;
-                    if (hasRatioConstrain) {
-                        applyRatioEdgeX(g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.top);
-                    } else {
-                        g_Daemon.selRect = { clampedMx, g_Daemon.dragOrigRect.top, g_Daemon.dragOrigRect.right, g_Daemon.dragOrigRect.bottom };
-                        g_Daemon.selectionTargetPt = { clampedMx, clampedMy };
-                    }
-                    break;
+                }
                 case DragMode::DrawingAnnotation: {
                     bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     float targetX = (float)mx;
@@ -14844,7 +15778,9 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                                        (winRc.right > winRc.left) && (winRc.bottom > winRc.top));
                         if (hasWin) {
                             g_Daemon.hasSelection = true;
+                            g_Daemon.hasEllipseSelection = false;
                             g_Daemon.selRect = winRc;
+                            g_Daemon.SyncQuadFromSelRect();
                             g_Daemon.activeSelectionRatioW = 0;
                             g_Daemon.activeSelectionRatioH = 0;
                             g_Daemon.hasCtrlHoverWindow = false;
@@ -14870,10 +15806,21 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 } else if (g_Daemon.dragMode == DragMode::ResizingFrameStrip) {
                     g_Daemon.SaveSettings();
                 }
+                if (g_Daemon.isDraggingSingleCorner && g_Daemon.hasCustomQuad) {
+                    g_Daemon.CanonicalizeSnappedQuad();
+                    g_Daemon.SyncSelRectFromQuad();
+                }
                 g_Daemon.moveAnnUndoPushed = false;
                 g_Daemon.clickedAlreadySelectedAnn = false;
+                g_Daemon.activeSelectionRatioW = 0;
+                g_Daemon.activeSelectionRatioH = 0;
+                g_Daemon.isDraggingSingleCorner = false;
                 g_Daemon.dragMode = DragMode::None;
                 ReleaseCapture();
+                if (g_Daemon.IsHoveringSelectedCustomArea(g_Daemon.mousePt)) {
+                    g_Daemon.lastCustomAreaHoverMouse = g_Daemon.mousePt;
+                    SetTimer(hWnd, 4, 500, nullptr);
+                }
                 InvalidateRect(hWnd, nullptr, FALSE);
             }
             return 0;
@@ -15121,7 +16068,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                  g_Daemon.dragMode == DragMode::ResizeB  ||
                  g_Daemon.dragMode == DragMode::ResizeBL ||
                  g_Daemon.dragMode == DragMode::ResizeL);
-            if ((!g_Daemon.hasSelection || isSelectionDragActive) && !ctrl && !alt &&
+            if ((!g_Daemon.hasSelection || isSelectionDragActive) && (!ctrl || g_Daemon.isDraggingSingleCorner) &&
                 (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT)) {
                 int stepX = (wParam == VK_LEFT) ? -1 : ((wParam == VK_RIGHT) ? 1 : 0);
                 int stepY = (wParam == VK_UP)   ? -1 : ((wParam == VK_DOWN)  ? 1 : 0);
@@ -15136,6 +16083,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     g_Daemon.pendingShiftColorPick = false;
                     g_Daemon.pendingCtrlWindowSelect = false;
                     g_Daemon.hasSelection = true;
+                    g_Daemon.hasEllipseSelection = g_Daemon.altHeldOnSelectionStart || alt;
                     g_Daemon.hasCustomHudPos = false;
                     g_Daemon.activeTool = OverlayTool::SelectMove;
                     g_Daemon.annotations.clear();
@@ -15154,7 +16102,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 if ((GetKeyState(VK_LBUTTON) & 0x8000) != 0) curMouseWParam |= MK_LBUTTON;
                 if (g_Daemon.isRightMouseHeld || (GetKeyState(VK_RBUTTON) & 0x8000) != 0) curMouseWParam |= MK_RBUTTON;
                 if (shift) curMouseWParam |= MK_SHIFT;
-                bool hasRatio = g_Daemon.GetActiveSelectionAspectRatio(curMouseWParam, ratioW, ratioH);
+                bool hasRatio = !g_Daemon.isDraggingSingleCorner &&
+                                g_Daemon.GetActiveSelectionAspectRatio(curMouseWParam, ratioW, ratioH);
                 if (hasRatio &&
                     (g_Daemon.dragMode == DragMode::CreatingSelection ||
                      g_Daemon.dragMode == DragMode::ResizeTL ||
@@ -15227,12 +16176,17 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 
             if (isSelectionDragActive &&
                 (wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT ||
+                 wParam == VK_MENU  || wParam == VK_LMENU  || wParam == VK_RMENU  ||
                  wParam == '1' || wParam == '2' || wParam == '3' || wParam == '4' ||
                  wParam == VK_NUMPAD1 || wParam == VK_NUMPAD2 || wParam == VK_NUMPAD3 || wParam == VK_NUMPAD4)) {
                 WPARAM moveWParam = MK_LBUTTON;
                 if (shift || wParam == VK_SHIFT || wParam == VK_LSHIFT || wParam == VK_RSHIFT) moveWParam |= MK_SHIFT;
                 if (g_Daemon.isRightMouseHeld || (GetKeyState(VK_RBUTTON) & 0x8000) != 0) moveWParam |= MK_RBUTTON;
                 SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(g_Daemon.mousePt.x, g_Daemon.mousePt.y));
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            if (wParam == VK_MENU || wParam == VK_LMENU || wParam == VK_RMENU) {
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
@@ -15364,6 +16318,22 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 return 0;
             }
+            if (wParam == VK_MENU || wParam == VK_LMENU || wParam == VK_RMENU) {
+                bool isSelectionOrResizeDrag =
+                    (g_Daemon.dragMode == DragMode::PendingOutsideSelection ||
+                     g_Daemon.dragMode == DragMode::CreatingSelection ||
+                     (g_Daemon.dragMode >= DragMode::ResizeTL && g_Daemon.dragMode <= DragMode::ResizeL));
+                if (isSelectionOrResizeDrag) {
+                    WPARAM moveWParam = MK_LBUTTON;
+                    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) moveWParam |= MK_SHIFT;
+                    if (g_Daemon.isRightMouseHeld || (GetKeyState(VK_RBUTTON) & 0x8000) != 0) moveWParam |= MK_RBUTTON;
+                    SendMessageW(hWnd, WM_MOUSEMOVE, moveWParam, MAKELPARAM(g_Daemon.mousePt.x, g_Daemon.mousePt.y));
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                } else if (!g_Daemon.hasSelection) {
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
             if (wParam == VK_CONTROL) {
                 bool changed = g_Daemon.UpdateCtrlWindowHover();
                 if (g_Daemon.HasCreatedCustomArea()) {
@@ -15402,6 +16372,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             KillTimer(hWnd, 1);
             KillTimer(hWnd, 2);
             KillTimer(hWnd, 3);
+            KillTimer(hWnd, 4);
+            g_Daemon.showingCustomAreaHoverTip = false;
             return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -15943,6 +16915,9 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
             return;
         } else {
             // Capture the "Edit with PepperSnap" window into Custom Area mode
+            KillTimer(hOverlayWnd, 4);
+            showingCustomAreaHoverTip = false;
+            lastCustomAreaHoverMouse = { -10000, -10000 };
             CommitActiveTextBox();
             CommitActiveSizeInput();
             CommitActiveRatioInput();
@@ -16025,6 +17000,9 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
             savedEditSession.overlayFramesPlaying = overlayFramesPlaying;
             savedEditSession.hasSelection = hasSelection;
             savedEditSession.selRect = selRect;
+            savedEditSession.hasCustomQuad = hasCustomQuad;
+            savedEditSession.hasEllipseSelection = hasEllipseSelection;
+            for (int i = 0; i < 4; ++i) savedEditSession.selQuad[i] = selQuad[i];
             savedEditSession.annotations = std::move(annotations);
             savedEditSession.undoStack = std::move(undoStack);
             savedEditSession.redoStack = std::move(redoStack);
@@ -16051,6 +17029,10 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
 
             hasSelection = false;
             selRect = { 0, 0, 0, 0 };
+            hasCustomQuad = false;
+            hasEllipseSelection = false;
+            altHeldOnSelectionStart = false;
+            isDraggingSingleCorner = false;
             hasCtrlHoverWindow = false;
             ctrlHoverWindowRect = { 0, 0, 0, 0 };
             dimPillRect = { 0, 0, 0, 0 };
@@ -16113,6 +17095,8 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
         hasCtrlHoverWindow = false;
         frozenDesktopBmp = customBmp;
         hasSelection = true;
+        hasEllipseSelection = false;
+        altHeldOnSelectionStart = false;
         if (customSelRect) {
             selRect = *customSelRect;
         } else {
@@ -16122,22 +17106,29 @@ void PepperSnapDaemon::StartRegionSnipOverlay(Bitmap* customBmp, const RECT* cus
             int cy = (vScreenH - ch) / 2;
             selRect = { cx, cy, cx + cw, cy + ch };
         }
+        SyncQuadFromSelRect();
     } else {
         ClearOverlayFrames();
         frozenDesktopBmp = CaptureVirtualDesktop();
         hasSelection = false;
+        hasCustomQuad = false;
+        hasEllipseSelection = false;
+        altHeldOnSelectionStart = false;
         SnapshotDesktopWindows();
     }
     if (!frozenDesktopBmp) return;
     BuildOverlaySurfaceCache();
 
     isSavingAsModalOpen = false;
+    isDraggingSingleCorner = false;
     dragMode = DragMode::None;
     hoveredBtnId = -1;
     pressedBtnId = -1;
     hasCustomHudPos = false;
     lastPillHover = false;
     lastStrokeHover = false;
+    showingCustomAreaHoverTip = false;
+    lastCustomAreaHoverMouse = { -10000, -10000 };
     activeTool = OverlayTool::SelectMove;
     lastCtrlTempSelect = false;
     lastShiftColorPick = false;
@@ -16312,6 +17303,11 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
     RecordLastCustomSelection();
     SaveSettings();
     hasCustomHudPos = false;
+    showingCustomAreaHoverTip = false;
+    lastCustomAreaHoverMouse = { -10000, -10000 };
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        KillTimer(hOverlayWnd, 4);
+    }
     activeTool = OverlayTool::SelectMove;
     lastCtrlTempSelect = false;
     lastShiftColorPick = false;
@@ -16361,6 +17357,9 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
         overlayFramesPlaying = savedEditSession.overlayFramesPlaying;
         hasSelection = savedEditSession.hasSelection;
         selRect = savedEditSession.selRect;
+        hasCustomQuad = savedEditSession.hasCustomQuad;
+        hasEllipseSelection = savedEditSession.hasEllipseSelection;
+        for (int i = 0; i < 4; ++i) selQuad[i] = savedEditSession.selQuad[i];
         annotations = std::move(savedEditSession.annotations);
         undoStack = std::move(savedEditSession.undoStack);
         redoStack = std::move(savedEditSession.redoStack);
@@ -17017,6 +18016,38 @@ void PepperSnapDaemon::LayoutOverlayFrameStrip(int screenW, int screenH) {
     }
 }
 
+static void FillCheckerboardCanvas(Bitmap* bmp, int rx, int ry, int rw, int rh, int cellSize = 16) {
+    if (!bmp || rw <= 0 || rh <= 0) return;
+    int bw = (int)bmp->GetWidth();
+    int bh = (int)bmp->GetHeight();
+    int x0 = std::max(0, rx);
+    int y0 = std::max(0, ry);
+    int x1 = std::min(bw, rx + rw);
+    int y1 = std::min(bh, ry + rh);
+    if (x1 <= x0 || y1 <= y0) return;
+
+    cellSize = std::max(4, cellSize);
+    Rect lockRc(x0, y0, x1 - x0, y1 - y0);
+    BitmapData bd = {};
+    if (bmp->LockBits(&lockRc, ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Ok) {
+        const DWORD colDark  = 0xFF1E293Bu; // RGB(30, 41, 59)
+        const DWORD colLight = 0xFF334155u; // RGB(51, 65, 85)
+        int spanW = x1 - x0;
+        std::vector<DWORD> rowEven(spanW), rowOdd(spanW);
+        for (int dx = 0; dx < spanW; ++dx) {
+            int gx = (x0 + dx) / cellSize;
+            rowEven[dx] = (gx & 1) ? colLight : colDark;
+            rowOdd[dx]  = (gx & 1) ? colDark  : colLight;
+        }
+        for (int y = y0; y < y1; ++y) {
+            DWORD* dstRow = (DWORD*)((BYTE*)bd.Scan0 + (size_t)(y - y0) * bd.Stride);
+            const DWORD* srcPattern = (((y / cellSize) & 1) == 0) ? rowEven.data() : rowOdd.data();
+            memcpy(dstRow, srcPattern, (size_t)spanW * sizeof(DWORD));
+        }
+        bmp->UnlockBits(&bd);
+    }
+}
+
 void PepperSnapDaemon::SelectOverlayFrame(size_t frameIdx) {
     if (frameIdx >= overlayFrames.size() || !overlayFrames[frameIdx] || !frozenDesktopBmp) return;
     overlayActiveFrameIdx = frameIdx;
@@ -17028,11 +18059,10 @@ void PepperSnapDaemon::SelectOverlayFrame(size_t frameIdx) {
     int drawW = overlayImgDrawRect.right - overlayImgDrawRect.left;
     int drawH = overlayImgDrawRect.bottom - overlayImgDrawRect.top;
     if (imgW > 0 && imgH > 0 && drawW > 0 && drawH > 0) {
+        FillCheckerboardCanvas(frozenDesktopBmp, drawX, drawY, drawW, drawH, 16);
         Graphics g(frozenDesktopBmp);
         g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.SetPixelOffsetMode(PixelOffsetModeHalf);
-        SolidBrush bg(Color(255, 15, 23, 42));
-        g.FillRectangle(&bg, drawX, drawY, drawW, drawH);
         ImageAttributes ia;
         ia.SetWrapMode(WrapModeTileFlipXY);
         double fitScale = std::min((double)drawW / (double)imgW, (double)drawH / (double)imgH);
@@ -17332,11 +18362,10 @@ void PepperSnapDaemon::OpenImageFileIntoOverlay(const std::wstring& filePath) {
     int imgY = (sh - drawH) / 2;
 
     Bitmap* canvasBmp = new Bitmap(sw, sh, PixelFormat32bppARGB);
+    FillCheckerboardCanvas(canvasBmp, 0, 0, sw, sh, 16);
     Graphics g(canvasBmp);
     g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
     g.SetPixelOffsetMode(PixelOffsetModeHalf);
-    SolidBrush bg(Color(255, 15, 23, 42));
-    g.FillRectangle(&bg, 0, 0, sw, sh);
     ImageAttributes ia;
     ia.SetWrapMode(WrapModeTileFlipXY);
     g.DrawImage(firstFrame, Rect(imgX, imgY, drawW, drawH), 0, 0, imgW, imgH, UnitPixel, &ia);
@@ -18188,9 +19217,9 @@ static void ShowTrayContextMenu(HWND hWnd) {
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_REGION,            regMenu.c_str());
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_FULL,              fullMenu.c_str());
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,       prevMenu.c_str());
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PIN_CLIPBOARD,     pinClipMenu.c_str());
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,        L"Open image to edit with PepperSnap...");
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE,    L"Open image to pin on top...");
-        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PIN_CLIPBOARD,     pinClipMenu.c_str());
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SMOOTH_PINS,       smoothPinsMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_TOOLBAR_PINS, toolbarPinsMenu);
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW_OUTLINE_PINS, outlinePinsMenu);

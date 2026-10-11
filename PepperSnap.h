@@ -105,9 +105,9 @@ enum TrayMenuID {
     IDM_TRAY_REGION = 2001,
     IDM_TRAY_FULL,
     IDM_TRAY_PREV_REGION,
+    IDM_TRAY_PIN_CLIPBOARD,
     IDM_TRAY_OPEN_IMAGE,
     IDM_TRAY_OPEN_PIN_IMAGE,
-    IDM_TRAY_PIN_CLIPBOARD,
     IDM_TRAY_OPEN_FOLDER,
     IDM_TRAY_OPTIONS,
     IDM_TRAY_STARTUP_RUN,
@@ -309,5 +309,8 @@ struct PinnedWindowData {
     POINT lastZoomCursorPt{ -999999, -999999 };
     double zoomCursorRelX = 0.5;
     double zoomCursorRelY = 0.5;
+    bool hasCustomQuad = false;
+    bool hasEllipseMask = false;
+    PointF normQuad[4] = { PointF(0.0f, 0.0f), PointF(1.0f, 0.0f), PointF(1.0f, 1.0f), PointF(0.0f, 1.0f) };
 };
 
