@@ -19,7 +19,7 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.11.1";
+    static constexpr const wchar_t* APP_VERSION = L"3.11.2";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -2091,19 +2091,20 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             ? g_Daemon.hCustomizeKeysWnd
             : ((g_Daemon.hOptionsWnd && IsWindow(g_Daemon.hOptionsWnd)) ? g_Daemon.hOptionsWnd : nullptr);
         if (g_RecordingHotkeySlot != 0 && hRecTarget) {
-            if (vk == VK_SNAPSHOT) {
-                return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
-            }
-            if (isKeyDown) {
-                if (vk == VK_ESCAPE) {
+            if (isKeyDown || (isKeyUp && vk == VK_SNAPSHOT)) {
+                if (isKeyDown && vk == VK_ESCAPE) {
                     PostMessageW(hRecTarget, WM_SHORTCUT_RECORDED, 0, VK_ESCAPE);
                     return 1;
                 }
                 if (!IsModifierVk(vk)) {
                     UINT mods = GetCurrentHardwareModifiers();
+                    if (kb->flags & LLKHF_ALTDOWN) mods |= MOD_ALT;
                     PostMessageW(hRecTarget, WM_SHORTCUT_RECORDED, (WPARAM)mods, (LPARAM)vk);
                     return 1;
                 }
+            }
+            if (vk == VK_SNAPSHOT) {
+                return 1;
             }
             return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
         }
@@ -10187,9 +10188,6 @@ static LRESULT CALLBACK CustomizeKeysDlgWndProc(HWND hWnd, UINT msg, WPARAM wPar
             if (!ck) return 0;
             UINT mods = (UINT)wParam;
             UINT vk = (UINT)lParam;
-            if (vk == VK_SNAPSHOT) {
-                return 0;
-            }
             int slot = g_RecordingHotkeySlot;
             g_RecordingHotkeySlot = 0;
             HidePinnedBubbleTooltip();
@@ -10479,11 +10477,10 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
 
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (g_RecordingHotkeySlot != 0 && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
+        if (g_RecordingHotkeySlot != 0 &&
+            (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN ||
+             ((msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP) && msg.wParam == VK_SNAPSHOT))) {
             DWORD vk = (DWORD)msg.wParam;
-            if (vk == VK_SNAPSHOT) {
-                continue;
-            }
             if (vk == VK_ESCAPE) {
                 SendMessageW(hDlg, WM_SHORTCUT_RECORDED, 0, VK_ESCAPE);
                 continue;
@@ -11757,25 +11754,57 @@ void PepperSnapDaemon::ShowOptionsModal() {
     }
 }
 
+#define IDC_SC_SEARCH_EDIT  3901
+#define IDC_SC_SEARCH_CLEAR 3902
+#define IDM_SC_CTX_COPY     3910
+#define IDM_SC_CTX_SELALL   3911
+#define TIMER_SC_DRAG_SCROLL 88
+
 struct ShortcutEntry {
     bool isSectionHeader = false;
     bool hasIcon = false;
     DockButton iconBtn;
     int iconAtlasY = -1;
+    std::wstring sectionTitle;
     std::wstring keyCol;
     std::wstring descCol;
+    bool visible = true;
     int y = 0;
     int h = 28;
     int textH = 20;
 };
 
+struct ShortcutsVisualLine {
+    int entryIdx = -1;
+    bool isSection = false;
+    bool isKeyCol = false;
+    int x = 0;
+    int y = 0;
+    int h = 20;
+    size_t docStart = 0;
+    size_t docEnd = 0;
+    std::wstring text;
+    std::vector<int> charX;
+};
+
 struct ShortcutsDlgParams {
     std::wstring mainTitle;
     std::vector<ShortcutEntry> entries;
+    std::vector<ShortcutsVisualLine> visualLines;
+    std::wstring fullDocText;
+    std::wstring searchQuery;
+    std::vector<std::wstring> searchTokens;
+    int matchRowCount = 0;
+    size_t selAnchor = 0;
+    size_t selCaret = 0;
+    bool isSelectingText = false;
+    std::wstring copiedStatusText;
+
     int leftColX = 22;
     int leftColW = 240;
     int rightColX = 276;
     int rightColW = 480;
+    int headerHeight = 76;
     int scrollY = 0;
     int scrollContentHeight = 580;
     int footerHeight = 52;
@@ -11787,6 +11816,10 @@ struct ShortcutsDlgParams {
     int lastLayoutClientW = -1;
     int lastOkBtnX = -1;
     int lastOkBtnY = -1;
+    int lastSearchEditW = -1;
+    int lastClearBtnX = -1;
+    HWND hSearchEdit = nullptr;
+    HWND hClearSearchBtn = nullptr;
     HWND hFooterBg = nullptr;
     HWND hOkBtn = nullptr;
 
@@ -11799,6 +11832,8 @@ struct ShortcutsDlgParams {
     HPEN hSepHilight = nullptr;
     HPEN hRowSep = nullptr;
     HPEN hFooterLinePen = nullptr;
+    HBRUSH hSearchMatchBrush = nullptr;
+    HBRUSH hSelHighlightBrush = nullptr;
     HDC hMeasureDC = nullptr;
     HGDIOBJ hMeasureOldFont = nullptr;
     HDC hIconAtlasDC = nullptr;
@@ -11816,6 +11851,79 @@ struct ShortcutsDlgParams {
     HGDIOBJ hBackOldBmp = nullptr;
     int backCapW = 0;
     int backCapH = 0;
+
+    bool HasSelection() const {
+        return selAnchor != selCaret && !fullDocText.empty();
+    }
+
+    std::wstring GetSelectedText() const {
+        if (!HasSelection()) return L"";
+        size_t sMin = std::min(selAnchor, selCaret);
+        size_t sMax = std::max(selAnchor, selCaret);
+        if (sMin >= fullDocText.size()) return L"";
+        sMax = std::min(sMax, fullDocText.size());
+        return fullDocText.substr(sMin, sMax - sMin);
+    }
+
+    static std::wstring ToLowerStr(const std::wstring& s) {
+        std::wstring res = s;
+        for (wchar_t& ch : res) ch = (wchar_t)towlower(ch);
+        return res;
+    }
+
+    void UpdateSearchFilter(const std::wstring& query) {
+        searchQuery = query;
+        searchTokens.clear();
+        std::wstring lowQ = ToLowerStr(query);
+        size_t pos = 0;
+        while (pos < lowQ.size()) {
+            while (pos < lowQ.size() && iswspace(lowQ[pos])) ++pos;
+            if (pos >= lowQ.size()) break;
+            size_t start = pos;
+            while (pos < lowQ.size() && !iswspace(lowQ[pos])) ++pos;
+            searchTokens.push_back(lowQ.substr(start, pos - start));
+        }
+
+        matchRowCount = 0;
+        for (auto& e : entries) {
+            if (e.isSectionHeader) {
+                e.visible = false;
+                continue;
+            }
+            if (searchTokens.empty()) {
+                e.visible = true;
+                matchRowCount++;
+            } else {
+                std::wstring haystack = ToLowerStr(e.keyCol + L" " + e.descCol + L" " + e.sectionTitle);
+                bool allMatch = true;
+                for (const auto& tok : searchTokens) {
+                    if (haystack.find(tok) == std::wstring::npos) {
+                        allMatch = false;
+                        break;
+                    }
+                }
+                e.visible = allMatch;
+                if (allMatch) matchRowCount++;
+            }
+        }
+
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].isSectionHeader) {
+                bool anyChildVisible = false;
+                for (size_t j = i + 1; j < entries.size() && !entries[j].isSectionHeader; ++j) {
+                    if (entries[j].visible) {
+                        anyChildVisible = true;
+                        break;
+                    }
+                }
+                entries[i].visible = anyChildVisible;
+            }
+        }
+
+        selAnchor = selCaret = 0;
+        isSelectingText = false;
+        renderedContentW = -1;
+    }
 
     void InitGdiCache(HDC hdcRef) {
         if (hTitleFont) return;
@@ -11835,6 +11943,8 @@ struct ShortcutsDlgParams {
         hSepHilight = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
         hRowSep = CreatePen(PS_SOLID, 1, RGB(218, 222, 228));
         hFooterLinePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+        hSearchMatchBrush = CreateSolidBrush(RGB(254, 240, 138));
+        hSelHighlightBrush = CreateSolidBrush(RGB(37, 99, 235));
 
         hMeasureDC = CreateCompatibleDC(hdcRef);
         if (hMeasureDC && hDescFont) {
@@ -11887,6 +11997,21 @@ struct ShortcutsDlgParams {
         }
     }
 
+    void DrawLineSearchHighlights(HDC hdc, const ShortcutsVisualLine& ln) const {
+        if (searchTokens.empty() || ln.text.empty() || ln.charX.size() <= ln.text.size() || !hSearchMatchBrush) return;
+        std::wstring lowLine = ToLowerStr(ln.text);
+        for (const auto& tok : searchTokens) {
+            if (tok.empty()) continue;
+            size_t pos = 0;
+            while ((pos = lowLine.find(tok, pos)) != std::wstring::npos) {
+                size_t endPos = std::min(ln.text.size(), pos + tok.size());
+                RECT rcM = { ln.x + ln.charX[pos], ln.y, ln.x + ln.charX[endPos], ln.y + ln.h };
+                FillRect(hdc, &rcM, hSearchMatchBrush);
+                pos += tok.size();
+            }
+        }
+    }
+
     void EnsureContentRendered(HDC hdcRef, int clientW) {
         if (!hTitleFont) {
             InitGdiCache(hdcRef);
@@ -11919,26 +12044,27 @@ struct ShortcutsDlgParams {
         int rightEdge = std::max(rightColX + 240, clientW - padX);
 
         HGDIOBJ hOldF = SelectObject(hContentDC, hTitleFont);
-        SetTextColor(hContentDC, GetSysColor(COLOR_WINDOWTEXT));
-        RECT rcTitle = { padX, 14, rightEdge, 38 };
-        DrawTextW(hContentDC, mainTitle.c_str(), (int)mainTitle.size(), &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
         HGDIOBJ hOldP = SelectObject(hContentDC, hSepShadow);
-        MoveToEx(hContentDC, padX, 42, nullptr);
-        LineTo(hContentDC, rightEdge, 42);
-        SelectObject(hContentDC, hSepHilight);
-        MoveToEx(hContentDC, padX, 43, nullptr);
-        LineTo(hContentDC, rightEdge, 43);
 
         const int iconW = 26;
         const int iconH = 22;
 
+        if (visualLines.empty() && !searchTokens.empty()) {
+            SelectObject(hContentDC, hDescFont);
+            SetTextColor(hContentDC, GetSysColor(COLOR_GRAYTEXT));
+            RECT rcEmpty = { padX, 28, rightEdge, 64 };
+            DrawTextW(hContentDC, L"No matching keyboard shortcuts or info found.", -1, &rcEmpty, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        bool firstVisibleSection = true;
+        bool prevWasSection = false;
         for (size_t i = 0; i < entries.size(); ++i) {
             const auto& e = entries[i];
+            if (!e.visible) continue;
             int drawY = e.y;
 
             if (e.isSectionHeader) {
-                if (i > 0) {
+                if (!firstVisibleSection) {
                     int lineY = drawY + 6;
                     SelectObject(hContentDC, hSepShadow);
                     MoveToEx(hContentDC, padX, lineY, nullptr);
@@ -11947,39 +12073,45 @@ struct ShortcutsDlgParams {
                     MoveToEx(hContentDC, padX, lineY + 1, nullptr);
                     LineTo(hContentDC, rightEdge, lineY + 1);
                 }
-                SelectObject(hContentDC, hSectionFont);
-                SetTextColor(hContentDC, RGB(15, 23, 42));
-                int hdrTop = (i > 0) ? (drawY + 14) : (drawY + 4);
-                RECT rcHdr = { padX, hdrTop, rightEdge, drawY + e.h };
-                DrawTextW(hContentDC, e.keyCol.c_str(), (int)e.keyCol.size(), &rcHdr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+                firstVisibleSection = false;
+                prevWasSection = true;
             } else {
-                if (i > 0 && !entries[i - 1].isSectionHeader) {
+                if (!prevWasSection) {
                     SelectObject(hContentDC, hRowSep);
                     MoveToEx(hContentDC, leftColX, drawY, nullptr);
                     LineTo(hContentDC, rightEdge, drawY);
                 }
+                prevWasSection = false;
 
-                int keyTextLeft = leftColX;
                 if (e.hasIcon) {
                     int iconX = leftColX;
                     int iconY = drawY + (e.h - iconH) / 2;
                     if (hIconAtlasDC && e.iconAtlasY >= 0) {
                         BitBlt(hContentDC, iconX, iconY, iconW, iconH, hIconAtlasDC, 0, e.iconAtlasY, SRCCOPY);
                     }
-                    keyTextLeft += iconW + 8;
+                } else {
+                    SelectObject(hContentDC, hKeyFont);
+                    SetTextColor(hContentDC, RGB(30, 41, 59));
+                    RECT rcBullet = { leftColX, drawY, leftColX + 18, drawY + e.h };
+                    DrawTextW(hContentDC, L"•", -1, &rcBullet, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
                 }
+            }
+        }
 
+        for (const auto& ln : visualLines) {
+            DrawLineSearchHighlights(hContentDC, ln);
+            if (ln.isSection) {
+                SelectObject(hContentDC, hSectionFont);
+                SetTextColor(hContentDC, RGB(15, 23, 42));
+            } else if (ln.isKeyCol) {
                 SelectObject(hContentDC, hKeyFont);
                 SetTextColor(hContentDC, RGB(30, 41, 59));
-                RECT rcKey = { keyTextLeft, drawY, leftColX + leftColW, drawY + e.h };
-                DrawTextW(hContentDC, e.keyCol.c_str(), (int)e.keyCol.size(), &rcKey, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
+            } else {
                 SelectObject(hContentDC, hDescFont);
                 SetTextColor(hContentDC, GetSysColor(COLOR_WINDOWTEXT));
-                int descTop = drawY + std::max(2, (e.h - e.textH) / 2);
-                RECT rcDesc = { rightColX, descTop, rightEdge, drawY + e.h };
-                DrawTextW(hContentDC, e.descCol.c_str(), (int)e.descCol.size(), &rcDesc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
             }
+            RECT rcLn = { ln.x, ln.y, rightEdge, ln.y + ln.h };
+            DrawTextW(hContentDC, ln.text.c_str(), (int)ln.text.size(), &rcLn, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
 
         SelectObject(hContentDC, hOldP);
@@ -12020,6 +12152,8 @@ struct ShortcutsDlgParams {
             hMeasureDC = nullptr;
             hMeasureOldFont = nullptr;
         }
+        if (hSelHighlightBrush) { DeleteObject(hSelHighlightBrush); hSelHighlightBrush = nullptr; }
+        if (hSearchMatchBrush)  { DeleteObject(hSearchMatchBrush);  hSearchMatchBrush = nullptr; }
         if (hFooterLinePen) { DeleteObject(hFooterLinePen); hFooterLinePen = nullptr; }
         if (hRowSep)        { DeleteObject(hRowSep);        hRowSep = nullptr; }
         if (hSepHilight)    { DeleteObject(hSepHilight);    hSepHilight = nullptr; }
@@ -12030,6 +12164,65 @@ struct ShortcutsDlgParams {
         if (hTitleFont)     { DeleteObject(hTitleFont);     hTitleFont = nullptr; }
     }
 };
+
+static void ComputeVisualLineCharOffsets(HDC hdc, HFONT hFont, ShortcutsVisualLine& ln) {
+    ln.charX.assign(ln.text.size() + 1, 0);
+    if (!hdc || ln.text.empty()) return;
+    HGDIOBJ hOld = hFont ? SelectObject(hdc, hFont) : nullptr;
+    std::vector<INT> dx(ln.text.size(), 0);
+    SIZE sz = { 0, 0 };
+    if (GetTextExtentExPointW(hdc, ln.text.c_str(), (int)ln.text.size(), 0, nullptr, dx.data(), &sz)) {
+        for (size_t i = 0; i < ln.text.size(); ++i) {
+            ln.charX[i + 1] = dx[i];
+        }
+    }
+    if (hFont && hOld) SelectObject(hdc, hOld);
+}
+
+static std::vector<std::wstring> WrapShortcutsDescText(HDC hdc, HFONT hFont, const std::wstring& text, int maxWidth) {
+    std::vector<std::wstring> lines;
+    if (text.empty()) {
+        lines.push_back(L"");
+        return lines;
+    }
+    HGDIOBJ hOld = (hdc && hFont) ? SelectObject(hdc, hFont) : nullptr;
+    auto measureW = [&](const std::wstring& s) -> int {
+        if (!hdc || s.empty()) return 0;
+        SIZE sz = { 0, 0 };
+        GetTextExtentPoint32W(hdc, s.c_str(), (int)s.size(), &sz);
+        return sz.cx;
+    };
+
+    size_t n = text.size();
+    size_t i = 0;
+    std::wstring curLine;
+    while (i < n) {
+        if (text[i] == L'\n') {
+            lines.push_back(curLine);
+            curLine.clear();
+            ++i;
+            continue;
+        }
+        while (i < n && text[i] == L' ') ++i;
+        if (i >= n) break;
+        size_t wordStart = i;
+        while (i < n && text[i] != L' ' && text[i] != L'\n') ++i;
+        std::wstring word = text.substr(wordStart, i - wordStart);
+
+        std::wstring candidate = curLine.empty() ? word : (curLine + L" " + word);
+        if (!curLine.empty() && measureW(candidate) > maxWidth) {
+            lines.push_back(curLine);
+            curLine = word;
+        } else {
+            curLine = candidate;
+        }
+    }
+    if (!curLine.empty() || lines.empty()) {
+        lines.push_back(curLine);
+    }
+    if (hdc && hFont && hOld) SelectObject(hdc, hOld);
+    return lines;
+}
 
 static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW, bool forceRecalc = false) {
     if (!p) return;
@@ -12046,33 +12239,104 @@ static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW,
 
     HDC hdcMeasure = p->hMeasureDC;
     bool tempDC = false;
-    HFONT hTempFont = nullptr;
+    HFONT hTempSectionFont = nullptr;
+    HFONT hTempKeyFont = nullptr;
+    HFONT hTempDescFont = nullptr;
     HGDIOBJ hOldF = nullptr;
     if (!hdcMeasure) {
         hdcMeasure = hWnd ? GetDC(hWnd) : GetDC(nullptr);
         tempDC = true;
-        hTempFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-        if (hdcMeasure) hOldF = SelectObject(hdcMeasure, hTempFont);
+        hTempSectionFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hTempKeyFont = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                   CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        hTempDescFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+        if (hdcMeasure) hOldF = SelectObject(hdcMeasure, hTempDescFont);
     }
 
-    int curY = 48;
+    HFONT useSectionFont = p->hSectionFont ? p->hSectionFont : hTempSectionFont;
+    HFONT useKeyFont     = p->hKeyFont     ? p->hKeyFont     : hTempKeyFont;
+    HFONT useDescFont    = p->hDescFont    ? p->hDescFont    : hTempDescFont;
+
+    p->visualLines.clear();
+    p->fullDocText.clear();
+
+    const int lineH = 20;
+    const int iconW = 26;
+    int curY = 6;
+    bool firstVisibleSection = true;
+
     for (size_t i = 0; i < p->entries.size(); ++i) {
         auto& e = p->entries[i];
+        if (!e.visible) {
+            e.y = curY;
+            e.h = 0;
+            continue;
+        }
         e.y = curY;
         if (e.isSectionHeader) {
-            e.h = (i == 0) ? 28 : 38;
-            e.textH = 20;
+            e.h = firstVisibleSection ? 28 : 38;
+            e.textH = lineH;
+            int hdrTop = firstVisibleSection ? (e.y + 4) : (e.y + 14);
+            firstVisibleSection = false;
+
+            ShortcutsVisualLine ln;
+            ln.entryIdx = (int)i;
+            ln.isSection = true;
+            ln.isKeyCol = false;
+            ln.x = padX;
+            ln.y = hdrTop;
+            ln.h = lineH;
+            ln.text = e.keyCol;
+            ln.docStart = p->fullDocText.size();
+            p->fullDocText += ln.text;
+            ln.docEnd = p->fullDocText.size();
+            p->fullDocText += L"\r\n";
+            ComputeVisualLineCharOffsets(hdcMeasure, useSectionFont, ln);
+            p->visualLines.push_back(std::move(ln));
         } else {
-            int measuredH = 20;
-            if (hdcMeasure && !e.descCol.empty()) {
-                RECT rcD = { 0, 0, availDescW, 0 };
-                DrawTextW(hdcMeasure, e.descCol.c_str(), (int)e.descCol.size(), &rcD, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-                measuredH = std::max(18, (int)(rcD.bottom - rcD.top));
-            }
+            std::vector<std::wstring> wrapped = WrapShortcutsDescText(hdcMeasure, useDescFont, e.descCol, availDescW);
+            int measuredH = std::max(lineH, (int)wrapped.size() * lineH);
             e.textH = measuredH;
             e.h = std::max(28, measuredH + 10);
+
+            int keyTextLeft = p->leftColX + (e.hasIcon ? (iconW + 8) : 16);
+            ShortcutsVisualLine keyLn;
+            keyLn.entryIdx = (int)i;
+            keyLn.isSection = false;
+            keyLn.isKeyCol = true;
+            keyLn.x = keyTextLeft;
+            keyLn.y = e.y + (e.h - lineH) / 2;
+            keyLn.h = lineH;
+            keyLn.text = e.keyCol;
+            keyLn.docStart = p->fullDocText.size();
+            p->fullDocText += keyLn.text;
+            keyLn.docEnd = p->fullDocText.size();
+            p->fullDocText += L"\t";
+            ComputeVisualLineCharOffsets(hdcMeasure, useKeyFont, keyLn);
+            p->visualLines.push_back(std::move(keyLn));
+
+            int descTop = e.y + std::max(2, (e.h - e.textH) / 2);
+            for (size_t lnIdx = 0; lnIdx < wrapped.size(); ++lnIdx) {
+                ShortcutsVisualLine descLn;
+                descLn.entryIdx = (int)i;
+                descLn.isSection = false;
+                descLn.isKeyCol = false;
+                descLn.x = p->rightColX;
+                descLn.y = descTop + (int)lnIdx * lineH;
+                descLn.h = lineH;
+                descLn.text = wrapped[lnIdx];
+                descLn.docStart = p->fullDocText.size();
+                p->fullDocText += descLn.text;
+                descLn.docEnd = p->fullDocText.size();
+                p->fullDocText += (lnIdx + 1 < wrapped.size()) ? L" " : L"\r\n";
+                ComputeVisualLineCharOffsets(hdcMeasure, useDescFont, descLn);
+                p->visualLines.push_back(std::move(descLn));
+            }
         }
         curY += e.h;
     }
@@ -12082,17 +12346,104 @@ static void RecalcShortcutsLayout(HWND hWnd, ShortcutsDlgParams* p, int clientW,
             SelectObject(hdcMeasure, hOldF);
             ReleaseDC(hWnd, hdcMeasure);
         }
-        if (hTempFont) DeleteObject(hTempFont);
+        if (hTempSectionFont) DeleteObject(hTempSectionFont);
+        if (hTempKeyFont)     DeleteObject(hTempKeyFont);
+        if (hTempDescFont)    DeleteObject(hTempDescFont);
     }
 
-    p->scrollContentHeight = curY + 12;
+    p->scrollContentHeight = std::max(80, curY + 12);
 
     DWORD dwStyle = hWnd ? (DWORD)GetWindowLongPtrW(hWnd, GWL_STYLE)
                          : (WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN);
     DWORD dwExStyle = hWnd ? (DWORD)GetWindowLongPtrW(hWnd, GWL_EXSTYLE) : WS_EX_TOPMOST;
-    RECT rcFull = { 0, 0, std::max(320, clientW), p->scrollContentHeight + p->footerHeight };
+    RECT rcFull = { 0, 0, std::max(320, clientW), p->headerHeight + p->scrollContentHeight + p->footerHeight };
     AdjustWindowRectEx(&rcFull, dwStyle, FALSE, dwExStyle);
     p->fullWinHeight = rcFull.bottom - rcFull.top;
+}
+
+static size_t HitTestShortcutsDocPos(const ShortcutsDlgParams* p, int mx, int contentY) {
+    if (!p || p->visualLines.empty()) return 0;
+    if (contentY < p->visualLines.front().y) return 0;
+    if (contentY > p->visualLines.back().y + p->visualLines.back().h + 8) return p->fullDocText.size();
+
+    // 1. Find the visible entry at contentY
+    int bestEntryIdx = -1;
+    int bestEntryDist = 100000000;
+    for (size_t i = 0; i < p->entries.size(); ++i) {
+        const auto& e = p->entries[i];
+        if (!e.visible || e.h <= 0) continue;
+        int dist = 0;
+        if (contentY < e.y) dist = e.y - contentY;
+        else if (contentY >= e.y + e.h) dist = contentY - (e.y + e.h) + 1;
+        if (dist < bestEntryDist) {
+            bestEntryDist = dist;
+            bestEntryIdx = (int)i;
+            if (dist == 0) break;
+        }
+    }
+    if (bestEntryIdx < 0) return 0;
+
+    // 2. Within that entry, choose keyCol vs descCol based on mx, then closest wrapped line by contentY
+    bool preferKeyCol = (mx < p->rightColX - 8);
+    const ShortcutsVisualLine* bestLine = nullptr;
+    int bestLineDist = 100000000;
+    for (const auto& ln : p->visualLines) {
+        if (ln.entryIdx != bestEntryIdx) continue;
+        if (!ln.isSection && ln.isKeyCol != preferKeyCol) continue;
+        int dist = 0;
+        if (contentY < ln.y) dist = ln.y - contentY;
+        else if (contentY >= ln.y + ln.h) dist = contentY - (ln.y + ln.h) + 1;
+        if (dist < bestLineDist) {
+            bestLineDist = dist;
+            bestLine = &ln;
+        }
+    }
+    if (!bestLine) {
+        for (const auto& ln : p->visualLines) {
+            if (ln.entryIdx == bestEntryIdx) {
+                bestLine = &ln;
+                break;
+            }
+        }
+    }
+    if (!bestLine) return 0;
+
+    // 3. Find character offset inside bestLine
+    int relX = mx - bestLine->x;
+    if (relX <= 0 || bestLine->text.empty()) return bestLine->docStart;
+    for (size_t c = 0; c < bestLine->text.size(); ++c) {
+        int leftX = bestLine->charX[c];
+        int rightX = bestLine->charX[c + 1];
+        int midX = (leftX + rightX) / 2;
+        if (relX < midX) {
+            return bestLine->docStart + c;
+        }
+    }
+    return bestLine->docEnd;
+}
+
+static bool CopyShortcutsSelectionToClipboard(HWND hWnd, ShortcutsDlgParams* p) {
+    if (!p || !p->HasSelection()) return false;
+    std::wstring text = p->GetSelectedText();
+    if (text.empty()) return false;
+    if (!OpenClipboard(hWnd)) return false;
+    EmptyClipboard();
+    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hMem) {
+        void* ptr = GlobalLock(hMem);
+        if (ptr) {
+            memcpy(ptr, text.c_str(), bytes);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        } else {
+            GlobalFree(hMem);
+        }
+    }
+    CloseClipboard();
+    p->copiedStatusText = L"\x2713 Copied selected text to clipboard";
+    if (hWnd) InvalidateRect(hWnd, nullptr, FALSE);
+    return true;
 }
 
 static void LayoutShortcutsFooter(HWND hWnd, ShortcutsDlgParams* p) {
@@ -12101,7 +12452,18 @@ static void LayoutShortcutsFooter(HWND hWnd, ShortcutsDlgParams* p) {
     GetClientRect(hWnd, &rcClient);
     int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
     int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
-    int footerTop = std::max(0, clientH - p->footerHeight);
+    int footerTop = std::max(p->headerHeight, clientH - p->footerHeight);
+
+    int clearBtnX = std::max(160, clientW - 18 - 64);
+    int searchEditW = std::max(120, clearBtnX - 8 - 76);
+    if (p->hSearchEdit && searchEditW != p->lastSearchEditW) {
+        p->lastSearchEditW = searchEditW;
+        SetWindowPos(p->hSearchEdit, HWND_TOP, 76, 39, searchEditW, 26, SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    }
+    if (p->hClearSearchBtn && clearBtnX != p->lastClearBtnX) {
+        p->lastClearBtnX = clearBtnX;
+        SetWindowPos(p->hClearSearchBtn, HWND_TOP, clearBtnX, 38, 64, 28, SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    }
     if (p->hOkBtn) {
         int btnX = std::max(16, clientW - 18 - 92);
         int btnY = footerTop + 11;
@@ -12119,7 +12481,7 @@ static void UpdateShortcutsScroll(HWND hWnd, ShortcutsDlgParams* p, int newScrol
     GetClientRect(hWnd, &rcClient);
     int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
     int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
-    int viewportH = std::max(1, clientH - p->footerHeight);
+    int viewportH = std::max(1, clientH - p->headerHeight - p->footerHeight);
     int maxScroll = std::max(0, p->scrollContentHeight - viewportH);
     int clamped = std::max(0, std::min(newScrollY, maxScroll));
     int dy = p->scrollY - clamped;
@@ -12152,6 +12514,25 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
                 if (hdc) ReleaseDC(hWnd, hdc);
             }
 
+            HWND hSearch = CreateWindowExW(
+                WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | ES_AUTOHSCROLL,
+                76, 39, 400, 26, hWnd, (HMENU)IDC_SC_SEARCH_EDIT, nullptr, nullptr
+            );
+            if (p && p->hDescFont) {
+                SendMessageW(hSearch, WM_SETFONT, (WPARAM)p->hDescFont, TRUE);
+            }
+            SendMessageW(hSearch, EM_SETCUEBANNER, TRUE, (LPARAM)L"Search shortcuts, tools, actions, or descriptions... (Ctrl + F)");
+
+            HWND hClear = CreateWindowExW(
+                0, L"BUTTON", L"Clear",
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_DISABLED,
+                484, 38, 64, 28, hWnd, (HMENU)IDC_SC_SEARCH_CLEAR, nullptr, nullptr
+            );
+            if (p && p->hDescFont) {
+                SendMessageW(hClear, WM_SETFONT, (WPARAM)p->hDescFont, TRUE);
+            }
+
             HWND hOk = CreateWindowExW(0, L"BUTTON", L"OK",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 400, 500, 92, 30, hWnd, (HMENU)IDOK, nullptr, nullptr);
             if (p && p->hKeyFont) {
@@ -12159,6 +12540,8 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
             }
 
             if (p) {
+                p->hSearchEdit = hSearch;
+                p->hClearSearchBtn = hClear;
                 p->hOkBtn = hOk;
                 RECT rcC;
                 GetClientRect(hWnd, &rcC);
@@ -12176,6 +12559,158 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_SETCURSOR: {
+            if (p && (HWND)wParam == hWnd && LOWORD(lParam) == HTCLIENT) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hWnd, &pt);
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int footerTop = std::max(p->headerHeight, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                if (pt.y >= p->headerHeight && pt.y < footerTop) {
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                    return TRUE;
+                }
+            }
+            break;
+        }
+        case WM_LBUTTONDOWN: {
+            if (p) {
+                int mx = GET_X_LPARAM(lParam);
+                int my = GET_Y_LPARAM(lParam);
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int footerTop = std::max(p->headerHeight, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                if (my >= p->headerHeight && my < footerTop) {
+                    SetFocus(hWnd);
+                    p->copiedStatusText.clear();
+                    int contentY = my - p->headerHeight + p->scrollY;
+                    size_t pos = HitTestShortcutsDocPos(p, mx, contentY);
+                    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+                        p->selCaret = pos;
+                    } else {
+                        p->selAnchor = pos;
+                        p->selCaret = pos;
+                    }
+                    p->isSelectingText = true;
+                    SetCapture(hWnd);
+                    SetTimer(hWnd, TIMER_SC_DRAG_SCROLL, 30, nullptr);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            break;
+        }
+        case WM_LBUTTONDBLCLK: {
+            if (p && !p->fullDocText.empty()) {
+                int mx = GET_X_LPARAM(lParam);
+                int my = GET_Y_LPARAM(lParam);
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int footerTop = std::max(p->headerHeight, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                if (my >= p->headerHeight && my < footerTop) {
+                    SetFocus(hWnd);
+                    int contentY = my - p->headerHeight + p->scrollY;
+                    size_t pos = std::min(HitTestShortcutsDocPos(p, mx, contentY), p->fullDocText.size() - 1);
+                    auto isWordChar = [](wchar_t ch) {
+                        return iswalnum(ch) || ch == L'_' || ch == L'-' || ch == L'+' || ch == L'{' || ch == L'}' || ch == L'#' || ch == L'%';
+                    };
+                    if (isWordChar(p->fullDocText[pos])) {
+                        size_t s = pos, e = pos;
+                        while (s > 0 && isWordChar(p->fullDocText[s - 1])) --s;
+                        while (e < p->fullDocText.size() && isWordChar(p->fullDocText[e])) ++e;
+                        p->selAnchor = s;
+                        p->selCaret = e;
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+            }
+            break;
+        }
+        case WM_MOUSEMOVE: {
+            if (p && p->isSelectingText) {
+                int mx = GET_X_LPARAM(lParam);
+                int my = GET_Y_LPARAM(lParam);
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int footerTop = std::max(p->headerHeight, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                int clampedMy = std::max(p->headerHeight, std::min(my, footerTop));
+                int contentY = clampedMy - p->headerHeight + p->scrollY;
+                size_t newCaret = HitTestShortcutsDocPos(p, mx, contentY);
+                if (newCaret != p->selCaret) {
+                    p->selCaret = newCaret;
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            break;
+        }
+        case WM_LBUTTONUP: {
+            if (p && p->isSelectingText) {
+                p->isSelectingText = false;
+                KillTimer(hWnd, TIMER_SC_DRAG_SCROLL);
+                if (GetCapture() == hWnd) {
+                    ReleaseCapture();
+                }
+                return 0;
+            }
+            break;
+        }
+        case WM_TIMER: {
+            if (wParam == TIMER_SC_DRAG_SCROLL && p && p->isSelectingText) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hWnd, &pt);
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int footerTop = std::max(p->headerHeight, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                int scrollDelta = 0;
+                if (pt.y < p->headerHeight) {
+                    scrollDelta = -std::min(48, std::max(8, (p->headerHeight - (int)pt.y) / 2));
+                } else if (pt.y > footerTop) {
+                    scrollDelta = std::min(48, std::max(8, ((int)pt.y - footerTop) / 2));
+                }
+                if (scrollDelta != 0) {
+                    UpdateShortcutsScroll(hWnd, p, p->scrollY + scrollDelta, false);
+                    int clampedMy = std::max(p->headerHeight, std::min((int)pt.y, footerTop));
+                    p->selCaret = HitTestShortcutsDocPos(p, pt.x, clampedMy - p->headerHeight + p->scrollY);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            break;
+        }
+        case WM_CONTEXTMENU: {
+            if (p) {
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                if (pt.x == -1 && pt.y == -1) {
+                    GetCursorPos(&pt);
+                }
+                POINT clientPt = pt;
+                ScreenToClient(hWnd, &clientPt);
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int footerTop = std::max(p->headerHeight, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                if (clientPt.y >= p->headerHeight && clientPt.y < footerTop) {
+                    HMENU hMenu = CreatePopupMenu();
+                    AppendMenuW(hMenu, MF_STRING | (p->HasSelection() ? MF_ENABLED : MF_GRAYED), IDM_SC_CTX_COPY, L"Copy\tCtrl+C");
+                    AppendMenuW(hMenu, MF_STRING | (!p->fullDocText.empty() ? MF_ENABLED : MF_GRAYED), IDM_SC_CTX_SELALL, L"Select all\tCtrl+A");
+                    int cmd = (int)TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hWnd, nullptr);
+                    DestroyMenu(hMenu);
+                    if (cmd == IDM_SC_CTX_COPY) {
+                        CopyShortcutsSelectionToClipboard(hWnd, p);
+                    } else if (cmd == IDM_SC_CTX_SELALL) {
+                        p->selAnchor = 0;
+                        p->selCaret = p->fullDocText.size();
+                        p->copiedStatusText.clear();
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+            }
+            break;
+        }
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hWnd, &ps);
@@ -12198,28 +12733,104 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
                     p->hBackOldBmp = SelectObject(p->hBackDC, p->hBackBmp);
                 }
                 HDC memDC = p->hBackDC;
+                SetBkMode(memDC, TRANSPARENT);
 
-                int footerTop = std::max(0, clientH - p->footerHeight);
+                int hdrH = p->headerHeight;
+                int footerTop = std::max(hdrH, clientH - p->footerHeight);
+                int viewportH = std::max(0, footerTop - hdrH);
                 int sy = p->scrollY;
                 int copyH = 0;
-                if (p->hContentDC && p->renderedContentH > sy) {
-                    copyH = std::max(0, std::min(footerTop, p->renderedContentH - sy));
+                if (p->hContentDC && p->renderedContentH > sy && viewportH > 0) {
+                    copyH = std::max(0, std::min(viewportH, p->renderedContentH - sy));
                     if (copyH > 0) {
-                        BitBlt(memDC, 0, 0, clientW, copyH, p->hContentDC, 0, sy, SRCCOPY);
+                        BitBlt(memDC, 0, hdrH, clientW, copyH, p->hContentDC, 0, sy, SRCCOPY);
                     }
                 }
-                if (copyH < footerTop) {
-                    RECT rcRem = { 0, copyH, clientW, footerTop };
+                if (copyH < viewportH) {
+                    RECT rcRem = { 0, hdrH + copyH, clientW, footerTop };
                     FillRect(memDC, &rcRem, GetSysColorBrush(COLOR_BTNFACE));
                 }
 
-                // Permanent bottom footer bar + separating line
+                // Render active text selection highlights inside the scrollable viewport
+                if (p->HasSelection() && p->hSelHighlightBrush && viewportH > 0) {
+                    size_t sMin = std::min(p->selAnchor, p->selCaret);
+                    size_t sMax = std::max(p->selAnchor, p->selCaret);
+                    HGDIOBJ hOldSelFont = SelectObject(memDC, p->hDescFont);
+                    SetTextColor(memDC, RGB(255, 255, 255));
+                    for (const auto& ln : p->visualLines) {
+                        if (ln.docEnd <= sMin || ln.docStart >= sMax || ln.text.empty()) continue;
+                        int screenY = hdrH + ln.y - sy;
+                        if (screenY + ln.h <= hdrH || screenY >= footerTop) continue;
+                        size_t hlStart = (sMin > ln.docStart) ? (sMin - ln.docStart) : 0;
+                        size_t hlEnd = std::min(ln.text.size(), sMax - ln.docStart);
+                        if (hlStart >= hlEnd || hlEnd >= ln.charX.size()) continue;
+
+                        int x1 = ln.x + ln.charX[hlStart];
+                        int x2 = ln.x + ln.charX[hlEnd];
+                        RECT rcSel = { x1, screenY, x2, screenY + ln.h };
+                        FillRect(memDC, &rcSel, p->hSelHighlightBrush);
+
+                        if (ln.isSection) SelectObject(memDC, p->hSectionFont);
+                        else if (ln.isKeyCol) SelectObject(memDC, p->hKeyFont);
+                        else SelectObject(memDC, p->hDescFont);
+
+                        std::wstring sub = ln.text.substr(hlStart, hlEnd - hlStart);
+                        RECT rcSub = { x1, screenY, x2 + 8, screenY + ln.h };
+                        DrawTextW(memDC, sub.c_str(), (int)sub.size(), &rcSub, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                    }
+                    SelectObject(memDC, hOldSelFont);
+                }
+
+                // Permanent pinned top header bar (Title + Search bar)
+                int padX = 18;
+                int rightEdge = clientW - padX;
+                RECT rcHeader = { 0, 0, clientW, hdrH };
+                FillRect(memDC, &rcHeader, GetSysColorBrush(COLOR_BTNFACE));
+
+                HGDIOBJ hOldF = SelectObject(memDC, p->hTitleFont);
+                SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
+                RECT rcTitle = { padX, 8, rightEdge - 130, 32 };
+                DrawTextW(memDC, p->mainTitle.c_str(), (int)p->mainTitle.size(), &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                if (!p->searchTokens.empty()) {
+                    SelectObject(memDC, p->hDescFont);
+                    SetTextColor(memDC, (p->matchRowCount > 0) ? RGB(30, 64, 175) : RGB(220, 38, 38));
+                    std::wstring matchStr = std::to_wstring(p->matchRowCount) + ((p->matchRowCount == 1) ? L" match" : L" matches");
+                    RECT rcMatch = { rightEdge - 140, 8, rightEdge, 32 };
+                    DrawTextW(memDC, matchStr.c_str(), (int)matchStr.size(), &rcMatch, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                }
+
+                SelectObject(memDC, p->hKeyFont);
+                SetTextColor(memDC, RGB(30, 41, 59));
+                RECT rcSearchLbl = { padX, 39, 74, 65 };
+                DrawTextW(memDC, L"Search:", -1, &rcSearchLbl, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                HGDIOBJ hOldP = SelectObject(memDC, p->hSepShadow);
+                MoveToEx(memDC, 0, hdrH - 2, nullptr);
+                LineTo(memDC, clientW, hdrH - 2);
+                SelectObject(memDC, p->hSepHilight);
+                MoveToEx(memDC, 0, hdrH - 1, nullptr);
+                LineTo(memDC, clientW, hdrH - 1);
+
+                // Permanent bottom footer bar + separating line + copy status hint
                 RECT rcFooter = { 0, footerTop, clientW, clientH };
                 FillRect(memDC, &rcFooter, GetSysColorBrush(COLOR_BTNFACE));
-                HGDIOBJ hOldFooterPen = SelectObject(memDC, p->hFooterLinePen);
+                SelectObject(memDC, p->hFooterLinePen);
                 MoveToEx(memDC, 0, footerTop, nullptr);
                 LineTo(memDC, clientW, footerTop);
-                SelectObject(memDC, hOldFooterPen);
+
+                SelectObject(memDC, p->hDescFont);
+                RECT rcFooterHint = { padX, footerTop + 10, std::max(padX + 80, clientW - 126), clientH - 10 };
+                if (!p->copiedStatusText.empty()) {
+                    SetTextColor(memDC, RGB(22, 163, 74));
+                    DrawTextW(memDC, p->copiedStatusText.c_str(), -1, &rcFooterHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                } else {
+                    SetTextColor(memDC, GetSysColor(COLOR_GRAYTEXT));
+                    DrawTextW(memDC, L"Drag to select any text (or double-click word) and press Ctrl+C or right-click to copy", -1, &rcFooterHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                }
+
+                SelectObject(memDC, hOldP);
+                SelectObject(memDC, hOldF);
 
                 BitBlt(hdc, 0, 0, clientW, clientH, memDC, 0, 0, SRCCOPY);
             }
@@ -12235,7 +12846,10 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
                 mmi->ptMinTrackSize.x = p->minWinWidth;
                 mmi->ptMaxTrackSize.x = std::max(p->minWinWidth, maxW);
                 mmi->ptMinTrackSize.y = 280;
-                int maxH = std::min(p->fullWinHeight, std::max(320, sh - 24));
+                int maxH = std::max(360, sh - 24);
+                if (p->searchTokens.empty()) {
+                    maxH = std::min(p->fullWinHeight, maxH);
+                }
                 mmi->ptMaxTrackSize.y = std::max(280, maxH);
             }
             return 0;
@@ -12261,7 +12875,7 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
             if (p && lParam == 0) {
                 RECT rcC;
                 GetClientRect(hWnd, &rcC);
-                int viewportH = std::max(60, (int)(rcC.bottom - rcC.top) - p->footerHeight);
+                int viewportH = std::max(60, (int)(rcC.bottom - rcC.top) - p->headerHeight - p->footerHeight);
                 int pageH = std::max(40, viewportH - 36);
                 int target = p->scrollY;
                 switch (LOWORD(wParam)) {
@@ -12299,16 +12913,41 @@ static LRESULT CALLBACK ShortcutsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, 
             }
             break;
         }
-        case WM_COMMAND:
-            if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+        case WM_COMMAND: {
+            WORD id = LOWORD(wParam);
+            WORD code = HIWORD(wParam);
+            if (id == IDC_SC_SEARCH_EDIT && code == EN_CHANGE && p && p->hSearchEdit) {
+                WCHAR qBuf[256] = { 0 };
+                GetWindowTextW(p->hSearchEdit, qBuf, 255);
+                std::wstring newQ = qBuf;
+                if (p->hClearSearchBtn) {
+                    EnableWindow(p->hClearSearchBtn, newQ.empty() ? FALSE : TRUE);
+                }
+                p->UpdateSearchFilter(newQ);
+                RECT rcC;
+                GetClientRect(hWnd, &rcC);
+                int clientW = std::max(1, (int)(rcC.right - rcC.left));
+                RecalcShortcutsLayout(hWnd, p, clientW, true);
+                UpdateShortcutsScroll(hWnd, p, 0, false);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            if (id == IDC_SC_SEARCH_CLEAR && p && p->hSearchEdit) {
+                SetWindowTextW(p->hSearchEdit, L"");
+                SetFocus(p->hSearchEdit);
+                return 0;
+            }
+            if (id == IDOK || id == IDCANCEL) {
                 DestroyWindow(hWnd);
                 return 0;
             }
             break;
+        }
         case WM_CLOSE:
             DestroyWindow(hWnd);
             return 0;
         case WM_NCDESTROY:
+            KillTimer(hWnd, TIMER_SC_DRAG_SCROLL);
             if (p) {
                 p->FreeGdiCache();
             }
@@ -12345,9 +12984,12 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     ShortcutsDlgParams params;
     params.mainTitle = L"PepperSnap v" + std::wstring(APP_VERSION) + L" — complete hotkeys & mechanisms reference";
 
+    std::wstring curSectionTitle;
     auto addSection = [&](const std::wstring& title) {
+        curSectionTitle = title;
         ShortcutEntry e;
         e.isSectionHeader = true;
+        e.sectionTitle = title;
         e.keyCol = title;
         params.entries.push_back(e);
     };
@@ -12355,7 +12997,8 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         ShortcutEntry e;
         e.isSectionHeader = false;
         e.hasIcon = false;
-        e.keyCol = L"•  " + key;
+        e.sectionTitle = curSectionTitle;
+        e.keyCol = key;
         e.descCol = desc;
         params.entries.push_back(e);
     };
@@ -12365,6 +13008,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         e.hasIcon = true;
         e.iconBtn.isTool = true;
         e.iconBtn.tool = tool;
+        e.sectionTitle = curSectionTitle;
         e.keyCol = key;
         e.descCol = desc;
         params.entries.push_back(e);
@@ -12376,6 +13020,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
         e.iconBtn.isTool = false;
         e.iconBtn.id = btnId;
         e.iconBtn.isPrimaryAction = primary;
+        e.sectionTitle = curSectionTitle;
         e.keyCol = key;
         e.descCol = desc;
         params.entries.push_back(e);
@@ -12393,12 +13038,12 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
     addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
     addActionRow(DBTN_ACT_FRAME_TOGGLE,     false, FormatLabelWithShortcut(L"Hide / Show frames (GIF/WebP)",  hkFrameToggleStrip), L"Collapse or expand the bottom frame list in \"Edit with PepperSnap\" (or click the Hide / Show frames dropdown button)");
-    addRow(L"Resize this info window",       L"Drag any window edge or corner to adjust width and height (text wraps & size persists)");
+    addRow(L"Search & copy in this info window", L"Use the top Search bar (or press Ctrl + F) to filter shortcuts & info in real time, and drag to select any text (or double-click a word) and press Ctrl + C or right-click to copy; drag any window edge or corner to resize");
 
     addSection(L"Options window & sub-option windows");
     addRow(L"Save screenshot to... / Save format", L"Choose default save folder (Browse... or Use desktop), independent formats ordered as Copy format (default: PNG), Custom area format (default: PNG), and Instant fullscreen format (default: JPEG) across JPEG, PNG, WebP, and BMP, plus JPEG quality slider (10%–100%)");
     addRow(L"Naming pattern & (\x24D8) syntax window", L"Customize screenshot filename pattern with live preview, Restore default, or click \x24D8 to open the Naming pattern syntax sub-option window ({YYYY}, {MMMM}, {DDDD}, {h}, {ap}, {count}, etc. — click any row or select text to copy)");
-    addRow(L"Shortcut keys \x2192 Customize keys & info", L"Click Customize keys to open the sub-option window and rebind any global, custom area tool/action, multi-frame editor, or pinned image shortcut (Esc to cancel, Delete to leave it empty, PrintScreen reserved, or Restore defaults), or click Keyboard shortcuts and info");
+    addRow(L"Shortcut keys \x2192 Customize keys & info", L"Click Customize keys to open the sub-option window and rebind any global, custom area tool/action, multi-frame editor, or pinned image shortcut (Esc to cancel, Delete to leave it empty, or Restore defaults), or click Keyboard shortcuts and info");
     addRow(L"Automatically check for updates", L"Toggle automatic GitHub release checks (Every day, 3-day, Every week, 2-weekly, Every month) or click Check now");
     addRow(L"Non-stacking highlighter",      L"Prevent overlapping Stabilo highlighter strokes from darkening when drawing over existing highlights (on by default)");
     addRow(L"Auto-save & auto-copy toggles", L"Toggle \"Also save screenshot when copying custom area\", \"Also copy instant fullscreen\", \"Also save pinned screenshot\", and \"Also save copied text\" (OCR .txt)");
@@ -12528,7 +13173,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
                 RECT rcK = { 0, 0, 0, 0 };
                 SelectObject(hdcScreen, hKeyFont);
                 DrawTextW(hdcScreen, e.keyCol.c_str(), -1, &rcK, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
-                int iconExtra = e.hasIcon ? 34 : 0;
+                int iconExtra = e.hasIcon ? 34 : 16;
                 maxKeyW = std::max(maxKeyW, (int)(rcK.right - rcK.left) + iconExtra + 12);
 
                 RECT rcD = { 0, 0, 0, 0 };
@@ -12613,10 +13258,45 @@ void PepperSnapDaemon::ShowShortcutsModal() {
             SendMessageW(hDlg, WM_MOUSEWHEEL, msg.wParam, msg.lParam);
             continue;
         }
-        if (!hOverlayWnd && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)) &&
-            msg.message == WM_KEYDOWN && (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE)) {
-            DestroyWindow(hDlg);
-            continue;
+        if ((msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)) && msg.message == WM_KEYDOWN) {
+            bool ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            if (ctrlDown && msg.wParam == 'F' && params.hSearchEdit) {
+                SetFocus(params.hSearchEdit);
+                SendMessageW(params.hSearchEdit, EM_SETSEL, 0, -1);
+                continue;
+            }
+            if (ctrlDown && msg.wParam == 'C') {
+                if (params.HasSelection()) {
+                    CopyShortcutsSelectionToClipboard(hDlg, &params);
+                    continue;
+                }
+            }
+            if (ctrlDown && msg.wParam == 'A' && msg.hwnd != params.hSearchEdit) {
+                params.selAnchor = 0;
+                params.selCaret = params.fullDocText.size();
+                params.copiedStatusText.clear();
+                InvalidateRect(hDlg, nullptr, FALSE);
+                continue;
+            }
+            if (msg.wParam == VK_ESCAPE) {
+                if (params.HasSelection()) {
+                    params.selAnchor = params.selCaret = 0;
+                    InvalidateRect(hDlg, nullptr, FALSE);
+                    continue;
+                }
+                if (!params.searchQuery.empty() && params.hSearchEdit) {
+                    SetWindowTextW(params.hSearchEdit, L"");
+                    continue;
+                }
+                if (!hOverlayWnd) {
+                    DestroyWindow(hDlg);
+                    continue;
+                }
+            }
+            if (msg.wParam == VK_RETURN && !hOverlayWnd && msg.hwnd != params.hSearchEdit) {
+                DestroyWindow(hDlg);
+                continue;
+            }
         }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
