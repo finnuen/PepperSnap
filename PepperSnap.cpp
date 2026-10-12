@@ -18,8 +18,9 @@ public:
     std::vector<HWND> pinnedWindows;
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
+    std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.11.2";
+    static constexpr const wchar_t* APP_VERSION = L"3.11.3";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -47,12 +48,15 @@ public:
     bool smoothPinnedImage = false;
     bool pinnedImageAboveEdit = true;
     bool keepEditWindowOpen = false;
-    int optionsWindowHeight = 888;
+    bool runElevated = false;
+    bool enableWebImageSearch = true;
+    int optionsWindowHeight = 950;
     int customizeKeysWindowHeight = 620;
     int shortcutsWindowWidth = 900;
     int shortcutsWindowHeight = 620;
     int namingSyntaxWindowHeight = 760;
-    bool autoCheckUpdates = true;
+    bool autoCheckUpdates = false;
+    bool autoUpdatePromptShown = false;
     UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
     long long lastUpdateCheckTime = 0;
     std::wstring updateGithubRepo = DEFAULT_GITHUB_REPO;
@@ -89,6 +93,7 @@ public:
     HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkActSearchGoogle{ MOD_SHIFT, 'C' };
 
     // Multi-Frame GIF / WebP Editor Shortcut Bindings
     HotkeyBinding hkFramePlayPause{ 0, VK_SPACE };
@@ -105,6 +110,7 @@ public:
     HotkeyBinding hkPinSaveAs{ 0, 0 };
     HotkeyBinding hkPinSave{ 0, 0 };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkPinSearchGoogle{ MOD_SHIFT, 'C' };
     HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
 
     // Previously Selected Custom Window Size & Position
@@ -793,6 +799,7 @@ public:
     void ApplyGlobalHotkeys();
     static std::wstring FormatHotkeyString(const HotkeyBinding& hk);
     static void RegisterImageContextMenu();
+    static void UnregisterImageContextMenu();
 
     Bitmap* CaptureVirtualDesktop();
     void BuildOverlaySurfaceCache();
@@ -823,6 +830,7 @@ public:
     void OpenImageToPinOnTop();
     void PinClipboardImageOnTop();
     void SearchClipboardImageOnGoogle();
+    void SearchImageFileOnGoogle(const std::wstring& filePath);
     static void LaunchGoogleImagesAndPasteClipboard();
     void OpenImageFileToPinOnTop(const std::wstring& filePath);
     void OpenImageFilesToPinOnTop(const std::vector<std::wstring>& filePaths);
@@ -900,19 +908,154 @@ static void ReplaceStrW(std::wstring& str, const std::wstring& from, const std::
     }
 }
 
+static std::wstring GetModuleFilePathDynamic(HMODULE hMod = nullptr) {
+    std::vector<WCHAR> buf(MAX_PATH, L'\0');
+    while (buf.size() <= 32768) {
+        DWORD len = GetModuleFileNameW(hMod, buf.data(), (DWORD)buf.size());
+        if (len == 0) return L"";
+        if (len < buf.size() - 1) {
+            return std::wstring(buf.data(), len);
+        }
+        buf.resize(buf.size() * 2, L'\0');
+    }
+    return L"";
+}
+
+static std::wstring QueryProcessFullImagePathDynamic(HANDLE hProc) {
+    if (!hProc) return L"";
+    std::vector<WCHAR> buf(MAX_PATH, L'\0');
+    while (buf.size() <= 32768) {
+        DWORD cch = (DWORD)buf.size();
+        if (QueryFullProcessImageNameW(hProc, 0, buf.data(), &cch)) {
+            return std::wstring(buf.data(), cch);
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) break;
+        buf.resize(buf.size() * 2, L'\0');
+    }
+    return L"";
+}
+
+static std::wstring GetWindowTextDynamic(HWND hWnd) {
+    if (!hWnd || !IsWindow(hWnd)) return L"";
+    int len = GetWindowTextLengthW(hWnd);
+    if (len <= 0) return L"";
+    std::vector<WCHAR> buf((size_t)len + 2, L'\0');
+    int got = GetWindowTextW(hWnd, buf.data(), len + 1);
+    if (got <= 0) return L"";
+    return std::wstring(buf.data(), (size_t)got);
+}
+
+static std::wstring GetPrivateProfileStringDynamic(
+    const wchar_t* section,
+    const wchar_t* key,
+    const wchar_t* defVal,
+    const std::wstring& iniPath
+) {
+    std::vector<WCHAR> buf(512, L'\0');
+    while (buf.size() <= 32768) {
+        DWORD got = GetPrivateProfileStringW(section, key, defVal ? defVal : L"", buf.data(), (DWORD)buf.size(), iniPath.c_str());
+        if (got < buf.size() - 1) {
+            return std::wstring(buf.data(), got);
+        }
+        buf.resize(buf.size() * 2, L'\0');
+    }
+    return defVal ? std::wstring(defVal) : L"";
+}
+
+struct ScopedHKey {
+    HKEY h = nullptr;
+    ScopedHKey() = default;
+    explicit ScopedHKey(HKEY k) : h(k) {}
+    ~ScopedHKey() { if (h) RegCloseKey(h); }
+    ScopedHKey(const ScopedHKey&) = delete;
+    ScopedHKey& operator=(const ScopedHKey&) = delete;
+    HKEY* put() {
+        if (h) { RegCloseKey(h); h = nullptr; }
+        return &h;
+    }
+    operator HKEY() const { return h; }
+};
+
+struct ScopedHandle {
+    HANDLE h = nullptr;
+    ScopedHandle() = default;
+    explicit ScopedHandle(HANDLE handle) : h(handle) {}
+    ~ScopedHandle() {
+        if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    }
+    ScopedHandle(const ScopedHandle&) = delete;
+    ScopedHandle& operator=(const ScopedHandle&) = delete;
+    operator HANDLE() const { return h; }
+};
+
+static bool RegQueryStringValueDynamic(HKEY hKey, const wchar_t* subKey, const wchar_t* valueName, std::wstring& outVal) {
+    outVal.clear();
+    DWORD cbData = 0;
+    LSTATUS st = RegGetValueW(hKey, subKey, valueName, RRF_RT_REG_SZ, nullptr, nullptr, &cbData);
+    if (st != ERROR_SUCCESS || cbData < sizeof(wchar_t)) return false;
+    std::vector<WCHAR> buf((cbData / sizeof(wchar_t)) + 2, L'\0');
+    DWORD cbActual = (DWORD)(buf.size() * sizeof(wchar_t));
+    st = RegGetValueW(hKey, subKey, valueName, RRF_RT_REG_SZ, nullptr, buf.data(), &cbActual);
+    while (st == ERROR_MORE_DATA && buf.size() <= 32768) {
+        buf.resize(buf.size() * 2, L'\0');
+        cbActual = (DWORD)(buf.size() * sizeof(wchar_t));
+        st = RegGetValueW(hKey, subKey, valueName, RRF_RT_REG_SZ, nullptr, buf.data(), &cbActual);
+    }
+    if (st != ERROR_SUCCESS) return false;
+    outVal.assign(buf.data(), wcsnlen(buf.data(), buf.size()));
+    return true;
+}
+
+static void RegEnumSubKeyNamesDynamic(HKEY hKey, std::vector<std::wstring>& outNames) {
+    outNames.clear();
+    DWORD maxSubKeyLen = 256;
+    RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, &maxSubKeyLen, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    size_t cap = std::max<size_t>(256, (size_t)maxSubKeyLen + 2);
+    std::vector<WCHAR> subName(cap, L'\0');
+    for (DWORD idx = 0;; ++idx) {
+        DWORD subLen = (DWORD)subName.size();
+        LSTATUS st = RegEnumKeyExW(hKey, idx, subName.data(), &subLen, nullptr, nullptr, nullptr, nullptr);
+        while (st == ERROR_MORE_DATA && subName.size() <= 32768) {
+            subName.resize(subName.size() * 2, L'\0');
+            subLen = (DWORD)subName.size();
+            st = RegEnumKeyExW(hKey, idx, subName.data(), &subLen, nullptr, nullptr, nullptr, nullptr);
+        }
+        if (st != ERROR_SUCCESS) break;
+        outNames.emplace_back(subName.data(), subLen);
+    }
+}
+
 std::wstring PepperSnapDaemon::GetDefaultDesktopFolder() {
+    PWSTR pszPath = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &pszPath)) && pszPath) {
+        std::wstring res(pszPath);
+        CoTaskMemFree(pszPath);
+        if (!res.empty()) return res;
+    }
     WCHAR deskPath[MAX_PATH] = {0};
     if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, deskPath)) && wcslen(deskPath) > 0) {
         return std::wstring(deskPath);
     }
-    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOP, nullptr, SHGFP_TYPE_CURRENT, deskPath)) && wcslen(deskPath) > 0) {
-        return std::wstring(deskPath);
+    DWORD req = GetCurrentDirectoryW(0, nullptr);
+    if (req > 0 && req <= 32768) {
+        std::vector<WCHAR> cwd(req + 1, L'\0');
+        DWORD got = GetCurrentDirectoryW(req + 1, cwd.data());
+        if (got > 0 && got <= req) return std::wstring(cwd.data(), got);
     }
-    GetCurrentDirectoryW(MAX_PATH, deskPath);
-    return std::wstring(deskPath);
+    return L".";
 }
 
 std::wstring PepperSnapDaemon::GetAppDataSettingsDir() {
+    PWSTR pszPath = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &pszPath)) && pszPath) {
+        std::wstring base(pszPath);
+        CoTaskMemFree(pszPath);
+        if (!base.empty()) {
+            std::wstring dir = base + L"\\PepperSnap";
+            CreateDirectoryW(dir.c_str(), nullptr);
+            return dir;
+        }
+    }
     WCHAR appData[MAX_PATH] = {0};
     if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appData)) && wcslen(appData) > 0) {
         std::wstring dir = std::wstring(appData) + L"\\PepperSnap";
@@ -957,6 +1100,8 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"PinnedImageAboveEdit", pinnedImageAboveEdit ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"PinAboveEditDefaultV1", L"1", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"KeepEditWindowOpen", keepEditWindowOpen ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"RunElevated", runElevated ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"EnableWebImageSearch", enableWebImageSearch ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowWidth", std::to_wstring(shortcutsWindowWidth).c_str(), iniPath.c_str());
@@ -971,6 +1116,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"PenSmoothingDefaultV31", L"1", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"DefaultsV3107", L"1", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AutoCheckUpdates", autoCheckUpdates ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"AutoUpdatePromptShown", autoUpdatePromptShown ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"UpdateCheckInterval", std::to_wstring((int)updateInterval).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastUpdateCheckTime", std::to_wstring(lastUpdateCheckTime).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"UpdateGithubRepo", updateGithubRepo.c_str(), iniPath.c_str());
@@ -1004,6 +1150,7 @@ void PepperSnapDaemon::SaveSettings() const {
     writeHk(L"HkActSaveAsMod",     L"HkActSaveAsVk",     hkActSaveAs);
     writeHk(L"HkActSaveMod",       L"HkActSaveVk",       hkActSave);
     writeHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy);
+    writeHk(L"HkActSearchGoogleMod", L"HkActSearchGoogleVk", hkActSearchGoogle);
     writeHk(L"HkFramePlayMod",     L"HkFramePlayVk",     hkFramePlayPause);
     writeHk(L"HkFrameToggleMod",   L"HkFrameToggleVk",   hkFrameToggleStrip);
     writeHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut);
@@ -1016,6 +1163,7 @@ void PepperSnapDaemon::SaveSettings() const {
     writeHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs);
     writeHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave);
     writeHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy);
+    writeHk(L"HkPinSearchGoogleMod", L"HkPinSearchGoogleVk", hkPinSearchGoogle);
     writeHk(L"HkPinCloseMod",      L"HkPinCloseVk",      hkPinClose);
     WritePrivateProfileStringW(L"PepperSnap", L"HasLastCustomSel", hasLastCustomSel ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"LastCustomSelLeft", std::to_wstring(lastCustomSelRect.left).c_str(), iniPath.c_str());
@@ -1032,19 +1180,35 @@ void PepperSnapDaemon::SaveSettings() const {
     }
 }
 
+static bool IsValidGithubRepoSlug(const std::wstring& s) {
+    if (s.empty() || s.size() > 200) return false;
+    auto isAllowedChar = [](wchar_t c) -> bool {
+        return (c >= L'A' && c <= L'Z') ||
+               (c >= L'a' && c <= L'z') ||
+               (c >= L'0' && c <= L'9') ||
+               c == L'.' || c == L'_' || c == L'-';
+    };
+    size_t slashPos = s.find(L'/');
+    if (slashPos == std::wstring::npos || slashPos == 0 || slashPos + 1 >= s.size()) return false;
+    if (s.find(L'/', slashPos + 1) != std::wstring::npos) return false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (i == slashPos) continue;
+        if (!isAllowedChar(s[i])) return false;
+    }
+    return true;
+}
+
 void PepperSnapDaemon::LoadSettings() {
     std::wstring iniPath = GetAppDataSettingsFile();
     if (GetFileAttributesW(iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         SaveSettings();
         return;
     }
-    WCHAR buf[MAX_PATH] = {0};
-    GetPrivateProfileStringW(L"PepperSnap", L"SaveFolder", saveFolder.c_str(), buf, MAX_PATH - 1, iniPath.c_str());
-    if (wcslen(buf) > 0) saveFolder = buf;
+    std::wstring loadedFolder = GetPrivateProfileStringDynamic(L"PepperSnap", L"SaveFolder", saveFolder.c_str(), iniPath);
+    if (!loadedFolder.empty()) saveFolder = loadedFolder;
 
-    WCHAR nameBuf[512] = {0};
-    GetPrivateProfileStringW(L"PepperSnap", L"NamingPattern", DEFAULT_NAMING_PATTERN, nameBuf, 511, iniPath.c_str());
-    if (wcslen(nameBuf) > 0) namingPattern = nameBuf;
+    std::wstring loadedNaming = GetPrivateProfileStringDynamic(L"PepperSnap", L"NamingPattern", DEFAULT_NAMING_PATTERN, iniPath);
+    if (!loadedNaming.empty()) namingPattern = loadedNaming;
 
     int rFmt = (int)GetPrivateProfileIntW(L"PepperSnap", L"RegionFormat", (INT)regionFormat, iniPath.c_str());
     int fFmt = (int)GetPrivateProfileIntW(L"PepperSnap", L"FullscreenFormat", (INT)fullscreenFormat, iniPath.c_str());
@@ -1074,8 +1238,10 @@ void PepperSnapDaemon::LoadSettings() {
         pinnedImageAboveEdit = (GetPrivateProfileIntW(L"PepperSnap", L"PinnedImageAboveEdit", 1, iniPath.c_str()) != 0);
     }
     keepEditWindowOpen = (GetPrivateProfileIntW(L"PepperSnap", L"KeepEditWindowOpen", 0, iniPath.c_str()) != 0);
-    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 888, iniPath.c_str());
-    if (optWinH == 716 || optWinH == 744 || optWinH == 772 || optWinH == 800 || optWinH == 860) optWinH = 888;
+    runElevated = (GetPrivateProfileIntW(L"PepperSnap", L"RunElevated", 0, iniPath.c_str()) != 0);
+    enableWebImageSearch = (GetPrivateProfileIntW(L"PepperSnap", L"EnableWebImageSearch", 1, iniPath.c_str()) != 0);
+    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 950, iniPath.c_str());
+    if (optWinH == 716 || optWinH == 744 || optWinH == 772 || optWinH == 800 || optWinH == 860 || optWinH == 888 || optWinH == 934) optWinH = 950;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
     int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 620, iniPath.c_str());
     if (ckWinH == 560) ckWinH = 620;
@@ -1090,10 +1256,9 @@ void PepperSnapDaemon::LoadSettings() {
     int fsH = (int)GetPrivateProfileIntW(L"PepperSnap", L"FrameStripHeight", 142, iniPath.c_str());
     overlayFrameStripHeight = std::max(92, std::min(600, fsH));
 
-    WCHAR colBuf[64] = {0};
-    GetPrivateProfileStringW(L"PepperSnap", L"ActiveColorARGB", L"", colBuf, 63, iniPath.c_str());
-    if (wcslen(colBuf) > 0) {
-        ARGB parsedCol = (ARGB)_wcstoui64(colBuf, nullptr, 10);
+    std::wstring colStr = GetPrivateProfileStringDynamic(L"PepperSnap", L"ActiveColorARGB", L"", iniPath);
+    if (!colStr.empty()) {
+        ARGB parsedCol = (ARGB)_wcstoui64(colStr.c_str(), nullptr, 10);
         if ((parsedCol >> 24) != 0) activeColor = Color(parsedCol);
     }
     int savedStroke = (int)GetPrivateProfileIntW(L"PepperSnap", L"ActiveStrokeWidth", 4, iniPath.c_str());
@@ -1112,16 +1277,15 @@ void PepperSnapDaemon::LoadSettings() {
         penSmoothingStrength = std::max(5, std::min(100, pSmooth));
     }
 
-    autoCheckUpdates = (GetPrivateProfileIntW(L"PepperSnap", L"AutoCheckUpdates", 1, iniPath.c_str()) != 0);
+    autoCheckUpdates = (GetPrivateProfileIntW(L"PepperSnap", L"AutoCheckUpdates", 0, iniPath.c_str()) != 0);
+    autoUpdatePromptShown = (GetPrivateProfileIntW(L"PepperSnap", L"AutoUpdatePromptShown", 0, iniPath.c_str()) != 0);
     if (GetPrivateProfileIntW(L"PepperSnap", L"DefaultsV3107", 0, iniPath.c_str()) == 0) {
         jpegQuality = 90;
-        autoCheckUpdates = true;
         nonStackingHighlighter = true;
         autoSaveOnCopy = true;
         alsoCopyFullscreen = true;
         penSmoothingEnabled = true;
         WritePrivateProfileStringW(L"PepperSnap", L"JpegQuality", L"90", iniPath.c_str());
-        WritePrivateProfileStringW(L"PepperSnap", L"AutoCheckUpdates", L"1", iniPath.c_str());
         WritePrivateProfileStringW(L"PepperSnap", L"NonStackingHighlighter", L"1", iniPath.c_str());
         WritePrivateProfileStringW(L"PepperSnap", L"AutoSaveOnCopy", L"1", iniPath.c_str());
         WritePrivateProfileStringW(L"PepperSnap", L"AlsoCopyFullscreen", L"1", iniPath.c_str());
@@ -1131,13 +1295,12 @@ void PepperSnapDaemon::LoadSettings() {
     int uInt = (int)GetPrivateProfileIntW(L"PepperSnap", L"UpdateCheckInterval", (INT)UpdateCheckInterval::EveryDay, iniPath.c_str());
     if (uInt >= 0 && uInt <= 4) updateInterval = (UpdateCheckInterval)uInt;
 
-    WCHAR timeBuf[64] = {0};
-    GetPrivateProfileStringW(L"PepperSnap", L"LastUpdateCheckTime", L"0", timeBuf, 63, iniPath.c_str());
-    lastUpdateCheckTime = _wtoi64(timeBuf);
+    std::wstring timeStr = GetPrivateProfileStringDynamic(L"PepperSnap", L"LastUpdateCheckTime", L"0", iniPath);
+    lastUpdateCheckTime = _wtoi64(timeStr.c_str());
 
-    WCHAR repoBuf[256] = {0};
-    GetPrivateProfileStringW(L"PepperSnap", L"UpdateGithubRepo", DEFAULT_GITHUB_REPO, repoBuf, 255, iniPath.c_str());
-    if (wcslen(repoBuf) > 0) updateGithubRepo = repoBuf;
+    std::wstring repoStr = GetPrivateProfileStringDynamic(L"PepperSnap", L"UpdateGithubRepo", DEFAULT_GITHUB_REPO, iniPath);
+    std::wstring candidateRepo = !repoStr.empty() ? repoStr : std::wstring(DEFAULT_GITHUB_REPO);
+    updateGithubRepo = IsValidGithubRepoSlug(candidateRepo) ? candidateRepo : std::wstring(DEFAULT_GITHUB_REPO);
 
     auto readHk = [&](const wchar_t* modKey, const wchar_t* vkKey, HotkeyBinding& hk, UINT defMod, UINT defVk) {
         int vkVal = (int)GetPrivateProfileIntW(L"PepperSnap", vkKey, -1, iniPath.c_str());
@@ -1178,6 +1341,7 @@ void PepperSnapDaemon::LoadSettings() {
     readHk(L"HkActSaveAsMod",     L"HkActSaveAsVk",     hkActSaveAs,        MOD_CONTROL | MOD_SHIFT, 'S');
     readHk(L"HkActSaveMod",       L"HkActSaveVk",       hkActSave,          MOD_CONTROL,             'S');
     readHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy,          MOD_CONTROL,             'C');
+    readHk(L"HkActSearchGoogleMod", L"HkActSearchGoogleVk", hkActSearchGoogle, MOD_SHIFT,            'C');
     readHk(L"HkFramePlayMod",     L"HkFramePlayVk",     hkFramePlayPause,   0,                       VK_SPACE);
     readHk(L"HkFrameToggleMod",   L"HkFrameToggleVk",   hkFrameToggleStrip, 0,                       0);
     readHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut,       0,                       VK_OEM_MINUS);
@@ -1203,6 +1367,7 @@ void PepperSnapDaemon::LoadSettings() {
         WritePrivateProfileStringW(L"PepperSnap", L"PinSaveShortcutsEmptyDefaultV1", L"1", iniPath.c_str());
     }
     readHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy,       MOD_CONTROL,             'C');
+    readHk(L"HkPinSearchGoogleMod", L"HkPinSearchGoogleVk", hkPinSearchGoogle, MOD_SHIFT,         'C');
     readHk(L"HkPinCloseMod",      L"HkPinCloseVk",      hkPinClose,      0,                       VK_ESCAPE);
 
     hasLastCustomSel = (GetPrivateProfileIntW(L"PepperSnap", L"HasLastCustomSel", 0, iniPath.c_str()) != 0);
@@ -1352,66 +1517,7 @@ HICON PepperSnapDaemon::CreateCustomTrayIcon() {
 }
 
 void PepperSnapDaemon::EnsureNotificationSoundEnabled() {
-    // 1. Check & enable global Windows 10/11 notification sound setting + per-app PlaySound setting
-    HKEY hSettingsKey = nullptr;
-    if (RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings",
-            0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, &hSettingsKey, nullptr) == ERROR_SUCCESS) {
-        DWORD allowSound = 0;
-        DWORD cb = sizeof(allowSound);
-        DWORD type = 0;
-        if (RegQueryValueExW(hSettingsKey, L"NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND", nullptr, &type, (LPBYTE)&allowSound, &cb) != ERROR_SUCCESS || allowSound == 0) {
-            allowSound = 1;
-            RegSetValueExW(hSettingsKey, L"NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND", 0, REG_DWORD, (const BYTE*)&allowSound, sizeof(allowSound));
-        }
-
-        auto ensureAppSubKeySound = [&](const wchar_t* subKeyName) {
-            HKEY hAppKey = nullptr;
-            if (RegOpenKeyExW(hSettingsKey, subKeyName, 0, KEY_READ | KEY_WRITE, &hAppKey) == ERROR_SUCCESS) {
-                DWORD val = 0, sz = sizeof(val), vType = 0;
-                if (RegQueryValueExW(hAppKey, L"Enabled", nullptr, &vType, (LPBYTE)&val, &sz) != ERROR_SUCCESS || val == 0) {
-                    val = 1;
-                    RegSetValueExW(hAppKey, L"Enabled", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
-                }
-                sz = sizeof(val);
-                if (RegQueryValueExW(hAppKey, L"PlaySound", nullptr, &vType, (LPBYTE)&val, &sz) != ERROR_SUCCESS || val == 0) {
-                    val = 1;
-                    RegSetValueExW(hAppKey, L"PlaySound", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
-                }
-                RegCloseKey(hAppKey);
-            }
-        };
-
-        DWORD idx = 0;
-        WCHAR subName[512];
-        DWORD subLen = 512;
-        while (RegEnumKeyExW(hSettingsKey, idx++, subName, &subLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-            if (wcsstr(subName, L"PepperSnap") != nullptr || wcsstr(subName, L"peppersnap") != nullptr ||
-                wcsstr(subName, L"Microsoft.Explorer.Notification") != nullptr) {
-                ensureAppSubKeySound(subName);
-            }
-            subLen = 512;
-        }
-        RegCloseKey(hSettingsKey);
-    }
-
-    // 2. Check & enable HKCU\Control Panel\Sound -> Beep & ExtendedSounds
-    HKEY hSoundKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Sound", 0, KEY_READ | KEY_WRITE, &hSoundKey) == ERROR_SUCCESS) {
-        WCHAR buf[32] = {0};
-        DWORD cb = sizeof(buf);
-        if (RegQueryValueExW(hSoundKey, L"Beep", nullptr, nullptr, (LPBYTE)buf, &cb) == ERROR_SUCCESS && _wcsicmp(buf, L"yes") != 0) {
-            const wchar_t* yesStr = L"yes";
-            RegSetValueExW(hSoundKey, L"Beep", 0, REG_SZ, (const BYTE*)yesStr, (DWORD)((wcslen(yesStr) + 1) * sizeof(wchar_t)));
-        }
-        cb = sizeof(buf);
-        if (RegQueryValueExW(hSoundKey, L"ExtendedSounds", nullptr, nullptr, (LPBYTE)buf, &cb) == ERROR_SUCCESS && _wcsicmp(buf, L"yes") != 0) {
-            const wchar_t* yesStr = L"yes";
-            RegSetValueExW(hSoundKey, L"ExtendedSounds", 0, REG_SZ, (const BYTE*)yesStr, (DWORD)((wcslen(yesStr) + 1) * sizeof(wchar_t)));
-        }
-        RegCloseKey(hSoundKey);
-    }
+    // Intentionally left as a no-op: do not modify user OS notification or sound registry settings.
 }
 
 void PepperSnapDaemon::UpdateTrayTooltip() {
@@ -1423,7 +1529,10 @@ void PepperSnapDaemon::UpdateTrayTooltip() {
 }
 
 void PepperSnapDaemon::InitTrayIcon() {
-    EnsureNotificationSoundEnabled();
+    if (hTrayIcon) {
+        DestroyIcon(hTrayIcon);
+        hTrayIcon = nullptr;
+    }
     hTrayIcon = CreateCustomTrayIcon();
     ZeroMemory(&nid, sizeof(nid));
     nid.cbSize = sizeof(NOTIFYICONDATAW);
@@ -1438,7 +1547,6 @@ void PepperSnapDaemon::InitTrayIcon() {
 
 void PepperSnapDaemon::ShowTrayToast(const std::wstring& title, const std::wstring& message, const std::wstring& clickFolder) {
     lastBalloonClickFolder = clickFolder;
-    EnsureNotificationSoundEnabled();
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
     nid.dwInfoFlags &= ~NIIF_NOSOUND;
@@ -1697,33 +1805,29 @@ void PepperSnapDaemon::UpdateOverlayCursor(int mx, int my) {
 }
 
 bool PepperSnapDaemon::IsRunAtStartupEnabled() const {
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+    ScopedHKey hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, hKey.put()) != ERROR_SUCCESS) {
         return false;
     }
-    WCHAR buf[MAX_PATH] = {0};
-    DWORD cb = sizeof(buf);
-    LSTATUS st = RegQueryValueExW(hKey, L"PepperSnap", nullptr, nullptr, (LPBYTE)buf, &cb);
-    RegCloseKey(hKey);
-    return (st == ERROR_SUCCESS && wcslen(buf) > 0);
+    std::wstring val;
+    return RegQueryStringValueDynamic(hKey, nullptr, L"PepperSnap", val) && !val.empty();
 }
 
 void PepperSnapDaemon::ToggleRunAtStartup() {
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) != ERROR_SUCCESS) {
+    ScopedHKey hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, hKey.put()) != ERROR_SUCCESS) {
         return;
     }
     if (IsRunAtStartupEnabled()) {
         RegDeleteValueW(hKey, L"PepperSnap");
         ShowTrayToast(L"Startup disabled", L"PepperSnap will no longer launch automatically at login.");
     } else {
-        WCHAR exePath[MAX_PATH] = {0};
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        std::wstring quoted = L"\"" + std::wstring(exePath) + L"\"";
+        std::wstring exePath = GetModuleFilePathDynamic(nullptr);
+        if (exePath.empty()) return;
+        std::wstring quoted = L"\"" + exePath + L"\"";
         RegSetValueExW(hKey, L"PepperSnap", 0, REG_SZ, (const BYTE*)quoted.c_str(), (DWORD)((quoted.size() + 1) * sizeof(wchar_t)));
         ShowTrayToast(L"Startup enabled", L"PepperSnap will start in the system tray when Windows boots.");
     }
-    RegCloseKey(hKey);
 }
 
 // ----------------------------------------------------------------------------
@@ -1827,6 +1931,7 @@ static bool MatchesAnyPinnedShortcut(UINT vk, bool ctrl, bool shift, bool alt) {
            MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinSaveAs,      vk, ctrl, shift, alt) ||
            MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinSave,        vk, ctrl, shift, alt) ||
            MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinCopy,        vk, ctrl, shift, alt) ||
+           MatchesOverlayShortcut(g_Daemon.hkPinSearchGoogle,                 vk, ctrl, shift, alt) ||
            MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkPinClose,       vk, ctrl, shift, alt);
 }
 
@@ -1852,101 +1957,56 @@ void PepperSnapDaemon::ApplyGlobalHotkeys() {
 }
 
 void PepperSnapDaemon::RegisterImageContextMenu() {
-    WCHAR exePath[MAX_PATH] = {0};
-    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return;
+    std::wstring exePath = GetModuleFilePathDynamic(nullptr);
+    if (exePath.empty()) return;
 
-    std::wstring editLabel = L"Edit with PepperSnap";
-    std::wstring pinLabel  = L"Pin on top";
-    std::wstring iconVal   = L"\"" + std::wstring(exePath) + L"\",0";
-    std::wstring editCmd   = L"\"" + std::wstring(exePath) + L"\" --edit \"%1\"";
-    std::wstring pinCmd    = L"\"" + std::wstring(exePath) + L"\" --pin \"%1\"";
+    std::wstring editLabel   = L"Edit with PepperSnap";
+    std::wstring searchLabel = L"Search image on web";
+    std::wstring pinLabel    = L"Pin on top";
+    std::wstring iconVal     = L"\"" + exePath + L"\",0";
+    std::wstring editCmd     = L"\"" + exePath + L"\" --edit \"%1\"";
+    std::wstring searchCmd   = L"\"" + exePath + L"\" --search \"%1\"";
+    std::wstring pinCmd      = L"\"" + exePath + L"\" --pin \"%1\"";
 
-    // If "Launch PepperSnap at Windows startup" is enabled, ensure it points to the current executable (not an old v2.0.1.0 path)
+    // If "Launch PepperSnap at Windows startup" is already enabled by the user in HKCU, keep its path updated to this executable
     {
-        HKEY hRunKey = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ | KEY_WRITE, &hRunKey) == ERROR_SUCCESS) {
-            WCHAR runBuf[MAX_PATH * 2] = {0};
-            DWORD cbRun = sizeof(runBuf);
-            if (RegQueryValueExW(hRunKey, L"PepperSnap", nullptr, nullptr, (LPBYTE)runBuf, &cbRun) == ERROR_SUCCESS && runBuf[0] != L'\0') {
-                std::wstring desired = L"\"" + std::wstring(exePath) + L"\"";
-                if (_wcsicmp(runBuf, desired.c_str()) != 0) {
+        ScopedHKey hRunKey;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ | KEY_WRITE, hRunKey.put()) == ERROR_SUCCESS) {
+            std::wstring runVal;
+            if (RegQueryStringValueDynamic(hRunKey, nullptr, L"PepperSnap", runVal) && !runVal.empty()) {
+                std::wstring desired = L"\"" + exePath + L"\"";
+                if (_wcsicmp(runVal.c_str(), desired.c_str()) != 0) {
                     RegSetValueExW(hRunKey, L"PepperSnap", 0, REG_SZ, (const BYTE*)desired.c_str(), (DWORD)((desired.size() + 1) * sizeof(wchar_t)));
                 }
             }
-            RegCloseKey(hRunKey);
-        }
-        HKEY hRunLM = nullptr;
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ | KEY_WRITE, &hRunLM) == ERROR_SUCCESS) {
-            RegDeleteValueW(hRunLM, L"PepperSnap");
-            RegCloseKey(hRunLM);
         }
     }
 
-    // Purge any stale v2.0.1.0 / PepperSnap entries from Explorer MuiCache and Applications class keys
-    {
-        HKEY hMui = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache", 0, KEY_READ | KEY_WRITE, &hMui) == ERROR_SUCCESS) {
-            std::vector<std::wstring> valsToDelete;
-            DWORD idx = 0;
-            WCHAR valName[1024];
-            DWORD valNameLen = 1024;
-            BYTE dataBuf[1024];
-            DWORD dataLen = sizeof(dataBuf);
-            DWORD valType = 0;
-            while (RegEnumValueW(hMui, idx++, valName, &valNameLen, nullptr, &valType, dataBuf, &dataLen) == ERROR_SUCCESS) {
-                std::wstring vn(valName, valNameLen);
-                std::wstring vd;
-                if ((valType == REG_SZ || valType == REG_EXPAND_SZ) && dataLen >= sizeof(wchar_t)) {
-                    const wchar_t* wptr = (const wchar_t*)dataBuf;
-                    vd.assign(wptr, wcsnlen(wptr, dataLen / sizeof(wchar_t)));
-                }
-                if (vn.find(L"2.0.1") != std::wstring::npos || vd.find(L"2.0.1") != std::wstring::npos ||
-                    (vn.find(L"PepperSnap") != std::wstring::npos && vn.find(exePath) == std::wstring::npos)) {
-                    valsToDelete.push_back(vn);
-                }
-                valNameLen = 1024;
-                dataLen = sizeof(dataBuf);
-            }
-            for (const auto& v : valsToDelete) {
-                RegDeleteValueW(hMui, v.c_str());
-            }
-            RegCloseKey(hMui);
+    // Helper: check whether a shell verb subkey's command value explicitly points at this executable's own path.
+    // Why: ensures legacy cleanup only removes verbs previously registered by this exact executable and never touches other apps' entries.
+    auto commandPointsToThisExe = [&](HKEY hShell, const std::wstring& verbSubKey) -> bool {
+        std::wstring cmdVal;
+        if (RegQueryStringValueDynamic(hShell, (verbSubKey + L"\\command").c_str(), nullptr, cmdVal)) {
+            return (wcsstr(cmdVal.c_str(), exePath.c_str()) != nullptr);
         }
+        return false;
+    };
 
-        // Remove any legacy Applications\PepperSnap.exe registration so Windows doesn't offer PepperSnap on non-image files
-        SHDeleteKeyW(HKEY_CURRENT_USER,  L"Software\\Classes\\Applications\\PepperSnap.exe");
-        SHDeleteKeyW(HKEY_LOCAL_MACHINE, L"Software\\Classes\\Applications\\PepperSnap.exe");
-    }
-
-    // Purge any PepperSnap context menu verbs from non-image / unselected shell locations
-    // (such as empty Desktop background, Folder background, Directories, Drives, or '*' all-files)
-    auto purgePepperSnapVerbsFromShellKey = [](HKEY hRoot, const std::wstring& shellSubKey) {
-        HKEY hShell = nullptr;
-        if (RegOpenKeyExW(hRoot, shellSubKey.c_str(), 0, KEY_READ | KEY_WRITE, &hShell) != ERROR_SUCCESS) return;
+    // Clean up legacy HKCU non-image shell verbs only if their command data points at this app's own exe path
+    auto purgeOwnVerbsFromShellKey = [&](const std::wstring& shellSubKey) {
+        ScopedHKey hShell;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, shellSubKey.c_str(), 0, KEY_READ | KEY_WRITE, hShell.put()) != ERROR_SUCCESS) return;
+        std::vector<std::wstring> subKeys;
+        RegEnumSubKeyNamesDynamic(hShell, subKeys);
         std::vector<std::wstring> toRemove;
-        DWORD idx = 0;
-        WCHAR subName[256];
-        DWORD subLen = 256;
-        while (RegEnumKeyExW(hShell, idx++, subName, &subLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-            std::wstring s(subName, subLen);
-            if (_wcsnicmp(s.c_str(), L"PepperSnap", 10) == 0 || s.find(L"2.0.1") != std::wstring::npos) {
+        for (const auto& s : subKeys) {
+            if (commandPointsToThisExe(hShell, s)) {
                 toRemove.push_back(s);
-            } else {
-                // Also check default value / command value for lingering v2.0.1.0 or PepperSnap references
-                WCHAR cmdBuf[MAX_PATH * 2] = {0};
-                DWORD cbCmd = sizeof(cmdBuf);
-                if (RegGetValueW(hShell, (s + L"\\command").c_str(), nullptr, RRF_RT_REG_SZ, nullptr, cmdBuf, &cbCmd) == ERROR_SUCCESS) {
-                    if (wcsstr(cmdBuf, L"PepperSnap") != nullptr || wcsstr(cmdBuf, L"2.0.1") != nullptr) {
-                        toRemove.push_back(s);
-                    }
-                }
             }
-            subLen = 256;
         }
-        RegCloseKey(hShell);
         for (const auto& k : toRemove) {
             std::wstring full = shellSubKey + L"\\" + k;
-            SHDeleteKeyW(hRoot, full.c_str());
+            SHDeleteKeyW(HKEY_CURRENT_USER, full.c_str());
         }
     };
 
@@ -1960,60 +2020,56 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
         L"Software\\Classes\\Drive\\shell"
     };
     for (const wchar_t* p : nonImageShellPaths) {
-        purgePepperSnapVerbsFromShellKey(HKEY_CURRENT_USER,  p);
-        purgePepperSnapVerbsFromShellKey(HKEY_LOCAL_MACHINE, p);
+        purgeOwnVerbsFromShellKey(p);
     }
 
-    // Also clean any legacy verb names (other than PepperSnapEdit and PepperSnapPin) on image shell keys
-    auto cleanLegacyImageShellVerbs = [](HKEY hRoot, const std::wstring& baseKeyPath) {
+    // Also clean any legacy verb names on HKCU image shell keys only if their command data points at this app's own exe path
+    auto cleanLegacyImageShellVerbs = [&](const std::wstring& baseKeyPath) {
         std::wstring shellPath = baseKeyPath + L"\\shell";
-        HKEY hShell = nullptr;
-        if (RegOpenKeyExW(hRoot, shellPath.c_str(), 0, KEY_READ | KEY_WRITE, &hShell) != ERROR_SUCCESS) return;
+        ScopedHKey hShell;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, shellPath.c_str(), 0, KEY_READ | KEY_WRITE, hShell.put()) != ERROR_SUCCESS) return;
+        std::vector<std::wstring> subKeys;
+        RegEnumSubKeyNamesDynamic(hShell, subKeys);
         std::vector<std::wstring> toRemove;
-        DWORD idx = 0;
-        WCHAR subName[256];
-        DWORD subLen = 256;
-        while (RegEnumKeyExW(hShell, idx++, subName, &subLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-            std::wstring s(subName, subLen);
-            bool isCurrentVerb = (_wcsicmp(s.c_str(), L"PepperSnapEdit") == 0 || _wcsicmp(s.c_str(), L"PepperSnapPin") == 0);
-            if (!isCurrentVerb && (_wcsnicmp(s.c_str(), L"PepperSnap", 10) == 0 || s.find(L"2.0.1") != std::wstring::npos)) {
-                toRemove.push_back(s);
-            } else if (hRoot == HKEY_LOCAL_MACHINE && isCurrentVerb) {
-                // Keep verbs in HKCU only so HKLM never holds stale paths
+        for (const auto& s : subKeys) {
+            bool isCurrentVerb = (_wcsicmp(s.c_str(), L"PepperSnapEdit") == 0 ||
+                                  _wcsicmp(s.c_str(), L"PepperSnapImageSearch") == 0 ||
+                                  _wcsicmp(s.c_str(), L"PepperSnapPin") == 0);
+            if (!isCurrentVerb && commandPointsToThisExe(hShell, s)) {
                 toRemove.push_back(s);
             }
-            subLen = 256;
         }
-        RegCloseKey(hShell);
         for (const auto& k : toRemove) {
             std::wstring full = shellPath + L"\\" + k;
-            SHDeleteKeyW(hRoot, full.c_str());
+            SHDeleteKeyW(HKEY_CURRENT_USER, full.c_str());
         }
     };
 
     auto writeSingleVerb = [&](const std::wstring& verbKeyPath, const std::wstring& lbl, const std::wstring& cmd, const wchar_t* multiSelectModel) {
-        HKEY hVerbKey = nullptr;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, verbKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &hVerbKey, nullptr) == ERROR_SUCCESS) {
+        ScopedHKey hVerbKey;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, verbKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, hVerbKey.put(), nullptr) == ERROR_SUCCESS) {
             RegSetValueExW(hVerbKey, nullptr, 0, REG_SZ, (const BYTE*)lbl.c_str(), (DWORD)((lbl.size() + 1) * sizeof(wchar_t)));
             RegSetValueExW(hVerbKey, L"Icon", 0, REG_SZ, (const BYTE*)iconVal.c_str(), (DWORD)((iconVal.size() + 1) * sizeof(wchar_t)));
             if (multiSelectModel && multiSelectModel[0] != L'\0') {
                 RegSetValueExW(hVerbKey, L"MultiSelectModel", 0, REG_SZ, (const BYTE*)multiSelectModel, (DWORD)((wcslen(multiSelectModel) + 1) * sizeof(wchar_t)));
             }
-            RegCloseKey(hVerbKey);
         }
         std::wstring cmdKeyPath = verbKeyPath + L"\\command";
-        HKEY hCmdKey = nullptr;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, cmdKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &hCmdKey, nullptr) == ERROR_SUCCESS) {
+        ScopedHKey hCmdKey;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, cmdKeyPath.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, hCmdKey.put(), nullptr) == ERROR_SUCCESS) {
             RegSetValueExW(hCmdKey, nullptr, 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
-            RegCloseKey(hCmdKey);
         }
     };
 
     auto writeShellVerbs = [&](const std::wstring& baseKeyPath) {
-        cleanLegacyImageShellVerbs(HKEY_CURRENT_USER,  baseKeyPath);
-        cleanLegacyImageShellVerbs(HKEY_LOCAL_MACHINE, baseKeyPath);
+        cleanLegacyImageShellVerbs(baseKeyPath);
         writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapEdit", editLabel, editCmd, L"Single");
-        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapPin",  pinLabel,  pinCmd,  L"Player");
+        if (g_Daemon.enableWebImageSearch) {
+            writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapImageSearch", searchLabel, searchCmd, L"Single");
+        } else {
+            SHDeleteKeyW(HKEY_CURRENT_USER, (baseKeyPath + L"\\shell\\PepperSnapImageSearch").c_str());
+        }
+        writeSingleVerb(baseKeyPath + L"\\shell\\PepperSnapPin", pinLabel, pinCmd, L"Player");
     };
 
     // Register ONLY for selected image files via SystemFileAssociations\image and common image extensions
@@ -2024,16 +2080,58 @@ void PepperSnapDaemon::RegisterImageContextMenu() {
     const wchar_t* perceivedImg = L"image";
     for (const wchar_t* ext : imgExts) {
         writeShellVerbs(std::wstring(L"Software\\Classes\\SystemFileAssociations\\") + ext);
-        HKEY hExtKey = nullptr;
+        ScopedHKey hExtKey;
         std::wstring extClassPath = std::wstring(L"Software\\Classes\\") + ext;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, extClassPath.c_str(), 0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, &hExtKey, nullptr) == ERROR_SUCCESS) {
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, extClassPath.c_str(), 0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, hExtKey.put(), nullptr) == ERROR_SUCCESS) {
             RegSetValueExW(hExtKey, L"PerceivedType", 0, REG_SZ, (const BYTE*)perceivedImg, (DWORD)((wcslen(perceivedImg) + 1) * sizeof(wchar_t)));
-            WCHAR progIdBuf[256] = {0};
-            DWORD cbProg = sizeof(progIdBuf);
-            if (RegQueryValueExW(hExtKey, nullptr, nullptr, nullptr, (LPBYTE)progIdBuf, &cbProg) == ERROR_SUCCESS && progIdBuf[0] != L'\0') {
-                writeShellVerbs(std::wstring(L"Software\\Classes\\") + progIdBuf);
+            std::wstring progId;
+            if (RegQueryStringValueDynamic(hExtKey, nullptr, nullptr, progId) && !progId.empty()) {
+                writeShellVerbs(L"Software\\Classes\\" + progId);
             }
-            RegCloseKey(hExtKey);
+        }
+    }
+}
+
+void PepperSnapDaemon::UnregisterImageContextMenu() {
+    std::wstring exePath = GetModuleFilePathDynamic(nullptr);
+    if (exePath.empty()) return;
+
+    auto removeOwnVerbsUnderBase = [&](const std::wstring& baseKeyPath) {
+        std::wstring shellPath = baseKeyPath + L"\\shell";
+        ScopedHKey hShell;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, shellPath.c_str(), 0, KEY_READ | KEY_WRITE, hShell.put()) != ERROR_SUCCESS) return;
+        const wchar_t* ownVerbs[] = { L"PepperSnapEdit", L"PepperSnapImageSearch", L"PepperSnapPin" };
+        for (const wchar_t* v : ownVerbs) {
+            std::wstring cmdVal;
+            if (RegQueryStringValueDynamic(hShell, (std::wstring(v) + L"\\command").c_str(), nullptr, cmdVal)) {
+                if (wcsstr(cmdVal.c_str(), exePath.c_str()) != nullptr) {
+                    SHDeleteKeyW(hShell, v);
+                }
+            }
+        }
+    };
+
+    removeOwnVerbsUnderBase(L"Software\\Classes\\SystemFileAssociations\\image");
+    const wchar_t* imgExts[] = {
+        L".png", L".jpg", L".jpeg", L".webp", L".bmp", L".gif", L".tif", L".tiff", L".ico"
+    };
+    for (const wchar_t* ext : imgExts) {
+        removeOwnVerbsUnderBase(std::wstring(L"Software\\Classes\\SystemFileAssociations\\") + ext);
+        ScopedHKey hExtKey;
+        std::wstring extClassPath = std::wstring(L"Software\\Classes\\") + ext;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, extClassPath.c_str(), 0, KEY_READ, hExtKey.put()) == ERROR_SUCCESS) {
+            std::wstring progId;
+            if (RegQueryStringValueDynamic(hExtKey, nullptr, nullptr, progId) && !progId.empty()) {
+                removeOwnVerbsUnderBase(L"Software\\Classes\\" + progId);
+            }
+        }
+    }
+
+    ScopedHKey hRunKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ | KEY_WRITE, hRunKey.put()) == ERROR_SUCCESS) {
+        std::wstring runVal;
+        if (RegQueryStringValueDynamic(hRunKey, nullptr, L"PepperSnap", runVal) && wcsstr(runVal.c_str(), exePath.c_str()) != nullptr) {
+            RegDeleteValueW(hRunKey, L"PepperSnap");
         }
     }
 }
@@ -2217,12 +2315,11 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                    noModalOpen &&
                    !g_Daemon.pinnedWindows.empty() && isKeyDown && !IsModifierVk(vk)) {
             HWND hFg = GetForegroundWindow();
-            bool fgIsPin = (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hFg) != g_Daemon.pinnedWindows.end());
-            if (!fgIsPin) {
+            if (!g_Daemon.IsPinnedWindow(hFg)) {
                 POINT curPt = {0, 0};
                 if (GetCursorPos(&curPt)) {
                     HWND hAtPt = WindowFromPoint(curPt);
-                    if (std::find(g_Daemon.pinnedWindows.begin(), g_Daemon.pinnedWindows.end(), hAtPt) != g_Daemon.pinnedWindows.end()) {
+                    if (g_Daemon.IsPinnedWindow(hAtPt)) {
                         UINT curMods = GetCurrentHardwareModifiers();
                         if (kb->flags & LLKHF_ALTDOWN) curMods |= MOD_ALT;
                         bool ctrl  = (curMods & MOD_CONTROL) != 0;
@@ -2243,12 +2340,14 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
 static DWORD g_InputHookThreadId = 0;
 
 static DWORD WINAPI InputHookWorkerThread(LPVOID) {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     g_Daemon.hKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_Daemon.hInst, 0);
 
-    // 15ms hardware key-state poller + foreground game hook-chain refresher
+    // 15ms hardware key-state poller + debounced hook health check
     UINT_PTR pollTimer = SetTimer(nullptr, 0, 15, nullptr);
-    HWND lastFgWnd = nullptr;
+    HWND lastFgWnd = GetForegroundWindow();
+    DWORD lastHookInstallTick = GetTickCount();
+    DWORD pendingFgRehookTick = 0;
     bool wasDownPrev   = false;
     bool wasDownReg    = false;
     bool wasDownFull   = false;
@@ -2257,16 +2356,34 @@ static DWORD WINAPI InputHookWorkerThread(LPVOID) {
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         if (msg.message == WM_TIMER && msg.wParam == pollTimer) {
-            // 1. If foreground window changed (e.g. borderless game just took focus and installed its own hook),
-            // re-register our WH_KEYBOARD_LL hook so PepperSnap stays first in the hook chain.
+            DWORD now = GetTickCount();
             HWND curFg = GetForegroundWindow();
-            if (curFg && curFg != lastFgWnd && curFg != g_Daemon.hOverlayWnd && curFg != g_Daemon.hOptionsWnd) {
+            if (curFg && curFg != lastFgWnd &&
+                curFg != g_Daemon.hOverlayWnd && curFg != g_Daemon.hOptionsWnd &&
+                !g_Daemon.IsPinnedWindow(curFg)) {
                 lastFgWnd = curFg;
-                if (g_Daemon.hKeyHook) UnhookWindowsHookEx(g_Daemon.hKeyHook);
-                g_Daemon.hKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_Daemon.hInst, 0);
+                pendingFgRehookTick = (now == 0) ? 1 : now;
             }
 
-            // 2. Direct GetAsyncKeyState polling fallback for borderless/fullscreen games that swallow hooks
+            // Reinstall WH_KEYBOARD_LL only if the hook handle is invalid, or after a >=250ms debounce following a foreground change
+            if (!g_Daemon.hKeyHook) {
+                g_Daemon.hKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_Daemon.hInst, 0);
+                lastHookInstallTick = now;
+                pendingFgRehookTick = 0;
+            } else if (pendingFgRehookTick != 0 &&
+                       (now - pendingFgRehookTick >= 250) &&
+                       (now - lastHookInstallTick >= 250)) {
+                HHOOK hNewHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_Daemon.hInst, 0);
+                if (hNewHook) {
+                    HHOOK hOldHook = g_Daemon.hKeyHook;
+                    g_Daemon.hKeyHook = hNewHook;
+                    if (hOldHook) UnhookWindowsHookEx(hOldHook);
+                }
+                lastHookInstallTick = now;
+                pendingFgRehookTick = 0;
+            }
+
+            // Direct GetAsyncKeyState polling fallback for borderless/fullscreen games that swallow hooks
             if (g_RecordingHotkeySlot == 0 && g_Daemon.hTrayWnd) {
                 UINT curMods = GetCurrentHardwareModifiers();
                 auto isHkPressed = [&](const HotkeyBinding& hk) -> bool {
@@ -5640,12 +5757,8 @@ void PepperSnapDaemon::BuildDockedHUD() {
     const int row2H = toolBtnH;
 
     // Row 3 metrics (Drag Handle + Undo/Redo/Clear/Options/Pin/OCR/SaveAs/Save/Copy/Close)
-    std::wstring copyBtnTip = FormatLabelWithShortcut(L"Copy to clipboard", hkActCopy) + L"\nHold shift for image search";
-    if (hkActCopy.vk != 0) {
-        copyBtnTip += L"\n(" + FormatHotkeyString({ hkActCopy.modifiers | MOD_SHIFT, hkActCopy.vk }) + L")";
-    } else {
-        copyBtnTip += L"\n(Ctrl + Shift + C)";
-    }
+    std::wstring copyBtnTip = FormatLabelWithShortcut(L"Copy to clipboard", hkActCopy)
+        + L"\n" + FormatLabelWithShortcut(L"Search image", hkActSearchGoogle);
     struct ActEntry { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     ActEntry acts[] = {
         { DBTN_ACT_DRAG_HUD, toolBtnW, L"", L"Drag to move toolbar (resets when selection moves)", false },
@@ -5990,15 +6103,32 @@ static void ShowPinnedBubbleTooltip(HWND hPinWnd, const DockButton& b) {
 
     FontFamily ff(L"Segoe UI");
     Font tipFont(&ff, 11.5f, FontStyleBold, UnitPixel);
-    RectF measured;
+
+    std::vector<std::wstring> lines;
+    size_t start = 0;
+    while (start <= b.tooltip.size()) {
+        size_t nl = b.tooltip.find(L'\n', start);
+        if (nl == std::wstring::npos) {
+            lines.push_back(b.tooltip.substr(start));
+            break;
+        }
+        lines.push_back(b.tooltip.substr(start, nl - start));
+        start = nl + 1;
+    }
+
+    float maxLineW = 0.0f;
     {
         Graphics gMeasure(hScreen);
         gMeasure.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-        gMeasure.MeasureString(b.tooltip.c_str(), -1, &tipFont, PointF(0, 0), &measured);
+        for (const auto& ln : lines) {
+            RectF measured;
+            gMeasure.MeasureString(ln.c_str(), -1, &tipFont, PointF(0, 0), &measured);
+            if (measured.Width > maxLineW) maxLineW = measured.Width;
+        }
     }
 
-    int bw = (int)std::ceil(measured.Width) + 18;
-    int bh = 26;
+    int bw = (int)std::ceil(maxLineW) + 18;
+    int bh = 8 + (int)lines.size() * 18;
     int tailH = 7;
     int totalW = bw + 4;
     int totalH = bh + tailH + 4;
@@ -6062,8 +6192,10 @@ static void ShowPinnedBubbleTooltip(HWND hPinWnd, const DockButton& b) {
             sf.SetAlignment(StringAlignmentCenter);
             sf.SetLineAlignment(StringAlignmentCenter);
             SolidBrush textBr(Color(255, 248, 250, 252));
-            RectF textRc(rx, ry, rw, rh);
-            g.DrawString(b.tooltip.c_str(), -1, &tipFont, textRc, &sf, &textBr);
+            for (size_t i = 0; i < lines.size(); ++i) {
+                RectF lineRc(rx, ry + 4.0f + (float)i * 18.0f, rw, 18.0f);
+                g.DrawString(lines[i].c_str(), -1, &tipFont, lineRc, &sf, &textBr);
+            }
         }
         GdiFlush();
         DWORD* pxBuf = (DWORD*)pvBits;
@@ -6625,12 +6757,14 @@ static void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool res
 
     struct PinBtnSpec { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     const wchar_t* outlineLbl = data->hideOutline ? L"Show outline" : L"Hide outline";
+    std::wstring pinCopyTip = FormatLabelWithShortcut(L"Copy to clipboard", g_Daemon.hkPinCopy)
+        + L"\n" + FormatLabelWithShortcut(L"Search image", g_Daemon.hkPinSearchGoogle);
     PinBtnSpec specs[6] = {
         { DBTN_ACT_PIN_OUTLINE,  toolBtnW,           L"",     FormatLabelWithShortcut(outlineLbl,                  g_Daemon.hkPinOutline),  false },
         { DBTN_ACT_PIN_UNFILTER, toolBtnW,           L"",     FormatLabelWithShortcut(L"Smooth the image",         g_Daemon.hkPinSmooth),   false },
         { DBTN_ACT_SAVE_AS,      toolBtnW,           L"",     FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", g_Daemon.hkPinSaveAs),   false },
         { DBTN_ACT_SAVE,         toolBtnW,           L"",     FormatLabelWithShortcut(L"Quick save",               g_Daemon.hkPinSave),     false },
-        { DBTN_ACT_COPY,         toolBtnW * 2 + gap, L"Copy", FormatLabelWithShortcut(L"Copy to clipboard",        g_Daemon.hkPinCopy),     true  },
+        { DBTN_ACT_COPY,         toolBtnW * 2 + gap, L"Copy", pinCopyTip,                                                                   true  },
         { DBTN_ACT_CLOSE,        toolBtnW,           L"",     FormatLabelWithShortcut(L"Close pinned image",       g_Daemon.hkPinClose),    false }
     };
 
@@ -7610,6 +7744,13 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 DestroyWindow(hWnd);
             }
             return;
+        case DBTN_ACT_PIN_SEARCH_GOOGLE:
+            SetFocus(hWnd);
+            if (data->bmp) {
+                g_Daemon.CopyBitmapToClipboard(data->bmp);
+                g_Daemon.SearchClipboardImageOnGoogle();
+            }
+            return;
         case DBTN_ACT_COPY:
             SetFocus(hWnd);
             if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
@@ -7686,19 +7827,19 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
             return;
         case DBTN_ACT_SAVE_AS:
             if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
-                WCHAR szFile[MAX_PATH] = {0};
+                std::vector<WCHAR> szFile(4096, L'\0');
                 std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
                                        PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
                 g_Daemon.SaveSettings();
-                wcsncpy_s(szFile, defName.c_str(), _TRUNCATE);
+                wcsncpy_s(szFile.data(), szFile.size(), defName.c_str(), _TRUNCATE);
 
                 OPENFILENAMEW ofn = {0};
                 ofn.lStructSize = sizeof(ofn);
                 ofn.hwndOwner = hWnd;
                 ofn.lpstrTitle = L"Save All Pinned Images As";
                 ofn.lpstrInitialDir = g_Daemon.saveFolder.c_str();
-                ofn.lpstrFile = szFile;
-                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrFile = szFile.data();
+                ofn.nMaxFile = (DWORD)szFile.size();
                 ofn.lpstrFilter = L"JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0*.png\0WebP image (*.webp)\0*.webp\0BMP bitmap (*.bmp)\0*.bmp\0";
                 ofn.nFilterIndex = (DWORD)g_Daemon.regionFormat + 1;
                 const wchar_t* defExts[4] = { L"jpg", L"png", L"webp", L"bmp" };
@@ -7706,7 +7847,7 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 ofn.Flags = OFN_PATHMUSTEXIST;
 
                 if (GetSaveFileNameW(&ofn)) {
-                    std::wstring chosenPath(szFile);
+                    std::wstring chosenPath(szFile.data());
                     std::wstring chosenFolder = g_Daemon.saveFolder;
                     std::wstring filePart = chosenPath;
                     size_t slashPos = chosenPath.find_last_of(L"\\/");
@@ -7762,18 +7903,18 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 }
                 if (IsWindow(hWnd)) SetFocus(hWnd);
             } else if (data->bmp) {
-                WCHAR szFile[MAX_PATH] = {0};
+                std::vector<WCHAR> szFile(4096, L'\0');
                 std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
                                        PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
                 g_Daemon.SaveSettings();
-                wcsncpy_s(szFile, defName.c_str(), _TRUNCATE);
+                wcsncpy_s(szFile.data(), szFile.size(), defName.c_str(), _TRUNCATE);
 
                 OPENFILENAMEW ofn = {0};
                 ofn.lStructSize = sizeof(ofn);
                 ofn.hwndOwner = hWnd;
                 ofn.lpstrInitialDir = g_Daemon.saveFolder.c_str();
-                ofn.lpstrFile = szFile;
-                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrFile = szFile.data();
+                ofn.nMaxFile = (DWORD)szFile.size();
                 ofn.lpstrFilter = L"JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0*.png\0WebP image (*.webp)\0*.webp\0BMP bitmap (*.bmp)\0*.bmp\0";
                 ofn.nFilterIndex = (DWORD)g_Daemon.regionFormat + 1;
                 const wchar_t* defExts[4] = { L"jpg", L"png", L"webp", L"bmp" };
@@ -7781,11 +7922,11 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
 
                 if (GetSaveFileNameW(&ofn)) {
-                    if (g_Daemon.SaveBitmapToPath(data->bmp, szFile)) {
-                        g_Daemon.lastSavedFilePath = szFile;
+                    if (g_Daemon.SaveBitmapToPath(data->bmp, szFile.data())) {
+                        g_Daemon.lastSavedFilePath = szFile.data();
                         g_Daemon.ShowTrayToast(
                             L"Saved capture",
-                            std::wstring(szFile) + L"\n(click to open in Explorer)"
+                            std::wstring(szFile.data()) + L"\n(click to open in Explorer)"
                         );
                     }
                 }
@@ -8245,6 +8386,10 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_SAVE, applyAll);
                     return 0;
                 }
+                if (MatchesOverlayShortcut(g_Daemon.hkPinSearchGoogle, vk, ctrl, shift, alt)) {
+                    ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_SEARCH_GOOGLE, false);
+                    return 0;
+                }
                 if (MatchesPinnedShortcutWithOptionalShift(g_Daemon.hkPinCopy, vk, ctrl, shift, alt, &applyAll)) {
                     ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_COPY, applyAll);
                     return 0;
@@ -8527,7 +8672,11 @@ static LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                     data->hoveredBtnId = newHover;
                     RenderPinnedLayeredWindow(hWnd, data);
                     if (hit) {
-                        ExecutePinnedWindowAction(hWnd, data, releasedBtnId, releasedWithShift);
+                        if (releasedBtnId == DBTN_ACT_COPY && releasedWithShift) {
+                            ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_SEARCH_GOOGLE, false);
+                        } else {
+                            ExecutePinnedWindowAction(hWnd, data, releasedBtnId, releasedWithShift);
+                        }
                     }
                     return 0;
                 }
@@ -8752,10 +8901,11 @@ struct OptionsDlgState {
     bool autoHideFrames = true;
     bool pinAboveEdit = true;
     bool keepEditOpen = false;
+    bool runElevated = false;
     bool nonStackingHi = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 15;
-    bool autoUpdateEnabled = true;
+    bool autoUpdateEnabled = false;
     UpdateCheckInterval updateInterval = UpdateCheckInterval::EveryDay;
     HotkeyBinding hkRegion{ MOD_CONTROL, VK_SNAPSHOT };
     HotkeyBinding hkFull{ MOD_SHIFT, VK_SNAPSHOT };
@@ -8783,6 +8933,7 @@ struct OptionsDlgState {
     HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkActSearchGoogle{ MOD_SHIFT, 'C' };
     HotkeyBinding hkFramePlayPause{ 0, VK_SPACE };
     HotkeyBinding hkFrameToggleStrip{ 0, 0 };
     HotkeyBinding hkPinZoomOut{ 0, VK_OEM_MINUS };
@@ -8795,16 +8946,17 @@ struct OptionsDlgState {
     HotkeyBinding hkPinSaveAs{ 0, 0 };
     HotkeyBinding hkPinSave{ 0, 0 };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkPinSearchGoogle{ MOD_SHIFT, 'C' };
     HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
     bool confirmed = false;
     bool openedAppData = false;
     bool restoredAllDefaults = false;
     int scrollY = 0;
-    int scrollContentHeight = 772;
+    int scrollContentHeight = 820;
     int footerHeight = 56;
     int fixedWinWidth = 580;
-    int fullWinHeight = 888;
-    int savedWinHeight = 888;
+    int fullWinHeight = 936;
+    int savedWinHeight = 936;
     int lastFooterTop = -1;
 
     HWND hViewport = nullptr;
@@ -8830,6 +8982,8 @@ struct OptionsDlgState {
     HWND hAutoHideFramesChk = nullptr;
     HWND hPinAboveEditChk = nullptr;
     HWND hKeepEditOpenChk = nullptr;
+    HWND hRunElevatedChk = nullptr;
+    HWND hRunElevatedNoteLbl = nullptr;
     HWND hNonStackingChk = nullptr;
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
@@ -8895,6 +9049,7 @@ struct OptionsDlgState {
 #define IDC_OPT_PIN_ABOVE_EDIT_CHK 1029
 #define IDC_OPT_KEEP_EDIT_OPEN_CHK 1030
 #define IDC_OPT_SHORTCUTS_INFO     1031
+#define IDC_OPT_RUN_ELEVATED_CHK   1032
 
 #define IDC_CK_BTN_BASE          2100
 #define IDC_CK_RESTORE_DEFAULTS  2201
@@ -9688,6 +9843,7 @@ struct CustomizeKeysDlgState {
     HotkeyBinding hkActSaveAs;
     HotkeyBinding hkActSave;
     HotkeyBinding hkActCopy;
+    HotkeyBinding hkActSearchGoogle;
     HotkeyBinding hkFramePlayPause;
     HotkeyBinding hkFrameToggleStrip;
     HotkeyBinding hkPinZoomOut;
@@ -9700,6 +9856,7 @@ struct CustomizeKeysDlgState {
     HotkeyBinding hkPinSaveAs;
     HotkeyBinding hkPinSave;
     HotkeyBinding hkPinCopy;
+    HotkeyBinding hkPinSearchGoogle;
     HotkeyBinding hkPinClose;
 
     std::vector<CustomizeKeyRow> rows;
@@ -10330,6 +10487,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     ck.hkActSaveAs        = optSt->hkActSaveAs;
     ck.hkActSave          = optSt->hkActSave;
     ck.hkActCopy          = optSt->hkActCopy;
+    ck.hkActSearchGoogle  = optSt->hkActSearchGoogle;
     ck.hkFramePlayPause   = optSt->hkFramePlayPause;
     ck.hkFrameToggleStrip = optSt->hkFrameToggleStrip;
     ck.hkPinZoomOut       = optSt->hkPinZoomOut;
@@ -10342,6 +10500,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     ck.hkPinSaveAs     = optSt->hkPinSaveAs;
     ck.hkPinSave       = optSt->hkPinSave;
     ck.hkPinCopy       = optSt->hkPinCopy;
+    ck.hkPinSearchGoogle = optSt->hkPinSearchGoogle;
     ck.hkPinClose      = optSt->hkPinClose;
 
     int nextSlot = 1;
@@ -10389,7 +10548,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addGlobalRow(L"Instant fullscreen",                &ck.hkFull,         { MOD_SHIFT, VK_SNAPSHOT });
     addGlobalRow(L"Instant save previous custom area", &ck.hkPrev,         { MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT });
     addGlobalRow(L"Pin the image in clipboard on top", &ck.hkPinClipboard, { MOD_ALT, VK_SNAPSHOT });
-    addGlobalRow(L"Image search clipboard",            &ck.hkSearchGoogle, { MOD_ALT | MOD_SHIFT, VK_SNAPSHOT });
+    addGlobalRow(L"Search image clipboard",            &ck.hkSearchGoogle, { MOD_ALT | MOD_SHIFT, VK_SNAPSHOT });
 
     // Custom area annotation tools
     addSectionHdr(L"Custom area — annotation tools");
@@ -10417,6 +10576,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkActSaveAs,        { MOD_CONTROL | MOD_SHIFT, 'S' });
     addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkActSave,          { MOD_CONTROL, 'S' });
     addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkActCopy,          { MOD_CONTROL, 'C' });
+    addActRow(DBTN_ACT_COPY,             true,  L"Search image",                  &ck.hkActSearchGoogle,  { MOD_SHIFT, 'C' });
     addActRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, L"Play / Pause frames (GIF/WebP)",&ck.hkFramePlayPause,   { 0, VK_SPACE });
     addActRow(DBTN_ACT_FRAME_TOGGLE,     false, L"Hide / Show frames (GIF/WebP)", &ck.hkFrameToggleStrip, { 0, 0 });
 
@@ -10432,6 +10592,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkPinSaveAs,        { 0, 0 });
     addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkPinSave,          { 0, 0 });
     addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkPinCopy,          { MOD_CONTROL, 'C' });
+    addActRow(DBTN_ACT_COPY,             true,  L"Search image",                  &ck.hkPinSearchGoogle,  { MOD_SHIFT, 'C' });
     addActRow(DBTN_ACT_CLOSE,            false, L"Close pinned image",            &ck.hkPinClose,         { 0, VK_ESCAPE });
 
     int curY = 6;
@@ -10551,6 +10712,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         optSt->hkActSaveAs        = ck.hkActSaveAs;
         optSt->hkActSave          = ck.hkActSave;
         optSt->hkActCopy          = ck.hkActCopy;
+        optSt->hkActSearchGoogle  = ck.hkActSearchGoogle;
         optSt->hkFramePlayPause   = ck.hkFramePlayPause;
         optSt->hkFrameToggleStrip = ck.hkFrameToggleStrip;
         optSt->hkPinZoomOut       = ck.hkPinZoomOut;
@@ -10563,6 +10725,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         optSt->hkPinSaveAs        = ck.hkPinSaveAs;
         optSt->hkPinSave          = ck.hkPinSave;
         optSt->hkPinCopy          = ck.hkPinCopy;
+        optSt->hkPinSearchGoogle  = ck.hkPinSearchGoogle;
         optSt->hkPinClose         = ck.hkPinClose;
 
         g_Daemon.hkRegionSnip       = ck.hkRegion;
@@ -10591,6 +10754,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         g_Daemon.hkActSaveAs        = ck.hkActSaveAs;
         g_Daemon.hkActSave          = ck.hkActSave;
         g_Daemon.hkActCopy          = ck.hkActCopy;
+        g_Daemon.hkActSearchGoogle  = ck.hkActSearchGoogle;
         g_Daemon.hkFramePlayPause   = ck.hkFramePlayPause;
         g_Daemon.hkFrameToggleStrip = ck.hkFrameToggleStrip;
         g_Daemon.hkPinZoomOut       = ck.hkPinZoomOut;
@@ -10603,6 +10767,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         g_Daemon.hkPinSaveAs     = ck.hkPinSaveAs;
         g_Daemon.hkPinSave       = ck.hkPinSave;
         g_Daemon.hkPinCopy       = ck.hkPinCopy;
+        g_Daemon.hkPinSearchGoogle = ck.hkPinSearchGoogle;
         g_Daemon.hkPinClose      = ck.hkPinClose;
 
         g_Daemon.ApplyGlobalHotkeys();
@@ -10722,12 +10887,11 @@ static std::wstring FormatPenSmoothLabel(bool enabled, int strength) {
 
 static void UpdateOptionsPreviewLabel(OptionsDlgState* st) {
     if (!st || !st->hNamingEdit || !st->hPreviewLbl) return;
-    WCHAR buf[512] = {0};
-    GetWindowTextW(st->hNamingEdit, buf, 511);
+    std::wstring pat = GetWindowTextDynamic(st->hNamingEdit);
     int selFmt = st->hComboRegion ? (int)SendMessageW(st->hComboRegion, CB_GETCURSEL, 0, 0) : (int)st->regionFmt;
     if (selFmt < 0 || selFmt > 3) selFmt = (int)ImageFormat::PNG;
     std::wstring preview = L"Live preview:  " +
-        PepperSnapDaemon::FormatFilenameWithPattern(buf, g_Daemon.captureCounter) +
+        PepperSnapDaemon::FormatFilenameWithPattern(pat, g_Daemon.captureCounter) +
         PepperSnapDaemon::GetFormatExtension((ImageFormat)selFmt) +
         L"   (zero EXIF/metadata)";
     SetWindowTextW(st->hPreviewLbl, preview.c_str());
@@ -10999,28 +11163,40 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hKeepEditOpenChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hKeepEditOpenChk, BM_SETCHECK, st->keepEditOpen ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            // 11. Enable pen and highlighter smoothing.
+            // 11. Run elevated (needed to capture elevated/fullscreen games)
+            st->hRunElevatedChk = CreateWindowExW(0, L"BUTTON",
+                L"Run elevated (needed to capture elevated/fullscreen games)",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 660, 516, 24, hVp, (HMENU)IDC_OPT_RUN_ELEVATED_CHK, nullptr, nullptr);
+            SendMessageW(st->hRunElevatedChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hRunElevatedChk, BM_SETCHECK, st->runElevated ? BST_CHECKED : BST_UNCHECKED, 0);
+
+            st->hRunElevatedNoteLbl = CreateWindowExW(0, L"STATIC",
+                L"Standard user by default; enable if hotkeys or capture fail in admin/fullscreen games (shows UAC on launch).",
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 36, 686, 498, 36, hVp, nullptr, nullptr, nullptr);
+            SendMessageW(st->hRunElevatedNoteLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            // 12. Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 660, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 724, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 692, 224, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 756, 224, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 688, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 752, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
-            // 12. Restore everything to default button (below smoothing strength, NOT in row with Save options)
+            // 13. Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 728, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 792, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->scrollControls.clear();
@@ -11036,24 +11212,24 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             // Permanent pinned footer bar: clickable %appdata%\PepperSnap persistence link + Save options + Cancel
             st->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 772, 552, 56, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 834, 552, 56, hWnd, nullptr, nullptr, nullptr);
 
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 790, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 852, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
             WNDPROC origStaticProc = (WNDPROC)SetWindowLongPtrW(st->hAppDataInfo, GWLP_WNDPROC, (LONG_PTR)AppDataLinkStaticWndProc);
             SetPropW(st->hAppDataInfo, L"PepperSnapOrigStaticProc", (HANDLE)origStaticProc);
 
             st->hOkBtn = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 783, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 845, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(st->hOkBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 783, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 845, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            st->scrollContentHeight = 772;
+            st->scrollContentHeight = 834;
             st->footerHeight = 56;
             st->lastFooterTop = -1;
             UpdateOptionsPreviewLabel(st);
@@ -11284,6 +11460,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkActSaveAs        = { MOD_CONTROL | MOD_SHIFT, 'S' };
                 st->hkActSave          = { MOD_CONTROL, 'S' };
                 st->hkActCopy          = { MOD_CONTROL, 'C' };
+                st->hkActSearchGoogle  = { MOD_SHIFT, 'C' };
                 st->hkFramePlayPause   = { 0, VK_SPACE };
                 st->hkFrameToggleStrip = { 0, 0 };
                 st->hkPinZoomOut       = { 0, VK_OEM_MINUS };
@@ -11296,13 +11473,14 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkPinSaveAs     = { 0, 0 };
                 st->hkPinSave       = { 0, 0 };
                 st->hkPinCopy       = { MOD_CONTROL, 'C' };
+                st->hkPinSearchGoogle = { MOD_SHIFT, 'C' };
                 st->hkPinClose      = { 0, VK_ESCAPE };
 
-                st->autoUpdateEnabled = true;
+                st->autoUpdateEnabled = false;
                 st->updateInterval = UpdateCheckInterval::EveryDay;
-                SendMessageW(st->hAutoUpdateChk, BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hAutoUpdateChk, BM_SETCHECK, BST_UNCHECKED, 0);
                 SendMessageW(st->hComboUpdateInterval, CB_SETCURSEL, (WPARAM)st->updateInterval, 0);
-                EnableWindow(st->hComboUpdateInterval, TRUE);
+                EnableWindow(st->hComboUpdateInterval, FALSE);
 
                 st->nonStackingHi = true;
                 st->autoSaveCopy  = true;
@@ -11313,6 +11491,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->autoHideFrames = true;
                 st->pinAboveEdit   = true;
                 st->keepEditOpen   = false;
+                st->runElevated    = false;
                 SendMessageW(st->hNonStackingChk,    BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hAutoSaveChk,       BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hCopyFullChk,       BM_SETCHECK, BST_CHECKED, 0);
@@ -11322,6 +11501,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 SendMessageW(st->hAutoHideFramesChk, BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hPinAboveEditChk,   BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hKeepEditOpenChk,   BM_SETCHECK, BST_UNCHECKED, 0);
+                SendMessageW(st->hRunElevatedChk,    BM_SETCHECK, BST_UNCHECKED, 0);
 
                 st->penSmoothEnabled = true;
                 st->penSmoothStrength = 15;
@@ -11376,11 +11556,10 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                         pFileOpen->SetOptions(dwOptions | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
                     }
                     pFileOpen->SetTitle(L"Select default screenshot save folder");
-                    WCHAR curFolder[MAX_PATH] = {0};
-                    GetWindowTextW(st->hFolderEdit, curFolder, MAX_PATH - 1);
-                    if (wcslen(curFolder) > 0) {
+                    std::wstring curFolder = GetWindowTextDynamic(st->hFolderEdit);
+                    if (!curFolder.empty()) {
                         IShellItem* psiFolder = nullptr;
-                        if (SUCCEEDED(SHCreateItemFromParsingName(curFolder, nullptr, IID_IShellItem, (void**)&psiFolder)) && psiFolder) {
+                        if (SUCCEEDED(SHCreateItemFromParsingName(curFolder.c_str(), nullptr, IID_IShellItem, (void**)&psiFolder)) && psiFolder) {
                             pFileOpen->SetFolder(psiFolder);
                             psiFolder->Release();
                         }
@@ -11416,13 +11595,11 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 return 0;
             }
             if (id == IDOK) {
-                WCHAR fBuf[MAX_PATH] = {0};
-                GetWindowTextW(st->hFolderEdit, fBuf, MAX_PATH - 1);
-                if (wcslen(fBuf) > 0) st->folder = fBuf;
+                std::wstring fStr = GetWindowTextDynamic(st->hFolderEdit);
+                if (!fStr.empty()) st->folder = fStr;
 
-                WCHAR nBuf[512] = {0};
-                GetWindowTextW(st->hNamingEdit, nBuf, 511);
-                st->naming = (wcslen(nBuf) > 0) ? nBuf : PepperSnapDaemon::DEFAULT_NAMING_PATTERN;
+                std::wstring nStr = GetWindowTextDynamic(st->hNamingEdit);
+                st->naming = !nStr.empty() ? nStr : PepperSnapDaemon::DEFAULT_NAMING_PATTERN;
 
                 int rSel = (int)SendMessageW(st->hComboRegion, CB_GETCURSEL, 0, 0);
                 int fSel = (int)SendMessageW(st->hComboFull,   CB_GETCURSEL, 0, 0);
@@ -11447,6 +11624,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->autoHideFrames = (SendMessageW(st->hAutoHideFramesChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->pinAboveEdit   = (SendMessageW(st->hPinAboveEditChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->keepEditOpen   = (SendMessageW(st->hKeepEditOpenChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->runElevated    = (SendMessageW(st->hRunElevatedChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 int uSel = (int)SendMessageW(st->hComboUpdateInterval, CB_GETCURSEL, 0, 0);
                 if (uSel >= 0 && uSel <= 4) st->updateInterval = (UpdateCheckInterval)uSel;
@@ -11520,6 +11698,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.autoHideFrames = autoHideFrameList;
     st.pinAboveEdit   = pinnedImageAboveEdit;
     st.keepEditOpen   = keepEditWindowOpen;
+    st.runElevated    = runElevated;
     st.nonStackingHi  = nonStackingHighlighter;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
@@ -11551,6 +11730,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkActSaveAs        = hkActSaveAs;
     st.hkActSave          = hkActSave;
     st.hkActCopy          = hkActCopy;
+    st.hkActSearchGoogle  = hkActSearchGoogle;
     st.hkFramePlayPause   = hkFramePlayPause;
     st.hkFrameToggleStrip = hkFrameToggleStrip;
     st.hkPinZoomOut       = hkPinZoomOut;
@@ -11563,12 +11743,13 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkPinSaveAs     = hkPinSaveAs;
     st.hkPinSave       = hkPinSave;
     st.hkPinCopy       = hkPinCopy;
+    st.hkPinSearchGoogle = hkPinSearchGoogle;
     st.hkPinClose      = hkPinClose;
 
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = WS_EX_TOPMOST;
-    const int totalOptClientH = 772 + 56;
+    const int totalOptClientH = 834 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
@@ -11656,6 +11837,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         autoHideFrameList = st.autoHideFrames;
         pinnedImageAboveEdit = st.pinAboveEdit;
         keepEditWindowOpen = st.keepEditOpen;
+        runElevated = st.runElevated;
         nonStackingHighlighter = st.nonStackingHi;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
@@ -11687,6 +11869,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         hkActSaveAs        = st.hkActSaveAs;
         hkActSave          = st.hkActSave;
         hkActCopy          = st.hkActCopy;
+        hkActSearchGoogle  = st.hkActSearchGoogle;
         hkFramePlayPause   = st.hkFramePlayPause;
         hkFrameToggleStrip = st.hkFrameToggleStrip;
         hkPinZoomOut       = st.hkPinZoomOut;
@@ -11699,6 +11882,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         hkPinSaveAs      = st.hkPinSaveAs;
         hkPinSave        = st.hkPinSave;
         hkPinCopy        = st.hkPinCopy;
+        hkPinSearchGoogle = st.hkPinSearchGoogle;
         hkPinClose       = st.hkPinClose;
         if (st.restoredAllDefaults) {
             hidePinnedToolbar = false;
@@ -11706,6 +11890,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
             smoothPinnedImage = false;
             pinnedImageAboveEdit = true;
             keepEditWindowOpen = false;
+            runElevated = false;
             activeColor = Color(255, 239, 68, 68);
             activeStroke = 4.0f;
         }
@@ -13031,10 +13216,10 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(FormatLabelWithShortcut(L"Instant fullscreen", hkFullSnap),                  L"Capture & save all monitors immediately (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Instant save previous custom area", hkPrevRegion), L"Capture & save previous custom area — preserves rectangle, irregular quad / triangle, or circle / ellipse mask (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Pin the image in clipboard on top", hkPinClipboard), L"Pin the image currently in the clipboard directly on top as a floating window (also in tray menu; customizable in Customize keys)");
-    addRow(FormatLabelWithShortcut(L"Image search clipboard", hkSearchGoogle), L"Open default browser, go to https://images.google.com/, click Search by image, and paste the first image in the clipboard (also in tray menu; customizable in Customize keys)");
+    addRow(FormatLabelWithShortcut(L"Search image clipboard", hkSearchGoogle), L"Open default browser, go to https://images.google.com/, click Search by image, and paste the first image in the clipboard (also in tray menu; customizable in Customize keys)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
-    addRow(L"Right-click system tray icon",  L"Open tray menu (Pin the image in clipboard on top, Image search clipboard, Open image to edit / pin (supports multi-select), Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, Keyboard shortcuts and info, etc.)");
-    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image on a checkerboard transparency background; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit window\" is enabled in Options, pinned images overlay the edit window and any pinned image in the custom area is included when saving/copying) or \"Pin on top\" (single or multi-selected images)");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Pin the image in clipboard on top, Search image clipboard, Open image to edit / pin (supports multi-select), Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, Keyboard shortcuts and info, etc.)");
+    addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image on a checkerboard transparency background; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit window\" is enabled in Options, pinned images overlay the edit window and any pinned image in the custom area is included when saving/copying), \"Search image on web\" (copies image to clipboard and searches on https://images.google.com/), or \"Pin on top\" (single or multi-selected images)");
     addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
     addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
     addActionRow(DBTN_ACT_FRAME_TOGGLE,     false, FormatLabelWithShortcut(L"Hide / Show frames (GIF/WebP)",  hkFrameToggleStrip), L"Collapse or expand the bottom frame list in \"Edit with PepperSnap\" (or click the Hide / Show frames dropdown button)");
@@ -13105,16 +13290,16 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in custom area via Windows OCR & copy to clipboard");
     addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for custom area");
     addActionRow(DBTN_ACT_SAVE,     false,  FormatLabelWithShortcut(L"Quick save",                hkActSave),           L"Save capture directly to default folder & close");
-    std::wstring copySearchShortcut = (hkActCopy.vk != 0)
-        ? FormatHotkeyString({ hkActCopy.modifiers | MOD_SHIFT, hkActCopy.vk })
-        : L"Ctrl + Shift + C";
-    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close (hold Shift + click Copy button or press " + copySearchShortcut + L" for image search on https://images.google.com/)");
-    addRow(L"Hold Shift + Copy (" + copySearchShortcut + L")",                                                          L"Copy custom area to clipboard, open default browser to https://images.google.com/, click Search by image, and paste the first image in the clipboard");
+    std::wstring copySearchShortcut = (hkActSearchGoogle.vk != 0)
+        ? FormatHotkeyString(hkActSearchGoogle)
+        : L"Shift + click Copy button";
+    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close (press " + copySearchShortcut + L" or Shift + click Copy button to search image on https://images.google.com/)");
+    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Search image",              hkActSearchGoogle),   L"Copy custom area to clipboard, open default browser to https://images.google.com/, click Search by image, and paste the first image in the clipboard (or Shift + click Copy button; customizable in Customize keys)");
     addActionRow(DBTN_ACT_CLOSE,    false,  L"Close / Select mode (Esc)",                                               L"Switch active drawing tool to Select mode, or exit custom area");
 
     addSection(L"Pin on top — floating window toolbar & mechanisms");
     addRow(L"You can pin multiple image at once", L"Pin multiple captures, multi-select images in \"Open image to pin on top...\", use \"Pin the image in clipboard on top\" (" + FormatHotkeyString(hkPinClipboard) + L" or tray menu), or multi-select images in Explorer and click \"Pin on top\" (auto-tiled so they don't overlap, fit-to-screen capped at 40% of screen size, and multi-selected by default so you can immediately move them all together)");
-    addRow(L"Hold Shift + any action / key / button", L"Apply any pinned image button, mouse action, size/percentage input, or shortcut key (including Shift + Save As) to all pinned images at once (e.g. Shift + Copy copies all pinned images to clipboard; Shift + double right-click closes all)");
+    addRow(L"Hold Shift + any action / key / button", L"Apply any pinned image button, mouse action, size/percentage input, or shortcut key (including Shift + Save As) to all pinned images at once (e.g. Shift + Quick save saves all pinned images; Shift + click Copy button searches image on web; Shift + double right-click closes all)");
     addRow(L"Animated GIF & WebP support",   L"Pinned .gif and animated .webp images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
     addRow(L"Ctrl + Left-click pinned image", L"Select or deselect pinned images for multi-selection (shows a blue outline on selected pinned images; pinning multiple images at once multi-selects them by default; drag any selected pinned image to move all selected pinned images together with group screen-edge snapping; left-click without Ctrl to clear selection)");
     addRow(L"Alt + Click / Alt + Shift + Click", L"Pause or play pinned animation on current frame (only shown & active on animated .gif / multi-frame animated .webp; hold Alt + Shift + click to pause/play all pinned animations)");
@@ -13139,10 +13324,14 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
     addActionRow(DBTN_ACT_PIN_OUTLINE,      false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),     L"Toggle red border outline around pinned image (hold Shift to apply to all pinned images; default: on)");
     addActionRow(DBTN_ACT_PIN_UNFILTER,     false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),      L"Smooth image with filter when on; unfiltered (pixelated) when off (hold Shift to apply to all pinned images; default: off)");
-    addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image (hold Shift to Save As all pinned images; shortcut empty by default, customizable in Options)");
-    addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder (hold Shift to quick-save all pinned images; shortcut empty by default, customizable in Options)");
-    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),      L"Copy pinned image to clipboard (hold Shift to copy all pinned images to clipboard)");
-    addActionRow(DBTN_ACT_CLOSE,        false, FormatLabelWithShortcut(L"Close pinned image",       hkPinClose),     L"Close pinned image (hold Shift to close all pinned images, or double right-click, or use tray menu)");
+    addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image (hold Shift to Save As all pinned images; shortcut empty by default, customizable in Customize keys)");
+    addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder (hold Shift to quick-save all pinned images; shortcut empty by default, customizable in Customize keys)");
+    std::wstring pinSearchShortcut = (hkPinSearchGoogle.vk != 0)
+        ? FormatHotkeyString(hkPinSearchGoogle)
+        : L"Shift + click Copy button";
+    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),          L"Copy pinned image to clipboard (press " + pinSearchShortcut + L" or Shift + click Copy button to search image on https://images.google.com/)");
+    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Search image",             hkPinSearchGoogle),  L"Copy pinned image to clipboard, open default browser to https://images.google.com/, click Search by image, and paste the first image in the clipboard (or Shift + click Copy button; customizable in Customize keys)");
+    addActionRow(DBTN_ACT_CLOSE,        false, FormatLabelWithShortcut(L"Close pinned image",       hkPinClose),         L"Close pinned image (hold Shift to close all pinned images, or double right-click, or use tray menu)");
 
     int maxKeyW = 220;
     int maxDescW = 360;
@@ -13475,16 +13664,16 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
         SetForegroundWindow(hOverlayWnd);
     }
 
-    WCHAR szFile[MAX_PATH] = {0};
+    std::vector<WCHAR> szFile(4096, L'\0');
     std::wstring defName = FormatFilename(captureCounter++) + GetFormatExtension(regionFormat);
-    wcsncpy_s(szFile, defName.c_str(), _TRUNCATE);
+    wcsncpy_s(szFile.data(), szFile.size(), defName.c_str(), _TRUNCATE);
 
     OPENFILENAMEW ofn = {0};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hSaveOwner;
     ofn.lpstrInitialDir = saveFolder.c_str();
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = szFile.data();
+    ofn.nMaxFile = (DWORD)szFile.size();
     ofn.lpstrFilter = L"JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0*.png\0WebP image (*.webp)\0*.webp\0BMP bitmap (*.bmp)\0*.bmp\0";
     ofn.nFilterIndex = (DWORD)regionFormat + 1;
     const wchar_t* defExts[4] = { L"jpg", L"png", L"webp", L"bmp" };
@@ -13495,9 +13684,9 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
     isSavingAsModalOpen = false;
 
     if (savedOk) {
-        if (SaveBitmapToPath(bmp, szFile)) {
-            lastSavedFilePath = szFile;
-            ShowTrayToast(L"Saved capture", std::wstring(szFile) + L"\n(click to open in Explorer)");
+        if (SaveBitmapToPath(bmp, szFile.data())) {
+            lastSavedFilePath = szFile.data();
+            ShowTrayToast(L"Saved capture", std::wstring(szFile.data()) + L"\n(click to open in Explorer)");
         }
         delete bmp;
         if (IsEditingOpenedImage() && keepEditWindowOpen) {
@@ -16993,13 +17182,19 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
             }
 
-            if (MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkActCopy, vk, ctrl, shift, alt)) {
+            if (MatchesOverlayShortcut(g_Daemon.hkActSearchGoogle, vk, ctrl, shift, alt)) {
                 if (g_Daemon.hasSelection &&
                     g_Daemon.dragMode != DragMode::CreatingSelection &&
                     g_Daemon.dragMode != DragMode::PendingOutsideSelection) {
-                    bool reqShift = (g_Daemon.hkActCopy.modifiers & MOD_SHIFT) != 0;
-                    bool searchGoogle = shift && !reqShift;
-                    g_Daemon.ActionCopyAndClose(searchGoogle);
+                    g_Daemon.ActionCopyAndClose(true);
+                }
+                return 0;
+            }
+            if (MatchesOverlayShortcut(g_Daemon.hkActCopy, vk, ctrl, shift, alt)) {
+                if (g_Daemon.hasSelection &&
+                    g_Daemon.dragMode != DragMode::CreatingSelection &&
+                    g_Daemon.dragMode != DragMode::PendingOutsideSelection) {
+                    g_Daemon.ActionCopyAndClose(false);
                 }
                 return 0;
             }
@@ -19179,18 +19374,18 @@ void PepperSnapDaemon::OpenImageFileIntoOverlay(const std::wstring& filePath) {
 }
 
 void PepperSnapDaemon::OpenImageIntoOverlay() {
-    WCHAR szFile[MAX_PATH] = {0};
+    std::vector<WCHAR> szFile(4096, L'\0');
     OPENFILENAMEW ofn = {0};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hTrayWnd;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = szFile.data();
+    ofn.nMaxFile = (DWORD)szFile.size();
     ofn.lpstrFilter = L"Image files (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff;*.ico)\0*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff;*.ico\0All files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
 
     if (GetOpenFileNameW(&ofn)) {
-        OpenImageFileIntoOverlay(szFile);
+        OpenImageFileIntoOverlay(szFile.data());
     }
 }
 
@@ -19921,6 +20116,20 @@ static DWORD WINAPI GoogleImagesPasteWorkerThread(LPVOID) {
     static const GUID IID_IUIAutomation_Local   = { 0x30cbe57d, 0xd9d0, 0x452a, { 0xab, 0x13, 0x7a, 0xc5, 0xac, 0x48, 0x25, 0xee } };
     CoCreateInstance(CLSID_CUIAutomation_Local, nullptr, CLSCTX_INPROC_SERVER, IID_IUIAutomation_Local, (void**)&pUia);
 
+    // Temporarily make any pinned windows click-through and non-topmost while interacting with the browser
+    std::vector<HWND> loweredPins;
+    {
+        HWND hPinIter = nullptr;
+        while ((hPinIter = FindWindowExW(nullptr, hPinIter, L"PepperSnapPinWnd", nullptr)) != nullptr) {
+            if (IsWindow(hPinIter)) {
+                LONG_PTR exSt = GetWindowLongPtrW(hPinIter, GWL_EXSTYLE);
+                SetWindowLongPtrW(hPinIter, GWL_EXSTYLE, exSt | WS_EX_TRANSPARENT);
+                SetWindowPos(hPinIter, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                loweredPins.push_back(hPinIter);
+            }
+        }
+    }
+
     ShellExecuteW(nullptr, L"open", L"https://images.google.com/", nullptr, nullptr, SW_SHOWNORMAL);
 
     auto makeKeyInput = [](WORD vk, DWORD flags) -> INPUT {
@@ -20208,6 +20417,14 @@ static DWORD WINAPI GoogleImagesPasteWorkerThread(LPVOID) {
     };
     SendInput(4, pasteInputs, sizeof(INPUT));
 
+    for (HWND hPinIter : loweredPins) {
+        if (hPinIter && IsWindow(hPinIter)) {
+            LONG_PTR exSt = GetWindowLongPtrW(hPinIter, GWL_EXSTYLE);
+            SetWindowLongPtrW(hPinIter, GWL_EXSTYLE, exSt & ~((LONG_PTR)WS_EX_TRANSPARENT));
+            SetWindowPos(hPinIter, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
     if (pUia) {
         pUia->Release();
     }
@@ -20221,6 +20438,88 @@ void PepperSnapDaemon::LaunchGoogleImagesAndPasteClipboard() {
     HANDLE hThread = CreateThread(nullptr, 0, GoogleImagesPasteWorkerThread, nullptr, 0, nullptr);
     if (hThread) {
         CloseHandle(hThread);
+    }
+}
+
+static bool IsValidExistingImageFilePath(const std::wstring& rawPath, std::wstring* outResolvedPath = nullptr) {
+    if (rawPath.empty()) return false;
+    for (wchar_t ch : rawPath) {
+        if (ch < 32) return false;
+    }
+    DWORD reqLen = GetFullPathNameW(rawPath.c_str(), 0, nullptr, nullptr);
+    if (reqLen == 0 || reqLen > 32768) return false;
+    std::wstring fullPath(reqLen, L'\0');
+    DWORD gotLen = GetFullPathNameW(rawPath.c_str(), reqLen, &fullPath[0], nullptr);
+    if (gotLen == 0 || gotLen >= reqLen) return false;
+    fullPath.resize(gotLen);
+
+    DWORD attrs = GetFileAttributesW(fullPath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) return false;
+    if ((attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) return false;
+
+    const wchar_t* ext = PathFindExtensionW(fullPath.c_str());
+    if (!ext || ext[0] != L'.') return false;
+    static const wchar_t* const kAllowedExts[] = {
+        L".png", L".jpg", L".jpeg", L".webp", L".bmp", L".gif", L".tif", L".tiff", L".ico"
+    };
+    bool extAllowed = false;
+    for (const wchar_t* allowed : kAllowedExts) {
+        if (_wcsicmp(ext, allowed) == 0) {
+            extAllowed = true;
+            break;
+        }
+    }
+    if (!extAllowed) return false;
+
+    HANDLE hFile = CreateFileW(fullPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER fileSize = {};
+    BYTE hdr[12] = {};
+    DWORD bytesRead = 0;
+    bool okSize = GetFileSizeEx(hFile, &fileSize) && fileSize.QuadPart >= 4 && fileSize.QuadPart <= (256LL * 1024LL * 1024LL);
+    bool okRead = okSize && ReadFile(hFile, hdr, sizeof(hdr), &bytesRead, nullptr) && bytesRead >= 4;
+    CloseHandle(hFile);
+    if (!okRead) return false;
+
+    bool headerValid = false;
+    if (bytesRead >= 8 && hdr[0] == 0x89 && hdr[1] == 'P' && hdr[2] == 'N' && hdr[3] == 'G' &&
+        hdr[4] == 0x0D && hdr[5] == 0x0A && hdr[6] == 0x1A && hdr[7] == 0x0A) {
+        headerValid = true; // PNG
+    } else if (bytesRead >= 3 && hdr[0] == 0xFF && hdr[1] == 0xD8 && hdr[2] == 0xFF) {
+        headerValid = true; // JPEG
+    } else if (bytesRead >= 12 && hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F' &&
+               hdr[8] == 'W' && hdr[9] == 'E' && hdr[10] == 'B' && hdr[11] == 'P') {
+        headerValid = true; // WebP
+    } else if (bytesRead >= 2 && hdr[0] == 'B' && hdr[1] == 'M') {
+        headerValid = true; // BMP
+    } else if (bytesRead >= 6 && hdr[0] == 'G' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == '8' &&
+               (hdr[4] == '7' || hdr[4] == '9') && hdr[5] == 'a') {
+        headerValid = true; // GIF
+    } else if (bytesRead >= 4 && ((hdr[0] == 'I' && hdr[1] == 'I' && hdr[2] == 42 && hdr[3] == 0) ||
+                                  (hdr[0] == 'M' && hdr[1] == 'M' && hdr[2] == 0 && hdr[3] == 42))) {
+        headerValid = true; // TIFF
+    } else if (bytesRead >= 4 && hdr[0] == 0 && hdr[1] == 0 && (hdr[2] == 1 || hdr[2] == 2) && hdr[3] == 0) {
+        headerValid = true; // ICO / CUR
+    }
+    if (!headerValid) return false;
+
+    if (outResolvedPath) *outResolvedPath = fullPath;
+    return true;
+}
+
+void PepperSnapDaemon::SearchImageFileOnGoogle(const std::wstring& filePath) {
+    if (!enableWebImageSearch) return;
+    std::wstring resolvedPath;
+    if (!IsValidExistingImageFilePath(filePath, &resolvedPath)) return;
+    std::vector<Bitmap*> frames;
+    std::vector<int> delays;
+    if (LoadImageFramesFromFile(resolvedPath, frames, delays) && !frames.empty() && frames[0]) {
+        CopyBitmapToClipboard(frames[0]);
+        for (Bitmap* f : frames) delete f;
+        SearchClipboardImageOnGoogle();
+    } else {
+        for (Bitmap* f : frames) delete f;
     }
 }
 
@@ -20366,21 +20665,151 @@ int PepperSnapDaemon::CompareVersionStrings(const std::wstring& v1, const std::w
     return 0;
 }
 
-static std::string ExtractJsonFieldValue(const std::string& json, const std::string& key) {
-    std::string pattern = "\"" + key + "\"";
-    size_t pos = json.find(pattern);
-    if (pos == std::string::npos) return "";
-    pos = json.find(':', pos + pattern.size());
-    if (pos == std::string::npos) return "";
-    pos = json.find('"', pos + 1);
-    if (pos == std::string::npos) return "";
-    size_t endPos = pos + 1;
-    while (endPos < json.size()) {
-        if (json[endPos] == '"' && json[endPos - 1] != '\\') break;
-        endPos++;
+static bool ParseHex4(const std::string& s, size_t pos, unsigned int& outVal) {
+    if (pos + 4 > s.size()) return false;
+    unsigned int val = 0;
+    for (size_t k = 0; k < 4; ++k) {
+        char c = s[pos + k];
+        val <<= 4;
+        if (c >= '0' && c <= '9') val |= (unsigned int)(c - '0');
+        else if (c >= 'a' && c <= 'f') val |= (unsigned int)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') val |= (unsigned int)(c - 'A' + 10);
+        else return false;
     }
-    if (endPos >= json.size()) return "";
-    return json.substr(pos + 1, endPos - (pos + 1));
+    outVal = val;
+    return true;
+}
+
+static void AppendUtf8Codepoint(std::string& out, unsigned int cp) {
+    if (cp <= 0x7F) {
+        out.push_back((char)cp);
+    } else if (cp <= 0x7FF) {
+        out.push_back((char)(0xC0 | ((cp >> 6) & 0x1F)));
+        out.push_back((char)(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+        out.push_back((char)(0xE0 | ((cp >> 12) & 0x0F)));
+        out.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back((char)(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0x10FFFF) {
+        out.push_back((char)(0xF0 | ((cp >> 18) & 0x07)));
+        out.push_back((char)(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back((char)(0x80 | (cp & 0x3F)));
+    }
+}
+
+static bool ParseJsonStringToken(const std::string& json, size_t& ioPos, std::string& outStr) {
+    outStr.clear();
+    if (ioPos >= json.size() || json[ioPos] != '"') return false;
+    size_t i = ioPos + 1;
+    const size_t n = json.size();
+    while (i < n) {
+        unsigned char ch = (unsigned char)json[i++];
+        if (ch == '"') {
+            ioPos = i;
+            return true;
+        }
+        if (ch < 0x20) {
+            return false; // Unescaped control character in JSON string is malformed
+        }
+        if (ch != '\\') {
+            outStr.push_back((char)ch);
+            continue;
+        }
+        if (i >= n) return false;
+        char esc = json[i++];
+        switch (esc) {
+            case '"':  outStr.push_back('"');  break;
+            case '\\': outStr.push_back('\\'); break;
+            case '/':  outStr.push_back('/');  break;
+            case 'b':  outStr.push_back('\b'); break;
+            case 'f':  outStr.push_back('\f'); break;
+            case 'n':  outStr.push_back('\n'); break;
+            case 'r':  outStr.push_back('\r'); break;
+            case 't':  outStr.push_back('\t'); break;
+            case 'u': {
+                unsigned int u1 = 0;
+                if (!ParseHex4(json, i, u1)) return false;
+                i += 4;
+                if (u1 >= 0xD800 && u1 <= 0xDBFF) {
+                    if (i + 6 <= n && json[i] == '\\' && json[i + 1] == 'u') {
+                        unsigned int u2 = 0;
+                        if (!ParseHex4(json, i + 2, u2) || u2 < 0xDC00 || u2 > 0xDFFF) {
+                            return false;
+                        }
+                        i += 6;
+                        unsigned int cp = 0x10000U + (((u1 - 0xD800U) << 10) | (u2 - 0xDC00U));
+                        AppendUtf8Codepoint(outStr, cp);
+                    } else {
+                        return false; // Unpaired high surrogate
+                    }
+                } else if (u1 >= 0xDC00 && u1 <= 0xDFFF) {
+                    return false; // Unpaired low surrogate
+                } else {
+                    AppendUtf8Codepoint(outStr, u1);
+                }
+                break;
+            }
+            default:
+                return false; // Invalid escape sequence
+        }
+    }
+    return false;
+}
+
+static std::string ExtractJsonFieldValue(const std::string& json, const std::string& key) {
+    if (json.empty() || key.empty()) return "";
+    auto isJsonWs = [](char c) -> bool {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+    };
+    const size_t n = json.size();
+    size_t i = 0;
+    int depth = 0;
+    std::string fallbackMatch;
+    bool hasFallback = false;
+
+    while (i < n) {
+        while (i < n && isJsonWs(json[i])) ++i;
+        if (i >= n) break;
+        char c = json[i];
+        if (c == '{' || c == '[') {
+            ++depth;
+            ++i;
+            continue;
+        }
+        if (c == '}' || c == ']') {
+            if (depth <= 0) return "";
+            --depth;
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            std::string token;
+            if (!ParseJsonStringToken(json, i, token)) return "";
+            while (i < n && isJsonWs(json[i])) ++i;
+            if (i < n && json[i] == ':') {
+                ++i;
+                while (i < n && isJsonWs(json[i])) ++i;
+                if (i >= n) return "";
+                if (token == key) {
+                    if (json[i] != '"') {
+                        continue;
+                    }
+                    std::string val;
+                    if (!ParseJsonStringToken(json, i, val)) return "";
+                    if (depth <= 1) return val;
+                    if (!hasFallback) {
+                        fallbackMatch = val;
+                        hasFallback = true;
+                    }
+                    continue;
+                }
+            }
+            continue;
+        }
+        ++i;
+    }
+    return hasFallback ? fallbackMatch : "";
 }
 
 static std::wstring Utf8ToWideStr(const std::string& s) {
@@ -20392,13 +20821,53 @@ static std::wstring Utf8ToWideStr(const std::string& s) {
     return out;
 }
 
+static bool IsSafeGithubHttpsUrl(const std::wstring& url) {
+    if (url.size() < 19 || url.size() > 2048) return false;
+    for (wchar_t c : url) {
+        if (c <= 0x20 || c == L'"' || c == L'\'' || c == L'<' || c == L'>' || c == L'\\') return false;
+    }
+    if (_wcsnicmp(url.c_str(), L"https://github.com/", 19) != 0) return false;
+    WCHAR hostBuf[256] = {0};
+    WCHAR userBuf[128] = {0};
+    WCHAR passBuf[128] = {0};
+    std::vector<WCHAR> pathBuf(url.size() + 2, L'\0');
+    URL_COMPONENTSW uc = { sizeof(uc) };
+    uc.lpszHostName = hostBuf;
+    uc.dwHostNameLength = 255;
+    uc.lpszUserName = userBuf;
+    uc.dwUserNameLength = 127;
+    uc.lpszPassword = passBuf;
+    uc.dwPasswordLength = 127;
+    uc.lpszUrlPath = pathBuf.data();
+    uc.dwUrlPathLength = (DWORD)(pathBuf.size() - 1);
+    if (!InternetCrackUrlW(url.c_str(), (DWORD)url.size(), 0, &uc)) return false;
+    if (uc.nScheme != INTERNET_SCHEME_HTTPS) return false;
+    if (uc.dwUserNameLength != 0 || uc.dwPasswordLength != 0) return false;
+    if (uc.nPort != INTERNET_DEFAULT_HTTPS_PORT) return false;
+    if (_wcsicmp(hostBuf, L"github.com") != 0) return false;
+    if (pathBuf[0] != L'/') return false;
+    return true;
+}
+
+struct ScopedWinInetHandle {
+    HINTERNET h = nullptr;
+    ScopedWinInetHandle() = default;
+    explicit ScopedWinInetHandle(HINTERNET handle) : h(handle) {}
+    ~ScopedWinInetHandle() { if (h) InternetCloseHandle(h); }
+    ScopedWinInetHandle(const ScopedWinInetHandle&) = delete;
+    ScopedWinInetHandle& operator=(const ScopedWinInetHandle&) = delete;
+    operator HINTERNET() const { return h; }
+};
+
 static DWORD WINAPI UpdateCheckWorkerThread(LPVOID lpParam) {
     bool manual = (lpParam != nullptr);
-    UpdateCheckPayload* result = new UpdateCheckPayload();
+    std::unique_ptr<UpdateCheckPayload> result(new UpdateCheckPayload());
     result->manualTrigger = manual;
     result->networkSuccess = false;
 
-    std::wstring repo = g_Daemon.updateGithubRepo.empty() ? PepperSnapDaemon::DEFAULT_GITHUB_REPO : g_Daemon.updateGithubRepo;
+    std::wstring repo = IsValidGithubRepoSlug(g_Daemon.updateGithubRepo)
+        ? g_Daemon.updateGithubRepo
+        : std::wstring(PepperSnapDaemon::DEFAULT_GITHUB_REPO);
     std::wstring apiUrl = L"https://api.github.com/repos/" + repo + L"/releases/latest";
     std::wstring fallbackHtmlUrl = L"https://github.com/" + repo + L"/releases/latest";
     result->releaseUrl = L"https://github.com/" + repo + L"/releases";
@@ -20407,68 +20876,74 @@ static DWORD WINAPI UpdateCheckWorkerThread(LPVOID lpParam) {
     std::wstring uaHdr = L"Accept: application/vnd.github+json\r\nUser-Agent: PepperSnap/" + std::wstring(PepperSnapDaemon::APP_VERSION) + L"\r\n";
     std::wstring uaWeb = L"User-Agent: PepperSnap/" + std::wstring(PepperSnapDaemon::APP_VERSION) + L"\r\n";
 
-    HINTERNET hInet = InternetOpenW(
+    ScopedWinInetHandle hInet(InternetOpenW(
         uaApp.c_str(),
         INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0
-    );
+    ));
     if (hInet) {
-        HINTERNET hUrl = InternetOpenUrlW(
-            hInet, apiUrl.c_str(), uaHdr.c_str(), (DWORD)-1L,
-            INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_KEEP_CONNECTION,
-            0
-        );
-        if (hUrl) {
-            std::string body;
-            char buf[4096];
-            DWORD bytesRead = 0;
-            while (InternetReadFile(hUrl, buf, sizeof(buf), &bytesRead) && bytesRead > 0) {
-                body.append(buf, bytesRead);
-                if (body.size() > 262144) break;
-            }
-            InternetCloseHandle(hUrl);
+        {
+            ScopedWinInetHandle hUrl(InternetOpenUrlW(
+                hInet, apiUrl.c_str(), uaHdr.c_str(), (DWORD)-1L,
+                INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_KEEP_CONNECTION,
+                0
+            ));
+            if (hUrl) {
+                std::string body;
+                char buf[4096];
+                DWORD bytesRead = 0;
+                while (InternetReadFile(hUrl, buf, sizeof(buf), &bytesRead) && bytesRead > 0) {
+                    body.append(buf, bytesRead);
+                    if (body.size() > 262144) break;
+                }
 
-            std::string tag = ExtractJsonFieldValue(body, "tag_name");
-            std::string htmlUrl = ExtractJsonFieldValue(body, "html_url");
-            if (!tag.empty()) {
-                result->networkSuccess = true;
-                result->latestTag = Utf8ToWideStr(tag);
-                if (!htmlUrl.empty()) {
-                    result->releaseUrl = Utf8ToWideStr(htmlUrl);
-                } else {
-                    result->releaseUrl = fallbackHtmlUrl;
+                std::string tag = ExtractJsonFieldValue(body, "tag_name");
+                std::string htmlUrl = ExtractJsonFieldValue(body, "html_url");
+                if (!tag.empty()) {
+                    result->networkSuccess = true;
+                    result->latestTag = Utf8ToWideStr(tag);
+                    std::wstring candidateUrl = Utf8ToWideStr(htmlUrl);
+                    if (IsSafeGithubHttpsUrl(candidateUrl)) {
+                        result->releaseUrl = candidateUrl;
+                    } else {
+                        result->releaseUrl = fallbackHtmlUrl;
+                    }
                 }
             }
         }
 
         // Fallback: Check GitHub web redirect /releases/latest -> /releases/tag/<version>
         if (!result->networkSuccess) {
-            HINTERNET hWeb = InternetOpenUrlW(
+            ScopedWinInetHandle hWeb(InternetOpenUrlW(
                 hInet, fallbackHtmlUrl.c_str(), uaWeb.c_str(), (DWORD)-1L,
                 INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE,
                 0
-            );
+            ));
             if (hWeb) {
-                WCHAR finalUrl[1024] = {0};
-                DWORD urlLen = sizeof(finalUrl);
-                if (InternetQueryOptionW(hWeb, INTERNET_OPTION_URL, finalUrl, &urlLen)) {
-                    std::wstring fUrl(finalUrl);
+                std::vector<WCHAR> finalUrl(1024, L'\0');
+                DWORD urlBytes = (DWORD)(finalUrl.size() * sizeof(WCHAR));
+                BOOL qOk = InternetQueryOptionW(hWeb, INTERNET_OPTION_URL, finalUrl.data(), &urlBytes);
+                if (!qOk && GetLastError() == ERROR_INSUFFICIENT_BUFFER && urlBytes > 0 && urlBytes <= 65536) {
+                    finalUrl.resize((urlBytes / sizeof(WCHAR)) + 2, L'\0');
+                    urlBytes = (DWORD)(finalUrl.size() * sizeof(WCHAR));
+                    qOk = InternetQueryOptionW(hWeb, INTERNET_OPTION_URL, finalUrl.data(), &urlBytes);
+                }
+                if (qOk) {
+                    std::wstring fUrl(finalUrl.data());
                     size_t tagPos = fUrl.find(L"/releases/tag/");
-                    if (tagPos != std::wstring::npos) {
+                    if (tagPos != std::wstring::npos && IsSafeGithubHttpsUrl(fUrl)) {
                         result->latestTag = fUrl.substr(tagPos + 14);
                         result->releaseUrl = fUrl;
                         result->networkSuccess = !result->latestTag.empty();
                     }
                 }
-                InternetCloseHandle(hWeb);
             }
         }
-        InternetCloseHandle(hInet);
     }
 
-    if (g_Daemon.hTrayWnd) {
-        PostMessageW(g_Daemon.hTrayWnd, WM_UPDATE_CHECK_RESULT, 0, (LPARAM)result);
+    if (g_Daemon.hTrayWnd && IsWindow(g_Daemon.hTrayWnd) &&
+        PostMessageW(g_Daemon.hTrayWnd, WM_UPDATE_CHECK_RESULT, 0, (LPARAM)result.get())) {
+        result.release();
     } else {
-        delete result;
         g_Daemon.isCheckingUpdate = false;
     }
     return 0;
@@ -20593,7 +21068,7 @@ static void ShowTrayContextMenu(HWND hWnd) {
         std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);
         std::wstring prevMenu = L"Instant save previous custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPrevRegion);
         std::wstring pinClipMenu = L"Pin the image in clipboard on top\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPinClipboard);
-        std::wstring searchGoogleMenu = L"Image search clipboard\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkSearchGoogle);
+        std::wstring searchGoogleMenu = L"Search image clipboard\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkSearchGoogle);
         const wchar_t* smoothPinsMenu = ShouldTrayMenuSmoothAllPins()
             ? L"Smooth all pinned image"
             : L"Unsmooth all pinned image";
@@ -20677,7 +21152,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             return 0;
         case WM_UPDATE_CHECK_RESULT: {
             g_Daemon.isCheckingUpdate = false;
-            UpdateCheckPayload* res = (UpdateCheckPayload*)lParam;
+            std::unique_ptr<UpdateCheckPayload> res((UpdateCheckPayload*)lParam);
             if (!res) return 0;
 
             g_Daemon.lastUpdateCheckTime = (long long)_time64(nullptr);
@@ -20697,7 +21172,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                         hOwner, msgText.c_str(), L"PepperSnap update available",
                         MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
                     );
-                    if (ans == IDYES) {
+                    if (ans == IDYES && IsSafeGithubHttpsUrl(res->releaseUrl)) {
                         ShellExecuteW(nullptr, L"open", res->releaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                     }
                 } else if (res->manualTrigger) {
@@ -20710,25 +21185,27 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     );
                 }
             } else if (res->manualTrigger) {
+                std::wstring safeRepo = IsValidGithubRepoSlug(g_Daemon.updateGithubRepo)
+                    ? g_Daemon.updateGithubRepo
+                    : std::wstring(PepperSnapDaemon::DEFAULT_GITHUB_REPO);
                 std::wstring msgText =
                     L"Could not find a newer release tag on GitHub releases (or no releases have been published yet).\n\n"
                     L"Current version: v" + std::wstring(PepperSnapDaemon::APP_VERSION) + L"\n"
-                    L"Repository: " + g_Daemon.updateGithubRepo + L"\n\n"
+                    L"Repository: " + safeRepo + L"\n\n"
                     L"Would you like to open the GitHub releases page in your browser?";
                 int ans = MessageBoxW(
                     hOwner, msgText.c_str(), L"PepperSnap — check for updates",
                     MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
                 );
-                if (ans == IDYES) {
+                if (ans == IDYES && IsSafeGithubHttpsUrl(res->releaseUrl)) {
                     ShellExecuteW(nullptr, L"open", res->releaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
             }
-            delete res;
             return 0;
         }
         case WM_COPYDATA: {
             COPYDATASTRUCT* cds = (COPYDATASTRUCT*)lParam;
-            if (cds && (cds->dwData == COPYDATA_OPEN_IMAGE || cds->dwData == COPYDATA_PIN_IMAGE) &&
+            if (cds && (cds->dwData == COPYDATA_OPEN_IMAGE || cds->dwData == COPYDATA_PIN_IMAGE || cds->dwData == COPYDATA_SEARCH_IMAGE) &&
                 cds->lpData && cds->cbData >= sizeof(wchar_t)) {
                 const wchar_t* wpath = (const wchar_t*)cds->lpData;
                 size_t maxChars = cds->cbData / sizeof(wchar_t);
@@ -20737,6 +21214,9 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     if (cds->dwData == COPYDATA_PIN_IMAGE) {
                         g_Daemon.pendingPinFiles.push_back(path);
                         SetTimer(hWnd, TIMER_PROCESS_PIN_QUEUE, 90, nullptr);
+                    } else if (cds->dwData == COPYDATA_SEARCH_IMAGE) {
+                        g_Daemon.pendingSearchFile = path;
+                        PostMessageW(hWnd, WM_PROCESS_PIN_QUEUE, 0, 0);
                     } else {
                         g_Daemon.pendingEditFile = path;
                         PostMessageW(hWnd, WM_PROCESS_PIN_QUEUE, 0, 0);
@@ -20783,6 +21263,11 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 std::wstring editPath = g_Daemon.pendingEditFile;
                 g_Daemon.pendingEditFile.clear();
                 g_Daemon.OpenImageFileIntoOverlay(editPath);
+            }
+            if (!g_Daemon.pendingSearchFile.empty()) {
+                std::wstring searchPath = g_Daemon.pendingSearchFile;
+                g_Daemon.pendingSearchFile.clear();
+                g_Daemon.SearchImageFileOnGoogle(searchPath);
             }
             return 0;
         }
@@ -20984,10 +21469,14 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     SetProcessDPIAware();
 
-    std::wstring cmdArgs = lpCmdLine ? lpCmdLine : L"";
-    for (wchar_t& c : cmdArgs) c = (wchar_t)towlower(c);
+    bool cliElevate = false;
+    bool cliNoElevate = false;
+    bool cliUninstall = false;
+    UINT cliMsg = 0;
+    WPARAM cliWParam = 0;
 
     std::wstring cliEditFilePath;
+    std::wstring cliSearchFilePath;
     std::vector<std::wstring> cliPinFilePaths;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -20997,6 +21486,42 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
             std::wstring low = arg;
             for (wchar_t& c : low) c = (wchar_t)towlower(c);
             if (low == L"--noelevate" || low == L"/noelevate") {
+                cliNoElevate = true;
+                continue;
+            }
+            if (low == L"--elevate" || low == L"/elevate") {
+                cliElevate = true;
+                continue;
+            }
+            if (low == L"--uninstall" || low == L"/uninstall") {
+                cliUninstall = true;
+                continue;
+            }
+            if (low == L"--fullscreen" || low == L"/fullscreen") {
+                cliMsg = WM_TRIGGER_FULL_SNAP;
+                continue;
+            }
+            if (low == L"--prevregion" || low == L"/prevregion") {
+                cliMsg = WM_TRIGGER_PREV_REGION;
+                continue;
+            }
+            if (low == L"--options" || low == L"/options") {
+                cliMsg = WM_COMMAND;
+                cliWParam = IDM_TRAY_OPTIONS;
+                continue;
+            }
+            if (low == L"--help" || low == L"/help" || low == L"/?") {
+                cliMsg = WM_COMMAND;
+                cliWParam = IDM_TRAY_SHORTCUTS;
+                continue;
+            }
+            if (low == L"--exit" || low == L"/exit" || low == L"--quit") {
+                cliMsg = WM_COMMAND;
+                cliWParam = IDM_TRAY_EXIT;
+                continue;
+            }
+            if (low == L"--region" || low == L"/region") {
+                cliMsg = WM_TRIGGER_REGION_SNIP;
                 continue;
             }
             if ((low == L"--pin" || low == L"/pin") && i + 1 < argc) {
@@ -21005,6 +21530,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
                     std::wstring nextLow = nextArg;
                     for (wchar_t& c : nextLow) c = (wchar_t)towlower(c);
                     if (nextLow == L"--noelevate" || nextLow == L"/noelevate") {
+                        cliNoElevate = true;
+                        ++i;
+                        continue;
+                    }
+                    if (nextLow == L"--elevate" || nextLow == L"/elevate") {
+                        cliElevate = true;
                         ++i;
                         continue;
                     }
@@ -21015,37 +21546,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
                     ++i;
                 }
                 break;
-            } else if ((low == L"--edit" || low == L"/edit" || low == L"--open" || low == L"/open") && i + 1 < argc) {
-                cliEditFilePath = argv[i + 1];
-                break;
+            } else if ((low == L"--search" || low == L"/search") && i + 1 < argc) {
+                std::wstring resolvedSearchPath;
+                if (IsValidExistingImageFilePath(argv[i + 1], &resolvedSearchPath)) {
+                    cliSearchFilePath = resolvedSearchPath;
+                }
+                ++i;
+            } else if (low == L"--edit" || low == L"/edit" || low == L"--open" || low == L"/open") {
+                if (i + 1 < argc) {
+                    cliEditFilePath = argv[i + 1];
+                    ++i;
+                } else if (low == L"--open" || low == L"/open") {
+                    cliMsg = WM_COMMAND;
+                    cliWParam = IDM_TRAY_OPEN_IMAGE;
+                }
             } else if (!arg.empty() && arg[0] != L'-' && arg[0] != L'/' && GetFileAttributesW(arg.c_str()) != INVALID_FILE_ATTRIBUTES) {
                 cliEditFilePath = arg;
-                break;
             }
         }
         LocalFree(argv);
     }
 
-    UINT cliMsg = 0;
-    WPARAM cliWParam = 0;
-    if (cmdArgs.find(L"--fullscreen") != std::wstring::npos || cmdArgs.find(L"/fullscreen") != std::wstring::npos) {
-        cliMsg = WM_TRIGGER_FULL_SNAP;
-    } else if (cmdArgs.find(L"--prevregion") != std::wstring::npos || cmdArgs.find(L"/prevregion") != std::wstring::npos) {
-        cliMsg = WM_TRIGGER_PREV_REGION;
-    } else if (cmdArgs.find(L"--options") != std::wstring::npos || cmdArgs.find(L"/options") != std::wstring::npos) {
-        cliMsg = WM_COMMAND;
-        cliWParam = IDM_TRAY_OPTIONS;
-    } else if (cliEditFilePath.empty() && (cmdArgs.find(L"--open") != std::wstring::npos || cmdArgs.find(L"/open") != std::wstring::npos)) {
-        cliMsg = WM_COMMAND;
-        cliWParam = IDM_TRAY_OPEN_IMAGE;
-    } else if (cmdArgs.find(L"--help") != std::wstring::npos || cmdArgs.find(L"/help") != std::wstring::npos || cmdArgs.find(L"/?") != std::wstring::npos) {
-        cliMsg = WM_COMMAND;
-        cliWParam = IDM_TRAY_SHORTCUTS;
-    } else if (cmdArgs.find(L"--exit") != std::wstring::npos || cmdArgs.find(L"/exit") != std::wstring::npos || cmdArgs.find(L"--quit") != std::wstring::npos) {
-        cliMsg = WM_COMMAND;
-        cliWParam = IDM_TRAY_EXIT;
-    } else if (cmdArgs.find(L"--region") != std::wstring::npos || cmdArgs.find(L"/region") != std::wstring::npos) {
-        cliMsg = WM_TRIGGER_REGION_SNIP;
+    if (cliUninstall) {
+        PepperSnapDaemon::UnregisterImageContextMenu();
+        return 0;
     }
 
     std::wstring currentDaemonTitle = L"PepperSnap v" + std::wstring(PepperSnapDaemon::APP_VERSION) +
@@ -21056,9 +21580,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         if (FindWindowW(L"PepperSnapTrayDaemonClass", currentDaemonTitle.c_str()) == hExisting) {
             return true;
         }
-        WCHAR existingTitle[128] = {0};
-        GetWindowTextW(hExisting, existingTitle, 127);
-        return (wcscmp(existingTitle, currentDaemonTitle.c_str()) == 0);
+        return (GetWindowTextDynamic(hExisting) == currentDaemonTitle);
     };
 
     auto forwardToRunningDaemon = [&](HWND hExisting) {
@@ -21071,6 +21593,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
                 cds.lpData = (PVOID)pinPath.c_str();
                 SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 5000, nullptr);
             }
+        } else if (!cliSearchFilePath.empty()) {
+            COPYDATASTRUCT cds = {0};
+            cds.dwData = COPYDATA_SEARCH_IMAGE;
+            cds.cbData = (DWORD)((cliSearchFilePath.size() + 1) * sizeof(wchar_t));
+            cds.lpData = (PVOID)cliSearchFilePath.c_str();
+            SendMessageTimeoutW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 5000, nullptr);
         } else if (!cliEditFilePath.empty()) {
             COPYDATASTRUCT cds = {0};
             cds.dwData = COPYDATA_OPEN_IMAGE;
@@ -21102,11 +21630,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
             Sleep(30);
         }
         if (oldPid != 0 && oldPid != GetCurrentProcessId()) {
-            HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, oldPid);
+            ScopedHandle hProc(OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, oldPid));
             if (hProc) {
                 TerminateProcess(hProc, 0);
                 WaitForSingleObject(hProc, 500);
-                CloseHandle(hProc);
             }
         }
     };
@@ -21125,39 +21652,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
             if (!foundOld) break;
         }
         // Also check for any lingering older PepperSnap.exe process from a different executable path
-        WCHAR selfExe[MAX_PATH] = {0};
-        GetModuleFileNameW(nullptr, selfExe, MAX_PATH);
+        std::wstring selfExe = GetModuleFilePathDynamic(nullptr);
         DWORD selfPid = GetCurrentProcessId();
-        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        ScopedHandle hSnap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
         if (hSnap != INVALID_HANDLE_VALUE) {
             PROCESSENTRY32W pe = { sizeof(pe) };
             if (Process32FirstW(hSnap, &pe)) {
                 do {
                     if (pe.th32ProcessID != selfPid && _wcsicmp(pe.szExeFile, L"PepperSnap.exe") == 0) {
-                        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pe.th32ProcessID);
+                        ScopedHandle hProc(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pe.th32ProcessID));
                         if (hProc) {
-                            WCHAR otherExe[MAX_PATH] = {0};
-                            DWORD cch = MAX_PATH;
-                            bool isDifferentExe = false;
-                            if (QueryFullProcessImageNameW(hProc, 0, otherExe, &cch) && otherExe[0] != L'\0') {
-                                isDifferentExe = (_wcsicmp(otherExe, selfExe) != 0);
-                            }
-                            if (isDifferentExe) {
+                            std::wstring otherExe = QueryProcessFullImagePathDynamic(hProc);
+                            if (!otherExe.empty() && !selfExe.empty() && _wcsicmp(otherExe.c_str(), selfExe.c_str()) != 0) {
                                 TerminateProcess(hProc, 0);
                                 WaitForSingleObject(hProc, 300);
                             }
-                            CloseHandle(hProc);
                         }
                     }
                 } while (Process32NextW(hSnap, &pe));
             }
-            CloseHandle(hSnap);
         }
     };
 
     // Serialize multi-select Explorer CLI invocations so concurrent "--pin" processes forward cleanly in order
     HANDLE hCliForwardMutex = nullptr;
-    if (cmdArgs.find(L"--noelevate") == std::wstring::npos) {
+    if (!cliNoElevate) {
         hCliForwardMutex = CreateMutexW(nullptr, FALSE, L"Local\\PepperSnap_CLI_Forward_Mutex");
         if (hCliForwardMutex) {
             WaitForSingleObject(hCliForwardMutex, 10000);
@@ -21185,16 +21704,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
         return 0;
     }
 
-    // Request Administrator elevation so hotkeys and screen capture work inside elevated / borderless fullscreen games
-    if (!IsUserAnAdmin() && cmdArgs.find(L"--noelevate") == std::wstring::npos) {
-        WCHAR selfPath[MAX_PATH] = {0};
-        if (GetModuleFileNameW(nullptr, selfPath, MAX_PATH) > 0) {
+    // Run as normal user by default; elevate only when --elevate is passed or RunElevated=1 is enabled in settings.ini (unless --noelevate is set)
+    std::wstring iniPreCheckPath = PepperSnapDaemon::GetAppDataSettingsFile();
+    bool iniRunElevated = (GetPrivateProfileIntW(L"PepperSnap", L"RunElevated", 0, iniPreCheckPath.c_str()) != 0);
+    bool shouldElevate = !cliNoElevate && (cliElevate || iniRunElevated);
+    if (shouldElevate && !IsUserAnAdmin()) {
+        std::wstring selfPath = GetModuleFilePathDynamic(nullptr);
+        if (!selfPath.empty()) {
             std::wstring args = lpCmdLine ? lpCmdLine : L"";
             if (!args.empty()) args += L" ";
             args += L"--noelevate";
             SHELLEXECUTEINFOW sei = { sizeof(sei) };
             sei.lpVerb = L"runas";
-            sei.lpFile = selfPath;
+            sei.lpFile = selfPath.c_str();
             sei.lpParameters = args.c_str();
             sei.nShow = SW_SHOWNORMAL;
             if (ShellExecuteExW(&sei)) {
@@ -21294,6 +21816,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
 
     HANDLE hInputThread = CreateThread(nullptr, 0, InputHookWorkerThread, nullptr, 0, &g_InputHookThreadId);
 
+    // One-time first-run prompt for automatic update checks (default OFF)
+    if (!g_Daemon.autoUpdatePromptShown) {
+        g_Daemon.autoUpdatePromptShown = true;
+        g_Daemon.SaveSettings();
+        int ans = MessageBoxW(
+            g_Daemon.hTrayWnd,
+            L"Would you like PepperSnap to automatically check GitHub Releases for updates in the background?\n\n"
+            L"(Default is OFF. You can change this anytime in Options.)",
+            L"PepperSnap — Automatic Update Check",
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND
+        );
+        g_Daemon.autoCheckUpdates = (ans == IDYES);
+        g_Daemon.SaveSettings();
+    }
+
     // Periodic background timer (every 30 minutes) + initial startup check for scheduled GitHub Releases updates
     SetTimer(g_Daemon.hTrayWnd, TIMER_AUTO_UPDATE_CHECK, 30 * 60 * 1000, nullptr);
     g_Daemon.MaybeRunScheduledUpdateCheck();
@@ -21302,6 +21839,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
 
     if (!cliPinFilePaths.empty()) {
         g_Daemon.OpenImageFilesToPinOnTop(cliPinFilePaths);
+    } else if (!cliSearchFilePath.empty()) {
+        g_Daemon.SearchImageFileOnGoogle(cliSearchFilePath);
     } else if (!cliEditFilePath.empty()) {
         g_Daemon.OpenImageFileIntoOverlay(cliEditFilePath);
     } else if (cliMsg != 0) {
