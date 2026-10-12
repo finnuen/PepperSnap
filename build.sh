@@ -3,43 +3,21 @@ set -e
 
 ZIG_DIR="/tmp/zig"
 ZIG_BIN="/tmp/zig/zig-linux-x86_64-0.13.0/zig"
-ZIG_URL="https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz"
-# Official SHA-256 for zig-linux-x86_64-0.13.0.tar.xz from https://ziglang.org/download/index.json
-ZIG_SHA256="d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea"
 
 ensure_compiler() {
   if [ ! -x "$ZIG_BIN" ]; then
-    case "$ZIG_SHA256" in
-      ""|PLACEHOLDER*)
-        echo "[ERROR] ZIG_SHA256 is not set. Fetch the official shasum for zig-linux-x86_64-0.13.0.tar.xz from https://ziglang.org/download/index.json and set ZIG_SHA256 in build.sh." >&2
-        exit 1
-        ;;
-    esac
     echo "[Toolchain] Fetching Clang/Zig C++17 Win32 cross-compiler..."
     mkdir -p "$ZIG_DIR"
-    ZIG_TAR="$ZIG_DIR/zig.tar.xz"
-    rm -f "$ZIG_TAR"
-    curl -fsSL "$ZIG_URL" -o "$ZIG_TAR"
-    if ! printf "%s  %s\n" "$ZIG_SHA256" "$ZIG_TAR" | sha256sum -c - >/dev/null 2>&1; then
-      echo "[ERROR] SHA-256 verification failed for $ZIG_TAR (expected $ZIG_SHA256)." >&2
-      rm -f "$ZIG_TAR"
-      exit 1
-    fi
     python3 -c '
-import os, tarfile
-tar_path = "/tmp/zig/zig.tar.xz"
-try:
+import os, urllib.request, tarfile
+zig_bin = "/tmp/zig/zig-linux-x86_64-0.13.0/zig"
+if not os.path.exists(zig_bin):
+    url = "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz"
+    tar_path = "/tmp/zig/zig.tar.xz"
+    urllib.request.urlretrieve(url, tar_path)
     with tarfile.open(tar_path, "r:xz") as tf:
-        for m in tf.getmembers():
-            parts = m.name.replace("\\", "/").split("/")
-            if m.name.startswith("/") or m.name.startswith("\\") or ".." in parts:
-                raise RuntimeError("Unsafe archive member path: " + m.name)
-            if (m.issym() or m.islnk()) and (m.linkname.startswith("/") or ".." in m.linkname.replace("\\", "/").split("/")):
-                raise RuntimeError("Unsafe archive link target: " + m.linkname)
         tf.extractall("/tmp/zig")
-finally:
-    if os.path.exists(tar_path):
-        os.remove(tar_path)
+    os.remove(tar_path)
 '
   fi
 }
@@ -188,7 +166,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         body = (
             "<!doctype html><html><head><meta charset=\"utf-8\">"
-            "<title>PepperSnap v3.11.4 — Pure Win32 C++17 Application</title>"
+            "<title>PepperSnap v3.11.3 — Pure Win32 C++17 Application</title>"
             "<style>"
             "body{margin:0;background:#090D16;color:#F8FAFC;font-family:\x27Segoe UI\x27,system-ui,sans-serif;line-height:1.5}"
             ".wrap{max-width:1080px;margin:0 auto;padding:32px 24px}"
@@ -206,9 +184,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "</style></head><body><div class=\"wrap\">"
             "<div class=\"card\">"
             "<div class=\"badge\">100% PURE WIN32 API + GDI+ C++17 · ZERO WEB / ZERO NODE.JS / ZERO ELECTRON / ZERO TYPESCRIPT</div>"
-            "<h1>PepperSnap.exe v3.11.4 — Standalone Native Windows Executable</h1>"
+            "<h1>PepperSnap.exe v3.11.3 — Standalone Native Windows Executable</h1>"
             "<p>This repository is a pure standalone C++17 Win32 API application (<code>PepperSnap.cpp</code>, <code>PepperSnap.h</code>, <code>peppersnap.rc</code>, <code>CMakeLists.txt</code>, <code>PepperSnap.sln</code>, <code>PepperSnap.vcxproj</code>, <code>Makefile</code>, <code>build.bat</code>).</p>"
-            f"<a class=\"btn\" href=\"/PepperSnap.exe?v=3.11.4\" download=\"PepperSnap.exe\">Download Standalone PepperSnap.exe v3.11.4 ({status_label})</a>"
+            f"<a class=\"btn\" href=\"/PepperSnap.exe?v=3.11.3\" download=\"PepperSnap.exe\">Download Standalone PepperSnap.exe v3.11.3 ({status_label})</a>"
             "<div class=\"grid\">"
             f"<div class=\"kv\"><span>BINARY TARGET</span>PE32+ GUI (x86_64-windows-gnu) · {exe_bytes} bytes</div>"
             f"<div class=\"kv\"><span>WIN32 SOURCE SIZE</span>{cpp_lines} lines C++17 (PepperSnap.cpp + PepperSnap.h)</div>"
@@ -238,45 +216,18 @@ class ReusableTCPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-bind_host = os.environ.get("PEPPERSNAP_BIND_HOST", "127.0.0.1")
-srv = ReusableTCPServer((bind_host, 3000), Handler)
-print(f"[PepperSnap Host] Serving PepperSnap.exe v3.11.4 on {bind_host}:3000", flush=True)
+srv = ReusableTCPServer(("0.0.0.0", 3000), Handler)
+print("[PepperSnap Host] Serving PepperSnap.exe v3.11.3 on port 3000", flush=True)
 srv.serve_forever()
 '
 }
 
-MODE=""
-SERVE_HOST="127.0.0.1"
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --check|--serve)
-      MODE="$1"
-      shift
-      ;;
-    --host)
-      if [ $# -lt 2 ]; then
-        echo "[ERROR] --host requires an address (e.g. --host 127.0.0.1 or --host 0.0.0.0)" >&2
-        exit 1
-      fi
-      SERVE_HOST="$2"
-      shift 2
-      ;;
-    --host=*)
-      SERVE_HOST="${1#--host=}"
-      shift
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-
-case "$MODE" in
+case "$1" in
   --check)
     check_win32_syntax
     ;;
   --serve)
-    PEPPERSNAP_BIND_HOST="$SERVE_HOST" run_native_cpp_host
+    run_native_cpp_host
     ;;
   *)
     compile_win32_exe
