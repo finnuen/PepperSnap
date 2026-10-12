@@ -20,7 +20,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.11.3";
+    static constexpr const wchar_t* APP_VERSION = L"3.11.4";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -50,7 +50,7 @@ public:
     bool keepEditWindowOpen = false;
     bool runElevated = false;
     bool enableWebImageSearch = true;
-    int optionsWindowHeight = 950;
+    int optionsWindowHeight = 916;
     int customizeKeysWindowHeight = 620;
     int shortcutsWindowWidth = 900;
     int shortcutsWindowHeight = 620;
@@ -1240,8 +1240,8 @@ void PepperSnapDaemon::LoadSettings() {
     keepEditWindowOpen = (GetPrivateProfileIntW(L"PepperSnap", L"KeepEditWindowOpen", 0, iniPath.c_str()) != 0);
     runElevated = (GetPrivateProfileIntW(L"PepperSnap", L"RunElevated", 0, iniPath.c_str()) != 0);
     enableWebImageSearch = (GetPrivateProfileIntW(L"PepperSnap", L"EnableWebImageSearch", 1, iniPath.c_str()) != 0);
-    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 950, iniPath.c_str());
-    if (optWinH == 716 || optWinH == 744 || optWinH == 772 || optWinH == 800 || optWinH == 860 || optWinH == 888 || optWinH == 934) optWinH = 950;
+    int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 916, iniPath.c_str());
+    if (optWinH == 716 || optWinH == 744 || optWinH == 772 || optWinH == 800 || optWinH == 860 || optWinH == 888 || optWinH == 934 || optWinH == 950) optWinH = 916;
     optionsWindowHeight = std::max(320, std::min(2160, optWinH));
     int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 620, iniPath.c_str());
     if (ckWinH == 560) ckWinH = 620;
@@ -11163,32 +11163,27 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hKeepEditOpenChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hKeepEditOpenChk, BM_SETCHECK, st->keepEditOpen ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            // 11. Run elevated (needed to capture elevated/fullscreen games)
+            // 11. Run as administrator (enable if shortcut doesnt work or fails to capture)
             st->hRunElevatedChk = CreateWindowExW(0, L"BUTTON",
-                L"Run elevated (needed to capture elevated/fullscreen games)",
+                L"Run as administrator (enable if shortcut doesnt work or fails to capture)",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 660, 516, 24, hVp, (HMENU)IDC_OPT_RUN_ELEVATED_CHK, nullptr, nullptr);
             SendMessageW(st->hRunElevatedChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hRunElevatedChk, BM_SETCHECK, st->runElevated ? BST_CHECKED : BST_UNCHECKED, 0);
 
-            st->hRunElevatedNoteLbl = CreateWindowExW(0, L"STATIC",
-                L"Standard user by default; enable if hotkeys or capture fail in admin/fullscreen games (shows UAC on launch).",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 36, 686, 498, 36, hVp, nullptr, nullptr, nullptr);
-            SendMessageW(st->hRunElevatedNoteLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
-
             // 12. Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 724, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 688, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 756, 224, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 720, 224, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 752, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 716, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
@@ -11196,7 +11191,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             // 13. Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 792, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 756, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->scrollControls.clear();
@@ -11212,24 +11207,24 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             // Permanent pinned footer bar: clickable %appdata%\PepperSnap persistence link + Save options + Cancel
             st->hFooterBg = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 834, 552, 56, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 800, 552, 56, hWnd, nullptr, nullptr, nullptr);
 
             st->hAppDataInfo = CreateWindowExW(0, L"STATIC",
                 L"\x24D8 settings.ini is saved in %appdata%\\PepperSnap",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 852, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_NOPREFIX | SS_LEFTNOWORDWRAP | SS_NOTIFY, 18, 818, 296, 24, hWnd, (HMENU)IDC_OPT_OPEN_APPDATA, nullptr, nullptr);
             SendMessageW(st->hAppDataInfo, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
             WNDPROC origStaticProc = (WNDPROC)SetWindowLongPtrW(st->hAppDataInfo, GWLP_WNDPROC, (LONG_PTR)AppDataLinkStaticWndProc);
             SetPropW(st->hAppDataInfo, L"PepperSnapOrigStaticProc", (HANDLE)origStaticProc);
 
             st->hOkBtn = CreateWindowExW(0, L"BUTTON", L"Save options",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 845, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_DEFPUSHBUTTON, 318, 811, 108, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(st->hOkBtn, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCancelBtn = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 845, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 811, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            st->scrollContentHeight = 834;
+            st->scrollContentHeight = 800;
             st->footerHeight = 56;
             st->lastFooterTop = -1;
             UpdateOptionsPreviewLabel(st);
@@ -11749,7 +11744,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = WS_EX_TOPMOST;
-    const int totalOptClientH = 834 + 56;
+    const int totalOptClientH = 800 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
