@@ -1,6 +1,6 @@
 simply download the .exe in releases then run it.
 
-check `Keyboard shortcuts and info` or the pop-up info. otherwise, you'd miss a lot.
+then check `Keyboard shortcuts and info` and the pop-up info. otherwise, you'd miss a lot of stuff.
 
 ---
 <img width="366" height="334" alt="Untitled" src="https://github.com/user-attachments/assets/488690bc-fc38-4a61-90c9-c574366d45da" />
