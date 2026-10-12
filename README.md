@@ -1,3 +1,4 @@
-<img width="544" height="464" alt="Untitaled" src="https://github.com/user-attachments/assets/e1e5a92e-806b-4cf3-9a5e-a9d0552f53e8" />
-<img width="300" height="289" alt="2026-10-09_06-34-39" src="https://github.com/user-attachments/assets/818d98db-c063-4cee-afda-a71d5027f241" />
-<img width="1920" height="1080" alt="Untitled" src="https://github.com/user-attachments/assets/60b818da-1c41-46a3-95c6-c34f9b7069d6" />
+<img width="366" height="334" alt="Untitled" src="https://github.com/user-attachments/assets/488690bc-fc38-4a61-90c9-c574366d45da" />
+<img width="542" height="472" alt="asdasd" src="https://github.com/user-attachments/assets/7b5037ab-5bbd-46fa-a13f-68471b5eb711" />
+<img width="351" height="544" alt="PepperSnap_2026-10-11_23-51-41" src="https://github.com/user-attachments/assets/8bdc9c97-21e2-4112-9847-23e2f5d11183" />
+<img width="1920" height="1080" alt="PepperSnap_2026-10-11_23-52-06" src="https://github.com/user-attachments/assets/f16eb0ca-dde9-4606-a52c-f3a1c87da535" />
