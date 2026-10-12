@@ -19,7 +19,7 @@ public:
     std::vector<std::wstring> pendingPinFiles;
     std::wstring pendingEditFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"3.10.1";
+    static constexpr const wchar_t* APP_VERSION = L"3.11.1";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -58,11 +58,12 @@ public:
     std::wstring updateGithubRepo = DEFAULT_GITHUB_REPO;
     bool isCheckingUpdate = false;
 
-    // Custom Global Hotkey Bindings (Defaults: Ctrl+PrtScn, Shift+PrtScn, Ctrl+Shift+PrtScn, Alt+PrtScn)
+    // Custom Global Hotkey Bindings (Defaults: Ctrl+PrtScn, Shift+PrtScn, Ctrl+Shift+PrtScn, Alt+PrtScn, Alt+Shift+PrtScn)
     HotkeyBinding hkRegionSnip{ MOD_CONTROL, VK_SNAPSHOT };
     HotkeyBinding hkFullSnap{ MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkPrevRegion{ MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkPinClipboard{ MOD_ALT, VK_SNAPSHOT };
+    HotkeyBinding hkSearchGoogle{ MOD_ALT | MOD_SHIFT, VK_SNAPSHOT };
 
     // Custom Area Tool Shortcut Bindings
     HotkeyBinding hkToolSelect{ 0, 'V' };
@@ -821,6 +822,8 @@ public:
     void RenderOverlayFrameStrip(Graphics& g, int screenW, int screenH);
     void OpenImageToPinOnTop();
     void PinClipboardImageOnTop();
+    void SearchClipboardImageOnGoogle();
+    static void LaunchGoogleImagesAndPasteClipboard();
     void OpenImageFileToPinOnTop(const std::wstring& filePath);
     void OpenImageFilesToPinOnTop(const std::vector<std::wstring>& filePaths);
     HWND CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale = 1.0f, std::vector<Bitmap*> animFrames = {}, std::vector<int> animDelaysMs = {}, bool initiallySelected = false);
@@ -839,7 +842,7 @@ public:
     static bool SaveBitmapAsMetadataFreeBMP(Bitmap* bmp, const std::wstring& path);
     static bool WriteMetadataFreeJPEG(IStream* stream, const std::wstring& path);
     static bool WriteMetadataFreePNG(IStream* stream, const std::wstring& path);
-    void ActionCopyAndClose();
+    void ActionCopyAndClose(bool searchOnGoogle = false);
     void ActionCopyPixelColorAndClose();
     void ActionQuickSaveAndClose();
     void ActionSaveAsAndClose();
@@ -979,6 +982,7 @@ void PepperSnapDaemon::SaveSettings() const {
     writeHk(L"HkFullMod",          L"HkFullVk",          hkFullSnap);
     writeHk(L"HkPrevMod",          L"HkPrevVk",          hkPrevRegion);
     writeHk(L"HkPinClipboardMod",  L"HkPinClipboardVk",  hkPinClipboard);
+    writeHk(L"HkSearchGoogleMod",  L"HkSearchGoogleVk",  hkSearchGoogle);
     writeHk(L"HkToolSelectMod",    L"HkToolSelectVk",    hkToolSelect);
     writeHk(L"HkToolPenMod",       L"HkToolPenVk",       hkToolPen);
     writeHk(L"HkToolStabiloMod",   L"HkToolStabiloVk",   hkToolStabilo);
@@ -1152,6 +1156,7 @@ void PepperSnapDaemon::LoadSettings() {
     readHk(L"HkFullMod",          L"HkFullVk",          hkFullSnap,      MOD_SHIFT,               VK_SNAPSHOT);
     readHk(L"HkPrevMod",          L"HkPrevVk",          hkPrevRegion,    MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT);
     readHk(L"HkPinClipboardMod",  L"HkPinClipboardVk",  hkPinClipboard,  MOD_ALT,                 VK_SNAPSHOT);
+    readHk(L"HkSearchGoogleMod",  L"HkSearchGoogleVk",  hkSearchGoogle,  MOD_ALT | MOD_SHIFT,     VK_SNAPSHOT);
     readHk(L"HkToolSelectMod",    L"HkToolSelectVk",    hkToolSelect,    0,                       'V');
     readHk(L"HkToolPenMod",       L"HkToolPenVk",       hkToolPen,       0,                       'P');
     readHk(L"HkToolStabiloMod",   L"HkToolStabiloVk",   hkToolStabilo,   0,                       'H');
@@ -1831,6 +1836,7 @@ void PepperSnapDaemon::ApplyGlobalHotkeys() {
     UnregisterHotKey(hTrayWnd, HK_FULL_SNAP);
     UnregisterHotKey(hTrayWnd, HK_PREV_REGION);
     UnregisterHotKey(hTrayWnd, HK_PIN_CLIPBOARD);
+    UnregisterHotKey(hTrayWnd, HK_SEARCH_GOOGLE);
     auto regHk = [&](int id, const HotkeyBinding& hk) {
         if (hk.vk == 0) return;
         if (!RegisterHotKey(hTrayWnd, id, hk.modifiers | 0x4000 /*MOD_NOREPEAT*/, hk.vk)) {
@@ -1841,6 +1847,7 @@ void PepperSnapDaemon::ApplyGlobalHotkeys() {
     regHk(HK_FULL_SNAP,     hkFullSnap);
     regHk(HK_PREV_REGION,   hkPrevRegion);
     regHk(HK_PIN_CLIPBOARD, hkPinClipboard);
+    regHk(HK_SEARCH_GOOGLE, hkSearchGoogle);
     UpdateTrayTooltip();
 }
 
@@ -2065,6 +2072,9 @@ static UINT GetCurrentHardwareModifiers() {
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
+        if ((kb->flags & LLKHF_INJECTED) != 0) {
+            return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
+        }
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         bool isKeyUp   = (wParam == WM_KEYUP   || wParam == WM_SYSKEYUP);
 
@@ -2144,6 +2154,10 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             }
             if (canCaptureNow && !inlineEditActive && matchHk(g_Daemon.hkPinClipboard)) {
                 PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PIN_CLIPBOARD, 0, 0);
+                return 1;
+            }
+            if (!inlineEditActive && matchHk(g_Daemon.hkSearchGoogle)) {
+                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_SEARCH_GOOGLE, 0, 0);
                 return 1;
             }
         }
@@ -2234,9 +2248,10 @@ static DWORD WINAPI InputHookWorkerThread(LPVOID) {
     // 15ms hardware key-state poller + foreground game hook-chain refresher
     UINT_PTR pollTimer = SetTimer(nullptr, 0, 15, nullptr);
     HWND lastFgWnd = nullptr;
-    bool wasDownPrev = false;
-    bool wasDownReg  = false;
-    bool wasDownFull = false;
+    bool wasDownPrev   = false;
+    bool wasDownReg    = false;
+    bool wasDownFull   = false;
+    bool wasDownSearch = false;
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -2262,9 +2277,10 @@ static DWORD WINAPI InputHookWorkerThread(LPVOID) {
                     return (st & 0x8000) != 0;
                 };
 
-                bool downPrev = isHkPressed(g_Daemon.hkPrevRegion);
-                bool downReg  = isHkPressed(g_Daemon.hkRegionSnip);
-                bool downFull = isHkPressed(g_Daemon.hkFullSnap);
+                bool downPrev   = isHkPressed(g_Daemon.hkPrevRegion);
+                bool downReg    = isHkPressed(g_Daemon.hkRegionSnip);
+                bool downFull   = isHkPressed(g_Daemon.hkFullSnap);
+                bool downSearch = isHkPressed(g_Daemon.hkSearchGoogle);
 
                 if (downPrev && !wasDownPrev) {
                     PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PREV_REGION, 0, 0);
@@ -2272,11 +2288,14 @@ static DWORD WINAPI InputHookWorkerThread(LPVOID) {
                     PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_REGION_SNIP, 0, 0);
                 } else if (downFull && !wasDownFull) {
                     PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
+                } else if (downSearch && !wasDownSearch) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_SEARCH_GOOGLE, 0, 0);
                 }
 
-                wasDownPrev = downPrev;
-                wasDownReg  = downReg;
-                wasDownFull = downFull;
+                wasDownPrev   = downPrev;
+                wasDownReg    = downReg;
+                wasDownFull   = downFull;
+                wasDownSearch = downSearch;
             }
             continue;
         }
@@ -5441,11 +5460,28 @@ void PepperSnapDaemon::DrawHoverBubbleTooltip(Graphics& g, const DockButton& b, 
     if (b.tooltip.empty()) return;
     FontFamily ff(L"Segoe UI");
     Font tipFont(&ff, 11.5f, FontStyleBold, UnitPixel);
-    RectF measured;
-    g.MeasureString(b.tooltip.c_str(), -1, &tipFont, PointF(0, 0), &measured);
 
-    float bw = measured.Width + 18.0f;
-    float bh = 26.0f;
+    std::vector<std::wstring> lines;
+    size_t start = 0;
+    while (start <= b.tooltip.size()) {
+        size_t nl = b.tooltip.find(L'\n', start);
+        if (nl == std::wstring::npos) {
+            lines.push_back(b.tooltip.substr(start));
+            break;
+        }
+        lines.push_back(b.tooltip.substr(start, nl - start));
+        start = nl + 1;
+    }
+
+    float maxLineW = 0.0f;
+    for (const auto& ln : lines) {
+        RectF measured;
+        g.MeasureString(ln.c_str(), -1, &tipFont, PointF(0, 0), &measured);
+        if (measured.Width > maxLineW) maxLineW = measured.Width;
+    }
+
+    float bw = std::ceil(maxLineW) + 18.0f;
+    float bh = 8.0f + (float)lines.size() * 18.0f;
     float bx = 0.0f, by = 0.0f;
     PointF tail[3];
 
@@ -5474,8 +5510,10 @@ void PepperSnapDaemon::DrawHoverBubbleTooltip(Graphics& g, const DockButton& b, 
     sf.SetAlignment(StringAlignmentCenter);
     sf.SetLineAlignment(StringAlignmentCenter);
     SolidBrush textBr(Color(255, 248, 250, 252));
-    RectF textRc(bx, by, bw, bh);
-    g.DrawString(b.tooltip.c_str(), -1, &tipFont, textRc, &sf, &textBr);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        RectF lineRc(bx, by + 4.0f + (float)i * 18.0f, bw, 18.0f);
+        g.DrawString(lines[i].c_str(), -1, &tipFont, lineRc, &sf, &textBr);
+    }
 }
 
 void PepperSnapDaemon::GetDimensionPillAnchor(bool& outRightAlign, bool& outBottomAlign) const {
@@ -5601,6 +5639,12 @@ void PepperSnapDaemon::BuildDockedHUD() {
     const int row2H = toolBtnH;
 
     // Row 3 metrics (Drag Handle + Undo/Redo/Clear/Options/Pin/OCR/SaveAs/Save/Copy/Close)
+    std::wstring copyBtnTip = FormatLabelWithShortcut(L"Copy to clipboard", hkActCopy) + L"\nHold shift for image search";
+    if (hkActCopy.vk != 0) {
+        copyBtnTip += L"\n(" + FormatHotkeyString({ hkActCopy.modifiers | MOD_SHIFT, hkActCopy.vk }) + L")";
+    } else {
+        copyBtnTip += L"\n(Ctrl + Shift + C)";
+    }
     struct ActEntry { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     ActEntry acts[] = {
         { DBTN_ACT_DRAG_HUD, toolBtnW, L"", L"Drag to move toolbar (resets when selection moves)", false },
@@ -5612,7 +5656,7 @@ void PepperSnapDaemon::BuildDockedHUD() {
         { DBTN_ACT_OCR,      toolBtnW, L"", FormatLabelWithShortcut(L"Extract text with OCR",    hkActOcr),     false },
         { DBTN_ACT_SAVE_AS,  toolBtnW, L"", FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkActSaveAs),  false },
         { DBTN_ACT_SAVE,     toolBtnW, L"", FormatLabelWithShortcut(L"Quick save",               hkActSave),    false },
-        { DBTN_ACT_COPY,     toolBtnW, L"", FormatLabelWithShortcut(L"Copy to clipboard",        hkActCopy),    true },
+        { DBTN_ACT_COPY,     toolBtnW, L"", copyBtnTip,                                                         true },
         { DBTN_ACT_CLOSE,    toolBtnW, L"", L"Close overlay (Esc)", false }
     };
     const size_t actCount = sizeof(acts) / sizeof(acts[0]);
@@ -8716,6 +8760,7 @@ struct OptionsDlgState {
     HotkeyBinding hkFull{ MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkPrev{ MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkPinClipboard{ MOD_ALT, VK_SNAPSHOT };
+    HotkeyBinding hkSearchGoogle{ MOD_ALT | MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkToolSelect{ 0, 'V' };
     HotkeyBinding hkToolPen{ 0, 'P' };
     HotkeyBinding hkToolStabilo{ 0, 'H' };
@@ -9620,6 +9665,7 @@ struct CustomizeKeysDlgState {
     HotkeyBinding hkFull;
     HotkeyBinding hkPrev;
     HotkeyBinding hkPinClipboard;
+    HotkeyBinding hkSearchGoogle;
     HotkeyBinding hkToolSelect;
     HotkeyBinding hkToolPen;
     HotkeyBinding hkToolStabilo;
@@ -10264,6 +10310,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     ck.hkFull          = optSt->hkFull;
     ck.hkPrev          = optSt->hkPrev;
     ck.hkPinClipboard  = optSt->hkPinClipboard;
+    ck.hkSearchGoogle  = optSt->hkSearchGoogle;
     ck.hkToolSelect    = optSt->hkToolSelect;
     ck.hkToolPen       = optSt->hkToolPen;
     ck.hkToolStabilo   = optSt->hkToolStabilo;
@@ -10344,6 +10391,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addGlobalRow(L"Instant fullscreen",                &ck.hkFull,         { MOD_SHIFT, VK_SNAPSHOT });
     addGlobalRow(L"Instant save previous custom area", &ck.hkPrev,         { MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT });
     addGlobalRow(L"Pin the image in clipboard on top", &ck.hkPinClipboard, { MOD_ALT, VK_SNAPSHOT });
+    addGlobalRow(L"Image search clipboard",            &ck.hkSearchGoogle, { MOD_ALT | MOD_SHIFT, VK_SNAPSHOT });
 
     // Custom area annotation tools
     addSectionHdr(L"Custom area — annotation tools");
@@ -10484,6 +10532,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         optSt->hkFull          = ck.hkFull;
         optSt->hkPrev          = ck.hkPrev;
         optSt->hkPinClipboard  = ck.hkPinClipboard;
+        optSt->hkSearchGoogle  = ck.hkSearchGoogle;
         optSt->hkToolSelect    = ck.hkToolSelect;
         optSt->hkToolPen       = ck.hkToolPen;
         optSt->hkToolStabilo   = ck.hkToolStabilo;
@@ -10523,6 +10572,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         g_Daemon.hkFullSnap         = ck.hkFull;
         g_Daemon.hkPrevRegion       = ck.hkPrev;
         g_Daemon.hkPinClipboard     = ck.hkPinClipboard;
+        g_Daemon.hkSearchGoogle     = ck.hkSearchGoogle;
         g_Daemon.hkToolSelect       = ck.hkToolSelect;
         g_Daemon.hkToolPen          = ck.hkToolPen;
         g_Daemon.hkToolStabilo      = ck.hkToolStabilo;
@@ -11215,6 +11265,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkFull          = { MOD_SHIFT, VK_SNAPSHOT };
                 st->hkPrev          = { MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
                 st->hkPinClipboard  = { MOD_ALT, VK_SNAPSHOT };
+                st->hkSearchGoogle  = { MOD_ALT | MOD_SHIFT, VK_SNAPSHOT };
                 st->hkToolSelect    = { 0, 'V' };
                 st->hkToolPen       = { 0, 'P' };
                 st->hkToolStabilo   = { 0, 'H' };
@@ -11481,6 +11532,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkFull          = hkFullSnap;
     st.hkPrev          = hkPrevRegion;
     st.hkPinClipboard  = hkPinClipboard;
+    st.hkSearchGoogle  = hkSearchGoogle;
     st.hkToolSelect    = hkToolSelect;
     st.hkToolPen       = hkToolPen;
     st.hkToolStabilo   = hkToolStabilo;
@@ -11616,6 +11668,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         hkFullSnap      = st.hkFull;
         hkPrevRegion    = st.hkPrev;
         hkPinClipboard  = st.hkPinClipboard;
+        hkSearchGoogle  = st.hkSearchGoogle;
         hkToolSelect    = st.hkToolSelect;
         hkToolPen       = st.hkToolPen;
         hkToolStabilo   = st.hkToolStabilo;
@@ -12333,8 +12386,9 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(FormatLabelWithShortcut(L"Instant fullscreen", hkFullSnap),                  L"Capture & save all monitors immediately (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Instant save previous custom area", hkPrevRegion), L"Capture & save previous custom area — preserves rectangle, irregular quad / triangle, or circle / ellipse mask (customizable in Customize keys)");
     addRow(FormatLabelWithShortcut(L"Pin the image in clipboard on top", hkPinClipboard), L"Pin the image currently in the clipboard directly on top as a floating window (also in tray menu; customizable in Customize keys)");
+    addRow(FormatLabelWithShortcut(L"Image search clipboard", hkSearchGoogle), L"Open default browser, go to https://images.google.com/, click Search by image, and paste the first image in the clipboard (also in tray menu; customizable in Customize keys)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
-    addRow(L"Right-click system tray icon",  L"Open tray menu (Pin the image in clipboard on top, Open image to edit / pin (supports multi-select), Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, Keyboard shortcuts and info, etc.)");
+    addRow(L"Right-click system tray icon",  L"Open tray menu (Pin the image in clipboard on top, Image search clipboard, Open image to edit / pin (supports multi-select), Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, Keyboard shortcuts and info, etc.)");
     addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image on a checkerboard transparency background; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit window\" is enabled in Options, pinned images overlay the edit window and any pinned image in the custom area is included when saving/copying) or \"Pin on top\" (single or multi-selected images)");
     addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
     addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
@@ -12356,9 +12410,9 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"\x24D8 settings.ini in %appdata%\\PepperSnap", L"Click the link in the Options footer to open the %appdata%\\PepperSnap folder in Explorer where settings.ini is persisted");
 
     addSection(L"Custom area — window selection, aiming & size input");
-    addRow(L"Hold Shift then click (before selecting)",  L"Override pixel-grid snapping (with 1px crosshair gap), copy pixel RGB hex code (#RRGGBB) under magnifier & close");
-    addRow(L"Hold Shift then scroll (before selecting)", L"Increase or decrease magnifier zoom (default 5×, minimum 100% / 1×, up to maximum zoom)");
-    addRow(L"Arrow keys (before or while dragging)",     L"Jump 1 pixel up, down, left, or right before selecting or while holding click to drag/resize selection");
+    addRow(L"Hold Shift then click (before selecting)",  L"Override pixel-grid snapping (with 1px crosshair gap), copy pixel RGB hex code (#RRGGBB) under magnifier & close (holding Shift before selecting shows \"Scroll to control magnification\" and \"Arrow keys to jump pixel-by-pixel\" in the magnifier window)");
+    addRow(L"Hold Shift then scroll (before selecting)", L"Scroll to control magnification (default 5×, minimum 100% / 1×, up to maximum zoom)");
+    addRow(L"Arrow keys (before or while dragging)",     L"Jump pixel-by-pixel up, down, left, or right before selecting custom area or while holding left-click to drag/resize selection");
     addRow(L"Hold Ctrl then click (before selecting)",   L"Auto-detect, highlight & select any window, notification pop-up, or sidebar");
     addRow(L"Hold Ctrl (after selecting)",   L"Temporarily switch active tool to Select mode while Ctrl is held");
     addRow(L"Hold Alt + drag (when selecting)",          L"Create a circle / ellipse custom area instead of a rectangle (saved, copied & pinned with anti-aliased transparent corners)");
@@ -12369,7 +12423,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"2 + Left-click",                L"Constrain selection or resize to 9:16 ratio (releasing 2 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"3 + Left-click",                L"Constrain selection or resize to 1:2 ratio (releasing 3 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
     addRow(L"4 + Left-click",                L"Constrain selection or resize to 2:1 ratio (releasing 4 returns to free ratio; magnifier sticks to the opposite point of the current anchor point)");
-    addRow(L"Drag 8 resize handles",         L"Resize existing custom area (rectangle, irregular quad / triangle bounding box, or circle / ellipse) with a 1:1 square magnification window at the active resize point");
+    addRow(L"Drag 8 resize handles",         L"Resize existing custom area (rectangle, irregular quad / triangle bounding box, or circle / ellipse) with a 1:1 square magnification window at the active resize point showing \"Press arrow keys to jump pixel-by-pixel while holding left-click\"");
     addRow(L"Ctrl + Left-click corner point", L"Move any corner point individually to reshape the capture rectangle into an irregular quad, or snap a corner point onto another corner point to create a triangle without distorting the image");
     addRow(L"Click [W × H px | ratio] indicator", L"Dynamic pill permanently shows [W×H px | ratio] (whole-integer ratio) — click W×H px to type custom W×H, width only (200 or 200x), or height only (xx200 or x200); after placing a custom area, click ratio to type a custom ratio (e.g. 16:9, ratio only like 4 or 4:, or height ratio like ::3 or :3), which turns the ratio indicator red (#EF4444) and locks the aspect ratio until you click the Reset ratio trash icon on the right side");
     addActionRow(DBTN_ACT_CLEAR, false, L"Reset ratio (beside custom ratio)", L"Appears on the right side of the ratio indicator ([W×H px | ratio [trash icon]]) after inputting a custom ratio — click to reset (unlink) the custom ratio while keeping the current custom area size");
@@ -12406,7 +12460,11 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in custom area via Windows OCR & copy to clipboard");
     addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for custom area");
     addActionRow(DBTN_ACT_SAVE,     false,  FormatLabelWithShortcut(L"Quick save",                hkActSave),           L"Save capture directly to default folder & close");
-    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close");
+    std::wstring copySearchShortcut = (hkActCopy.vk != 0)
+        ? FormatHotkeyString({ hkActCopy.modifiers | MOD_SHIFT, hkActCopy.vk })
+        : L"Ctrl + Shift + C";
+    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close (hold Shift + click Copy button or press " + copySearchShortcut + L" for image search on https://images.google.com/)");
+    addRow(L"Hold Shift + Copy (" + copySearchShortcut + L")",                                                          L"Copy custom area to clipboard, open default browser to https://images.google.com/, click Search by image, and paste the first image in the clipboard");
     addActionRow(DBTN_ACT_CLOSE,    false,  L"Close / Select mode (Esc)",                                               L"Switch active drawing tool to Select mode, or exit custom area");
 
     addSection(L"Pin on top — floating window toolbar & mechanisms");
@@ -12616,7 +12674,7 @@ void PepperSnapDaemon::Redo() {
     if (hOverlayWnd) InvalidateRect(hOverlayWnd, nullptr, FALSE);
 }
 
-void PepperSnapDaemon::ActionCopyAndClose() {
+void PepperSnapDaemon::ActionCopyAndClose(bool searchOnGoogle) {
     Bitmap* bmp = RenderCroppedRegionBitmap();
     if (!bmp) return;
     int w = (int)bmp->GetWidth();
@@ -12634,7 +12692,7 @@ void PepperSnapDaemon::ActionCopyAndClose() {
         }
     }
     delete bmp;
-    if (IsEditingOpenedImage() && keepEditWindowOpen) {
+    if (!searchOnGoogle && IsEditingOpenedImage() && keepEditWindowOpen) {
         SaveSettings();
         if (hOverlayWnd && IsWindow(hOverlayWnd)) {
             InvalidateRect(hOverlayWnd, nullptr, FALSE);
@@ -12642,10 +12700,18 @@ void PepperSnapDaemon::ActionCopyAndClose() {
     } else {
         CloseRegionSnipOverlay();
     }
-    ShowTrayToast(
-        L"Copied to clipboard (" + std::to_wstring(w) + L"×" + std::to_wstring(h) + L" px)",
-        L"Ready to paste (Ctrl+V)." + savedNote
-    );
+    if (searchOnGoogle) {
+        LaunchGoogleImagesAndPasteClipboard();
+        ShowTrayToast(
+            L"Searching image on Google Images (" + std::to_wstring(w) + L"×" + std::to_wstring(h) + L" px)",
+            L"Copied to clipboard & opening https://images.google.com/..." + savedNote
+        );
+    } else {
+        ShowTrayToast(
+            L"Copied to clipboard (" + std::to_wstring(w) + L"×" + std::to_wstring(h) + L" px)",
+            L"Ready to paste (Ctrl+V)." + savedNote
+        );
+    }
 }
 
 void PepperSnapDaemon::ActionCopyPixelColorAndClose() {
@@ -13748,27 +13814,62 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
         wchar_t hexBuf[64];
         swprintf_s(hexBuf, L"(%d,%d) #%02X%02X%02X", mx, my, pr, pg, pb);
 
+        bool ctrlHeldNow = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
+                           ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
+                           ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
+                           ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+        bool shiftHeldNow = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                            ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+                            ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                            ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+        bool shiftBeforeSelect = (!g_Daemon.hasSelection && shiftHeldNow);
+
         const wchar_t* hintRow1 = L"Hold Shift then click to pick color";
-        const wchar_t* hintRow2 = L"Hold Ctrl then click to select window";
-        const wchar_t* hintRow3 = L"Hold Alt + drag for circle area";
+        const wchar_t* hintRow2 = shiftBeforeSelect
+            ? L"Scroll to control magnification"
+            : L"Hold Ctrl then click to select window";
+        const wchar_t* hintRow3 = shiftBeforeSelect
+            ? L"Arrow keys to jump pixel-by-pixel"
+            : L"Hold Alt + drag for circle area";
         const wchar_t* hintRow4 = L"Press Esc to exit";
+        const wchar_t* resizeRow1 = L"Press arrow keys to";
+        const wchar_t* resizeRow2 = L"jump pixel-by-pixel";
+        const wchar_t* resizeRow3 = L"while holding left-click";
+
         RectF bHex, b1, b2, b3, b4;
         int imgW = 110;
         int imgH = 110;
         int loupeW = imgW + 12;
         int loupeH = imgH + 12;
         if (!isResizingSelection) {
+            RectF b2Default, b3Default;
             g.MeasureString(hexBuf, -1, &monoFont, PointF(0.0f, 0.0f), &bHex);
             g.MeasureString(hintRow1, -1, &smallFont, PointF(0.0f, 0.0f), &b1);
             g.MeasureString(hintRow2, -1, &smallFont, PointF(0.0f, 0.0f), &b2);
             g.MeasureString(hintRow3, -1, &smallFont, PointF(0.0f, 0.0f), &b3);
             g.MeasureString(hintRow4, -1, &smallFont, PointF(0.0f, 0.0f), &b4);
-            int maxHintW = (int)std::ceil(std::max(std::max(b1.Width, b2.Width), std::max(b3.Width, b4.Width))) + 4;
+            g.MeasureString(L"Hold Ctrl then click to select window", -1, &smallFont, PointF(0.0f, 0.0f), &b2Default);
+            g.MeasureString(L"Arrow keys to jump pixel-by-pixel", -1, &smallFont, PointF(0.0f, 0.0f), &b3Default);
+            float maxRowW = std::max(
+                std::max(std::max(b1.Width, b2.Width), std::max(b3.Width, b4.Width)),
+                std::max(b2Default.Width, b3Default.Width)
+            );
+            int maxHintW = (int)std::ceil(maxRowW) + 4;
             int minHexRowW = (int)std::ceil(bHex.Width) + 44;
             imgW = std::max(120, ((std::max(maxHintW, minHexRowW) + 2) + 1) & ~1);
             imgH = 90;
             loupeW = imgW + 12;
             loupeH = 186;
+        } else {
+            RectF br1, br2, br3;
+            g.MeasureString(resizeRow1, -1, &smallFont, PointF(0.0f, 0.0f), &br1);
+            g.MeasureString(resizeRow2, -1, &smallFont, PointF(0.0f, 0.0f), &br2);
+            g.MeasureString(resizeRow3, -1, &smallFont, PointF(0.0f, 0.0f), &br3);
+            int maxResizeHintW = (int)std::ceil(std::max(br1.Width, std::max(br2.Width, br3.Width))) + 4;
+            imgW = std::max(120, ((maxResizeHintW + 2) + 1) & ~1);
+            imgH = 110;
+            loupeW = imgW + 12;
+            loupeH = imgH + 63;
         }
 
         int lx = (mx + 24 + loupeW < W) ? (mx + 24) : (mx - loupeW - 24);
@@ -13779,14 +13880,6 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
         g.FillRectangle(&loupeBg, lx, ly, loupeW, loupeH);
 
         if (g_Daemon.frozenDesktopBmp) {
-            bool ctrlHeldNow = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
-                               ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
-                               ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
-                               ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
-            bool shiftHeldNow = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
-                                ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
-                                ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
             bool overrideGridSnap = (!g_Daemon.hasSelection &&
                                      (g_Daemon.dragMode == DragMode::None || g_Daemon.pendingShiftColorPick) &&
                                      shiftHeldNow && !ctrlHeldNow && !PepperSnapDaemon::IsAltModifierHeld());
@@ -13870,6 +13963,11 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 g.DrawString(hintRow2, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 134)), &mutedBrush);
                 g.DrawString(hintRow3, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 150)), &mutedBrush);
                 g.DrawString(hintRow4, -1, &smallFont, PointF((float)(lx + 7), (float)(ly + 166)), &mutedBrush);
+            } else {
+                int baseTextY = ly + 6 + imgH + 5;
+                g.DrawString(resizeRow1, -1, &smallFont, PointF((float)(lx + 7), (float)baseTextY), &mutedBrush);
+                g.DrawString(resizeRow2, -1, &smallFont, PointF((float)(lx + 7), (float)(baseTextY + 16)), &mutedBrush);
+                g.DrawString(resizeRow3, -1, &smallFont, PointF((float)(lx + 7), (float)(baseTextY + 32)), &mutedBrush);
             }
         }
         g.DrawRectangle(&loupeBorder, lx, ly, loupeW, loupeH);
@@ -13976,7 +14074,11 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
         return;
     }
     switch (b.id) {
-        case DBTN_ACT_COPY:      g_Daemon.ActionCopyAndClose(); return;
+        case DBTN_ACT_COPY: {
+            bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            g_Daemon.ActionCopyAndClose(shiftHeld);
+            return;
+        }
         case DBTN_ACT_SAVE:      g_Daemon.ActionQuickSaveAndClose(); return;
         case DBTN_ACT_SAVE_AS:   g_Daemon.ActionSaveAsAndClose(); return;
         case DBTN_ACT_PIN:       g_Daemon.ActionPinToDesktop(); return;
@@ -15913,6 +16015,10 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PIN_CLIPBOARD, 0, 0);
                     return 0;
                 }
+                if (!inlineEditActive && MatchesOverlayShortcut(g_Daemon.hkSearchGoogle, capVk, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_SEARCH_GOOGLE, 0, 0);
+                    return 0;
+                }
             }
 
             if (g_Daemon.isEditingStroke) {
@@ -16207,11 +16313,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
             }
 
-            if (MatchesOverlayShortcut(g_Daemon.hkActCopy, vk, ctrl, shift, alt)) {
+            if (MatchesOverlayShortcutWithOptionalShift(g_Daemon.hkActCopy, vk, ctrl, shift, alt)) {
                 if (g_Daemon.hasSelection &&
                     g_Daemon.dragMode != DragMode::CreatingSelection &&
                     g_Daemon.dragMode != DragMode::PendingOutsideSelection) {
-                    g_Daemon.ActionCopyAndClose();
+                    bool reqShift = (g_Daemon.hkActCopy.modifiers & MOD_SHIFT) != 0;
+                    bool searchGoogle = shift && !reqShift;
+                    g_Daemon.ActionCopyAndClose(searchGoogle);
                 }
                 return 0;
             }
@@ -16299,6 +16407,10 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 }
                 if (MatchesOverlayShortcut(g_Daemon.hkFullSnap, VK_SNAPSHOT, ctrl, shift, alt)) {
                     PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
+                    return 0;
+                }
+                if (MatchesOverlayShortcut(g_Daemon.hkSearchGoogle, VK_SNAPSHOT, ctrl, shift, alt)) {
+                    PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_SEARCH_GOOGLE, 0, 0);
                     return 0;
                 }
             }
@@ -18919,6 +19031,603 @@ void PepperSnapDaemon::PinClipboardImageOnTop() {
     CreatePinnedWindow(clipBmp, px, py, initScale);
 }
 
+static BOOL CALLBACK FindBrowserRenderWidgetProc(HWND hwnd, LPARAM lParam) {
+    HWND* pOut = (HWND*)lParam;
+    if (!pOut || *pOut) return FALSE;
+    WCHAR cls[128] = {0};
+    if (GetClassNameW(hwnd, cls, 127) > 0) {
+        if (wcsstr(cls, L"Chrome_RenderWidgetHostHWND") != nullptr ||
+            wcsstr(cls, L"Intermediate D3D Window") != nullptr) {
+            if (IsWindowVisible(hwnd)) {
+                *pOut = hwnd;
+                return FALSE;
+            }
+        }
+    }
+    return TRUE;
+}
+
+static void WakeUpBrowserUia(IUIAutomation* pUia, HWND hFg) {
+    if (!hFg) return;
+    HWND hRender = nullptr;
+    EnumChildWindows(hFg, FindBrowserRenderWidgetProc, (LPARAM)&hRender);
+    if (hRender) {
+        DWORD_PTR lRes = 0;
+        SendMessageTimeoutW(hRender, WM_GETOBJECT, 0, (LPARAM)OBJID_CLIENT, SMTO_ABORTIFHUNG, 50, &lRes);
+    }
+    if (!pUia) return;
+    IUIAutomationElement* pElem = nullptr;
+    if (hRender && SUCCEEDED(pUia->ElementFromHandle((UIA_HWND)hRender, &pElem)) && pElem) {
+        pElem->Release();
+        pElem = nullptr;
+    }
+    if (SUCCEEDED(pUia->ElementFromHandle((UIA_HWND)hFg, &pElem)) && pElem) {
+        pElem->Release();
+        pElem = nullptr;
+    }
+    if (SUCCEEDED(pUia->GetFocusedElement(&pElem)) && pElem) {
+        pElem->Release();
+        pElem = nullptr;
+    }
+}
+
+static bool IsBrowserPageTitleGoogleImages(HWND hWnd) {
+    if (!hWnd || !IsWindow(hWnd)) return false;
+    WCHAR titleBuf[512] = {0};
+    if (GetWindowTextW(hWnd, titleBuf, 511) <= 0) return false;
+    std::wstring lowTitle = titleBuf;
+    for (wchar_t& c : lowTitle) c = (wchar_t)towlower(c);
+
+    // Strip browser application suffixes so " - Google Chrome" does not falsely match "google"
+    const wchar_t* suffixes[] = {
+        L" - google chrome",
+        L" \x2013 google chrome",
+        L" \x2014 google chrome",
+        L" - chromium",
+        L" - microsoft\x200b edge",
+        L" - microsoft edge",
+        L" - brave",
+        L" \x2014 mozilla firefox",
+        L" - mozilla firefox",
+        L" - opera",
+        L" - vivaldi"
+    };
+    for (const wchar_t* sfx : suffixes) {
+        size_t pos = lowTitle.rfind(sfx);
+        if (pos != std::wstring::npos) {
+            lowTitle = lowTitle.substr(0, pos);
+            break;
+        }
+    }
+
+    bool hasGoogle = (lowTitle.find(L"google") != std::wstring::npos);
+    bool stillLoadingUrl = (lowTitle.find(L"images.google.com") != std::wstring::npos) ||
+                           (lowTitle.find(L"http://") != std::wstring::npos) ||
+                           (lowTitle.find(L"https://") != std::wstring::npos) ||
+                           (lowTitle.find(L"new tab") != std::wstring::npos) ||
+                           (lowTitle.find(L"untitled") != std::wstring::npos) ||
+                           (lowTitle.find(L"about:blank") != std::wstring::npos);
+    return hasGoogle && !stillLoadingUrl;
+}
+
+static bool QueryGoogleImagesControlsUia(
+    IUIAutomation* pUia,
+    HWND hBrowserWnd,
+    const RECT& rcBrowser,
+    RECT& ioEditRect,
+    bool& ioHasEditRect,
+    RECT& outCamBtnRect,
+    bool& outHasCamBtnRect
+) {
+    outHasCamBtnRect = false;
+    if (!pUia || !hBrowserWnd || !IsWindow(hBrowserWnd)) return false;
+
+    LONG minPageTop = rcBrowser.top + 105;
+    LONG maxSearchBottom = rcBrowser.top + std::max(280L, (rcBrowser.bottom - rcBrowser.top) * 3 / 4);
+
+    // 1. Check focused element first for the search <textarea role="combobox">
+    IUIAutomationElement* pFocused = nullptr;
+    if (SUCCEEDED(pUia->GetFocusedElement(&pFocused)) && pFocused) {
+        RECT rc = {0, 0, 0, 0};
+        CONTROLTYPEID ctrlType = 0;
+        pFocused->get_CurrentControlType(&ctrlType);
+        if (SUCCEEDED(pFocused->get_CurrentBoundingRectangle(&rc))) {
+            LONG w = rc.right - rc.left;
+            LONG h = rc.bottom - rc.top;
+            if ((ctrlType == UIA_ComboBoxControlTypeId || ctrlType == UIA_EditControlTypeId) &&
+                w >= 120 && h >= 14 && h <= 110 && rc.top > minPageTop && rc.bottom < maxSearchBottom) {
+                ioEditRect = rc;
+                ioHasEditRect = true;
+            }
+        }
+        pFocused->Release();
+    }
+
+    HWND hSearchRoot = nullptr;
+    EnumChildWindows(hBrowserWnd, FindBrowserRenderWidgetProc, (LPARAM)&hSearchRoot);
+    if (!hSearchRoot) hSearchRoot = hBrowserWnd;
+
+    IUIAutomationElement* pRoot = nullptr;
+    if (FAILED(pUia->ElementFromHandle((UIA_HWND)hSearchRoot, &pRoot)) || !pRoot) {
+        return false;
+    }
+
+    // 2. If search box wasn't focused yet, search descendants for ComboBox/Edit in the page body
+    if (!ioHasEditRect) {
+        VARIANT varEdit = {};
+        varEdit.vt = VT_I4;
+        varEdit.lVal = UIA_ComboBoxControlTypeId;
+        IUIAutomationCondition* pComboCond = nullptr;
+        if (SUCCEEDED(pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varEdit, &pComboCond)) && pComboCond) {
+            IUIAutomationElementArray* pArr = nullptr;
+            if (SUCCEEDED(pRoot->FindAll(TreeScope_Descendants, pComboCond, &pArr)) && pArr) {
+                int len = 0;
+                pArr->get_Length(&len);
+                for (int i = 0; i < len; ++i) {
+                    IUIAutomationElement* pEl = nullptr;
+                    if (SUCCEEDED(pArr->GetElement(i, &pEl)) && pEl) {
+                        WINBOOL isOff = FALSE;
+                        RECT rc = {0, 0, 0, 0};
+                        pEl->get_CurrentIsOffscreen(&isOff);
+                        if (!isOff && SUCCEEDED(pEl->get_CurrentBoundingRectangle(&rc))) {
+                            LONG w = rc.right - rc.left;
+                            LONG h = rc.bottom - rc.top;
+                            if (w >= 140 && h >= 16 && h <= 100 && rc.top > minPageTop && rc.bottom < maxSearchBottom) {
+                                ioEditRect = rc;
+                                ioHasEditRect = true;
+                                pEl->Release();
+                                break;
+                            }
+                        }
+                        pEl->Release();
+                    }
+                }
+                pArr->Release();
+            }
+            pComboCond->Release();
+        }
+    }
+
+    // 3. Find the rightmost button on the same horizontal row as the search box (the "Search by image" Lens camera button)
+    if (ioHasEditRect) {
+        VARIANT varBtn = {};
+        varBtn.vt = VT_I4;
+        varBtn.lVal = UIA_ButtonControlTypeId;
+        IUIAutomationCondition* pBtnCond = nullptr;
+        if (SUCCEEDED(pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varBtn, &pBtnCond)) && pBtnCond) {
+            IUIAutomationElementArray* pArr = nullptr;
+            if (SUCCEEDED(pRoot->FindAll(TreeScope_Descendants, pBtnCond, &pArr)) && pArr) {
+                int len = 0;
+                pArr->get_Length(&len);
+                LONG editCy = (ioEditRect.top + ioEditRect.bottom) / 2;
+                LONG editH  = std::max(24L, ioEditRect.bottom - ioEditRect.top);
+                for (int i = 0; i < len; ++i) {
+                    IUIAutomationElement* pBtn = nullptr;
+                    if (SUCCEEDED(pArr->GetElement(i, &pBtn)) && pBtn) {
+                        WINBOOL isOff = FALSE;
+                        RECT rcB = {0, 0, 0, 0};
+                        pBtn->get_CurrentIsOffscreen(&isOff);
+                        if (!isOff && SUCCEEDED(pBtn->get_CurrentBoundingRectangle(&rcB))) {
+                            LONG bw = rcB.right - rcB.left;
+                            LONG bh = rcB.bottom - rcB.top;
+                            LONG bCy = (rcB.top + rcB.bottom) / 2;
+                            if (bw >= 12 && bw <= 100 && bh >= 12 && bh <= 100 &&
+                                std::abs(bCy - editCy) <= std::max(28L, editH) &&
+                                rcB.left >= ioEditRect.right - 24 &&
+                                rcB.right <= ioEditRect.right + editH * 6 + 70) {
+                                if (!outHasCamBtnRect || rcB.left >= outCamBtnRect.left) {
+                                    outCamBtnRect = rcB;
+                                    outHasCamBtnRect = true;
+                                }
+                            }
+                        }
+                        pBtn->Release();
+                    }
+                }
+                pArr->Release();
+            }
+            pBtnCond->Release();
+        }
+    }
+
+    pRoot->Release();
+    return outHasCamBtnRect;
+}
+
+static DWORD WINAPI GoogleImagesPasteWorkerThread(LPVOID) {
+    HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    IUIAutomation* pUia = nullptr;
+    static const GUID CLSID_CUIAutomation_Local = { 0xff48dba4, 0x60ef, 0x4201, { 0xaa, 0x87, 0x54, 0x10, 0x3e, 0xef, 0x59, 0x4e } };
+    static const GUID IID_IUIAutomation_Local   = { 0x30cbe57d, 0xd9d0, 0x452a, { 0xab, 0x13, 0x7a, 0xc5, 0xac, 0x48, 0x25, 0xee } };
+    CoCreateInstance(CLSID_CUIAutomation_Local, nullptr, CLSCTX_INPROC_SERVER, IID_IUIAutomation_Local, (void**)&pUia);
+
+    ShellExecuteW(nullptr, L"open", L"https://images.google.com/", nullptr, nullptr, SW_SHOWNORMAL);
+
+    auto makeKeyInput = [](WORD vk, DWORD flags) -> INPUT {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = vk;
+        in.ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+        in.ki.dwFlags = flags;
+        return in;
+    };
+
+    auto releaseAllModifiers = [&]() {
+        DWORD modWait = GetTickCount();
+        while (GetTickCount() - modWait < 900) {
+            bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+                             (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+                             (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+            bool altDown   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0 ||
+                             (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
+                             (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+            bool ctrlDown  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 ||
+                             (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
+                             (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
+            if (!shiftDown && !altDown && !ctrlDown) break;
+            Sleep(25);
+        }
+        INPUT releaseMods[9] = {
+            makeKeyInput(VK_LSHIFT,   KEYEVENTF_KEYUP),
+            makeKeyInput(VK_RSHIFT,   KEYEVENTF_KEYUP),
+            makeKeyInput(VK_SHIFT,    KEYEVENTF_KEYUP),
+            makeKeyInput(VK_LMENU,    KEYEVENTF_KEYUP),
+            makeKeyInput(VK_RMENU,    KEYEVENTF_KEYUP),
+            makeKeyInput(VK_MENU,     KEYEVENTF_KEYUP),
+            makeKeyInput(VK_LCONTROL, KEYEVENTF_KEYUP),
+            makeKeyInput(VK_RCONTROL, KEYEVENTF_KEYUP),
+            makeKeyInput(VK_CONTROL,  KEYEVENTF_KEYUP)
+        };
+        SendInput(9, releaseMods, sizeof(INPUT));
+    };
+
+    auto performScreenClickAt = [](int x, int y) {
+        POINT savedCursorPt = {0, 0};
+        GetCursorPos(&savedCursorPt);
+
+        int vL = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vT = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vW = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        int vH = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+
+        SetCursorPos(x, y);
+        INPUT moveIn = {};
+        moveIn.type = INPUT_MOUSE;
+        moveIn.mi.dx = (LONG)(((double)(x - vL) * 65535.0) / (double)vW);
+        moveIn.mi.dy = (LONG)(((double)(y - vT) * 65535.0) / (double)vH);
+        moveIn.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        SendInput(1, &moveIn, sizeof(INPUT));
+        Sleep(50);
+
+        INPUT downIn = {};
+        downIn.type = INPUT_MOUSE;
+        downIn.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        SendInput(1, &downIn, sizeof(INPUT));
+        Sleep(45);
+
+        INPUT upIn = {};
+        upIn.type = INPUT_MOUSE;
+        upIn.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        SendInput(1, &upIn, sizeof(INPUT));
+        Sleep(85);
+
+        SetCursorPos(savedCursorPt.x, savedCursorPt.y);
+    };
+
+    // Initial wait for default browser process / new tab navigation to start
+    Sleep(550);
+
+    HWND hBrowserWnd = nullptr;
+    RECT rcBrowser = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    RECT rcEdit = {0, 0, 0, 0};
+    bool hasEditRect = false;
+    RECT rcCamBtn = {0, 0, 0, 0};
+    bool hasCamBtnRect = false;
+    RECT prevCamBtn = {0, 0, 0, 0};
+    int stableCamCount = 0;
+    bool sawGoogleTitle = false;
+    DWORD firstGoogleTitleTick = 0;
+
+    // Real-time polling loop: wait until Google Images is active AND the "Search by image" button is available and layout-stable
+    DWORD pollStart = GetTickCount();
+    while (GetTickCount() - pollStart < 9000) {
+        HWND hFg = GetForegroundWindow();
+        if (hFg && hFg != g_Daemon.hOverlayWnd && hFg != g_Daemon.hTrayWnd && !g_Daemon.IsPinnedWindow(hFg)) {
+            hBrowserWnd = hFg;
+            GetWindowRect(hBrowserWnd, &rcBrowser);
+            WakeUpBrowserUia(pUia, hBrowserWnd);
+
+            if (IsBrowserPageTitleGoogleImages(hBrowserWnd)) {
+                if (!sawGoogleTitle) {
+                    sawGoogleTitle = true;
+                    firstGoogleTitleTick = GetTickCount();
+                }
+                RECT candidateCam = {0, 0, 0, 0};
+                bool foundCam = false;
+                if (QueryGoogleImagesControlsUia(pUia, hBrowserWnd, rcBrowser, rcEdit, hasEditRect, candidateCam, foundCam) && foundCam) {
+                    rcCamBtn = candidateCam;
+                    hasCamBtnRect = true;
+                    if (std::abs(rcCamBtn.left - prevCamBtn.left) <= 2 &&
+                        std::abs(rcCamBtn.top - prevCamBtn.top) <= 2) {
+                        stableCamCount++;
+                    } else {
+                        stableCamCount = 1;
+                        prevCamBtn = rcCamBtn;
+                    }
+                    if (stableCamCount >= 2 && (GetTickCount() - firstGoogleTitleTick >= 260)) {
+                        break;
+                    }
+                } else if (hasEditRect && (GetTickCount() - firstGoogleTitleTick >= 1500)) {
+                    // Search box is ready for 1.5s even if button tree didn't enumerate
+                    break;
+                }
+            }
+        }
+        Sleep(85);
+    }
+
+    if (!hBrowserWnd) {
+        hBrowserWnd = GetForegroundWindow();
+        if (hBrowserWnd && IsWindow(hBrowserWnd)) {
+            GetWindowRect(hBrowserWnd, &rcBrowser);
+        }
+    }
+
+    // Small settle delay so Google Images' xjs controller (lpsUAf) finishes hydrating
+    Sleep(hasCamBtnRect ? 220 : 380);
+    releaseAllModifiers();
+    Sleep(25);
+
+    // Fallback: if UIA FindAll didn't report rcCamBtn yet, try Tab twice from the search box and inspect focus
+    if (!hasCamBtnRect && sawGoogleTitle) {
+        for (int t = 0; t < 2; ++t) {
+            INPUT tabIn[2] = {
+                makeKeyInput(VK_TAB, 0),
+                makeKeyInput(VK_TAB, KEYEVENTF_KEYUP)
+            };
+            SendInput(2, tabIn, sizeof(INPUT));
+            Sleep(95);
+
+            if (pUia) {
+                IUIAutomationElement* pFoc = nullptr;
+                if (SUCCEEDED(pUia->GetFocusedElement(&pFoc)) && pFoc) {
+                    RECT rcB = {0, 0, 0, 0};
+                    if (SUCCEEDED(pFoc->get_CurrentBoundingRectangle(&rcB))) {
+                        LONG bw = rcB.right - rcB.left;
+                        LONG bh = rcB.bottom - rcB.top;
+                        if (bw >= 12 && bw <= 120 && bh >= 12 && bh <= 120 && rcB.top > rcBrowser.top + 105) {
+                            if (!hasEditRect || (std::abs(((rcB.top + rcB.bottom) / 2) - ((rcEdit.top + rcEdit.bottom) / 2)) <= 45 && rcB.left >= rcEdit.left)) {
+                                rcCamBtn = rcB;
+                                hasCamBtnRect = true;
+                            }
+                        }
+                    }
+                    pFoc->Release();
+                }
+            }
+        }
+    }
+
+    // Sample reference screen pixels below the search bar before clicking so we can verify in real time when the Google Lens popup opens
+    auto computePopupRegionPoints = [&](POINT outPts[12]) {
+        int baseLeft = hasEditRect ? rcEdit.left : (rcBrowser.left + (rcBrowser.right - rcBrowser.left) / 2 - 180);
+        int baseRight = hasEditRect ? rcEdit.right : (rcBrowser.left + (rcBrowser.right - rcBrowser.left) / 2 + 180);
+        int baseBottom = hasEditRect ? rcEdit.bottom : (hasCamBtnRect ? rcCamBtn.bottom : (rcBrowser.top + (int)((rcBrowser.bottom - rcBrowser.top) * 0.44f)));
+        int spanW = std::max(80, baseRight - baseLeft);
+        for (int i = 0; i < 6; ++i) {
+            int px = baseLeft + (spanW * (i + 1)) / 7;
+            outPts[i]     = { px, baseBottom + 48 };
+            outPts[i + 6] = { px, baseBottom + 96 };
+        }
+    };
+
+    POINT samplePts[12] = {};
+    COLORREF beforeColors[12] = {};
+    computePopupRegionPoints(samplePts);
+    HDC hScreenDC = GetDC(nullptr);
+    if (hScreenDC) {
+        for (int i = 0; i < 12; ++i) {
+            beforeColors[i] = GetPixel(hScreenDC, samplePts[i].x, samplePts[i].y);
+        }
+    }
+
+    // Click the "Search by image" button and verify in real time that the Google Lens popup opened (up to 3 attempts)
+    bool lensPopupOpened = false;
+    for (int attempt = 0; attempt < 3 && !lensPopupOpened; ++attempt) {
+        if (attempt > 0 && pUia && hBrowserWnd) {
+            RECT refreshedCam = {0, 0, 0, 0};
+            bool foundRefreshed = false;
+            if (QueryGoogleImagesControlsUia(pUia, hBrowserWnd, rcBrowser, rcEdit, hasEditRect, refreshedCam, foundRefreshed) && foundRefreshed) {
+                rcCamBtn = refreshedCam;
+                hasCamBtnRect = true;
+            }
+        }
+
+        int clickX = 0;
+        int clickY = 0;
+        if (hasCamBtnRect) {
+            clickX = (rcCamBtn.left + rcCamBtn.right) / 2;
+            clickY = (rcCamBtn.top + rcCamBtn.bottom) / 2;
+        } else if (hasEditRect) {
+            LONG editH = std::max(28L, rcEdit.bottom - rcEdit.top);
+            clickX = rcEdit.right + (int)(editH * 1.45f);
+            clickY = (rcEdit.top + rcEdit.bottom) / 2;
+        } else {
+            LONG bw = std::max(400L, rcBrowser.right - rcBrowser.left);
+            LONG bh = std::max(300L, rcBrowser.bottom - rcBrowser.top);
+            clickX = rcBrowser.left + bw / 2 + 248;
+            clickY = rcBrowser.top + (int)(bh * 0.43f);
+        }
+
+        releaseAllModifiers();
+        performScreenClickAt(clickX, clickY);
+
+        // Wait up to 950ms in real time for the Google Lens popup to appear after clicking
+        DWORD verifyStart = GetTickCount();
+        while (GetTickCount() - verifyStart < 950) {
+            Sleep(55);
+
+            // Check 1: Visual pixel change in the drop-zone area directly below the search bar
+            if (hScreenDC) {
+                int changedCount = 0;
+                for (int i = 0; i < 12; ++i) {
+                    COLORREF nowCol = GetPixel(hScreenDC, samplePts[i].x, samplePts[i].y);
+                    if (nowCol != CLR_INVALID && beforeColors[i] != CLR_INVALID) {
+                        int dr = std::abs((int)GetRValue(nowCol) - (int)GetRValue(beforeColors[i]));
+                        int dg = std::abs((int)GetGValue(nowCol) - (int)GetGValue(beforeColors[i]));
+                        int db = std::abs((int)GetBValue(nowCol) - (int)GetBValue(beforeColors[i]));
+                        if (dr + dg + db >= 18) {
+                            changedCount++;
+                        }
+                    }
+                }
+                if (changedCount >= 3) {
+                    lensPopupOpened = true;
+                    break;
+                }
+            }
+
+            // Check 2: UIA focus moved into the Google Lens dialog (away from search box and camera button)
+            if (pUia) {
+                IUIAutomationElement* pFoc = nullptr;
+                if (SUCCEEDED(pUia->GetFocusedElement(&pFoc)) && pFoc) {
+                    RECT rcNow = {0, 0, 0, 0};
+                    if (SUCCEEDED(pFoc->get_CurrentBoundingRectangle(&rcNow)) && rcNow.right > rcNow.left) {
+                        bool isEditFocus = hasEditRect &&
+                            std::abs(rcNow.top - rcEdit.top) <= 16 &&
+                            std::abs(rcNow.left - rcEdit.left) <= 16;
+                        bool isCamFocus = hasCamBtnRect &&
+                            std::abs(rcNow.top - rcCamBtn.top) <= 16 &&
+                            std::abs(rcNow.left - rcCamBtn.left) <= 16;
+                        if (!isEditFocus && !isCamFocus && rcNow.top > rcBrowser.top + 105) {
+                            lensPopupOpened = true;
+                            pFoc->Release();
+                            break;
+                        }
+                    }
+                    pFoc->Release();
+                }
+            }
+        }
+    }
+
+    if (hScreenDC) {
+        ReleaseDC(nullptr, hScreenDC);
+    }
+
+    // Allow the Google Lens popup's paste listener to settle before sending Ctrl+V
+    Sleep(260);
+    releaseAllModifiers();
+    Sleep(25);
+
+    INPUT pasteInputs[4] = {
+        makeKeyInput(VK_LCONTROL, 0),
+        makeKeyInput('V',         0),
+        makeKeyInput('V',         KEYEVENTF_KEYUP),
+        makeKeyInput(VK_LCONTROL, KEYEVENTF_KEYUP)
+    };
+    SendInput(4, pasteInputs, sizeof(INPUT));
+
+    if (pUia) {
+        pUia->Release();
+    }
+    if (SUCCEEDED(hrCo)) {
+        CoUninitialize();
+    }
+    return 0;
+}
+
+void PepperSnapDaemon::LaunchGoogleImagesAndPasteClipboard() {
+    HANDLE hThread = CreateThread(nullptr, 0, GoogleImagesPasteWorkerThread, nullptr, 0, nullptr);
+    if (hThread) {
+        CloseHandle(hThread);
+    }
+}
+
+void PepperSnapDaemon::SearchClipboardImageOnGoogle() {
+    if (hOverlayWnd && IsWindow(hOverlayWnd)) {
+        if (!IsEditingOpenedImage()) {
+            CloseRegionSnipOverlay();
+        }
+    }
+
+    UINT cfPng = RegisterClipboardFormatW(L"PNG");
+    bool hasDirectClipImage =
+        (cfPng && IsClipboardFormatAvailable(cfPng)) ||
+        IsClipboardFormatAvailable(CF_DIBV5) ||
+        IsClipboardFormatAvailable(CF_DIB);
+
+    if (!hasDirectClipImage && IsClipboardFormatAvailable(CF_HDROP)) {
+        std::wstring firstFilePath;
+        if (OpenClipboard(hTrayWnd)) {
+            HDROP hDrop = (HDROP)GetClipboardData(CF_HDROP);
+            if (hDrop) {
+                UINT count = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+                for (UINT i = 0; i < count; ++i) {
+                    UINT len = DragQueryFileW(hDrop, i, nullptr, 0);
+                    if (len > 0) {
+                        std::wstring path(len, L'\0');
+                        DragQueryFileW(hDrop, i, &path[0], len + 1);
+                        firstFilePath = path;
+                        break;
+                    }
+                }
+            }
+            CloseClipboard();
+        }
+        if (!firstFilePath.empty()) {
+            Bitmap* fileBmp = Bitmap::FromFile(firstFilePath.c_str());
+            if (fileBmp && fileBmp->GetLastStatus() == Ok && fileBmp->GetWidth() > 0 && fileBmp->GetHeight() > 0) {
+                if (CopyBitmapToClipboard(fileBmp)) {
+                    hasDirectClipImage = true;
+                }
+            }
+            delete fileBmp;
+        }
+    }
+
+    if (!hasDirectClipImage && IsClipboardFormatAvailable(CF_BITMAP)) {
+        Bitmap* bmpCopy = nullptr;
+        if (OpenClipboard(hTrayWnd)) {
+            HBITMAP hBmp = (HBITMAP)GetClipboardData(CF_BITMAP);
+            HPALETTE hPal = IsClipboardFormatAvailable(CF_PALETTE) ? (HPALETTE)GetClipboardData(CF_PALETTE) : nullptr;
+            if (hBmp) {
+                Bitmap* tmp = Bitmap::FromHBITMAP(hBmp, hPal);
+                if (tmp && tmp->GetLastStatus() == Ok && tmp->GetWidth() > 0 && tmp->GetHeight() > 0) {
+                    int w = (int)tmp->GetWidth();
+                    int h = (int)tmp->GetHeight();
+                    bmpCopy = new Bitmap(w, h, PixelFormat32bppARGB);
+                    Graphics g(bmpCopy);
+                    g.SetCompositingMode(CompositingModeSourceCopy);
+                    g.DrawImage(tmp, 0, 0, w, h);
+                }
+                delete tmp;
+            }
+            CloseClipboard();
+        }
+        if (bmpCopy) {
+            if (CopyBitmapToClipboard(bmpCopy)) {
+                hasDirectClipImage = true;
+            }
+            delete bmpCopy;
+        }
+    }
+
+    if (!hasDirectClipImage) {
+        ShowTrayToast(
+            L"No image found in clipboard",
+            L"Copy an image first, then use " + FormatHotkeyString(hkSearchGoogle) + L" to search on https://images.google.com/."
+        );
+        return;
+    }
+
+    LaunchGoogleImagesAndPasteClipboard();
+    ShowTrayToast(
+        L"Searching image on Google Images",
+        L"Opening https://images.google.com/ and pasting the first image in clipboard..."
+    );
+}
+
 // ----------------------------------------------------------------------------
 // GitHub Releases Update Checker (WinInet HTTPS + Scheduled Auto-Check)
 // ----------------------------------------------------------------------------
@@ -19204,6 +19913,7 @@ static void ShowTrayContextMenu(HWND hWnd) {
         std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);
         std::wstring prevMenu = L"Instant save previous custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPrevRegion);
         std::wstring pinClipMenu = L"Pin the image in clipboard on top\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkPinClipboard);
+        std::wstring searchGoogleMenu = L"Image search clipboard\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkSearchGoogle);
         const wchar_t* smoothPinsMenu = ShouldTrayMenuSmoothAllPins()
             ? L"Smooth all pinned image"
             : L"Unsmooth all pinned image";
@@ -19218,6 +19928,7 @@ static void ShowTrayContextMenu(HWND hWnd) {
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_FULL,              fullMenu.c_str());
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PREV_REGION,       prevMenu.c_str());
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_PIN_CLIPBOARD,     pinClipMenu.c_str());
+        AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SEARCH_GOOGLE,     searchGoogleMenu.c_str());
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_IMAGE,        L"Open image to edit with PepperSnap...");
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_OPEN_PIN_IMAGE,    L"Open image to pin on top...");
         AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SMOOTH_PINS,       smoothPinsMenu);
@@ -19427,12 +20138,21 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             }
             return 0;
         }
+        case WM_TRIGGER_SEARCH_GOOGLE: {
+            DWORD now = GetTickCount();
+            if (now - g_LastHotkeyTriggerTick >= 250) {
+                g_LastHotkeyTriggerTick = now;
+                g_Daemon.SearchClipboardImageOnGoogle();
+            }
+            return 0;
+        }
         case WM_HOTKEY:
             if (g_RecordingHotkeySlot != 0) return 0;
             if (wParam == HK_REGION_SNIP) PostMessageW(hWnd, WM_TRIGGER_REGION_SNIP, 0, 0);
             else if (wParam == HK_FULL_SNAP) PostMessageW(hWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
             else if (wParam == HK_PREV_REGION) PostMessageW(hWnd, WM_TRIGGER_PREV_REGION, 0, 0);
             else if (wParam == HK_PIN_CLIPBOARD) PostMessageW(hWnd, WM_TRIGGER_PIN_CLIPBOARD, 0, 0);
+            else if (wParam == HK_SEARCH_GOOGLE) PostMessageW(hWnd, WM_TRIGGER_SEARCH_GOOGLE, 0, 0);
             return 0;
         case WM_TRAYICON:
             if (lParam == WM_LBUTTONUP) SetTimer(hWnd, TIMER_TRAY_DELAY_REGION, 400, nullptr);
@@ -19457,6 +20177,7 @@ static LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 case IDM_TRAY_OPEN_IMAGE:     g_Daemon.OpenImageIntoOverlay(); break;
                 case IDM_TRAY_OPEN_PIN_IMAGE: g_Daemon.OpenImageToPinOnTop(); break;
                 case IDM_TRAY_PIN_CLIPBOARD:  g_Daemon.PinClipboardImageOnTop(); break;
+                case IDM_TRAY_SEARCH_GOOGLE:  g_Daemon.SearchClipboardImageOnGoogle(); break;
                 case IDM_TRAY_OPEN_FOLDER:
                     CreateDirectoryW(g_Daemon.saveFolder.c_str(), nullptr);
                     ShellExecuteW(nullptr, L"open", g_Daemon.saveFolder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -19883,6 +20604,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_TRIGGER_REGION_SNIP, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_TRIGGER_PREV_REGION, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_TRIGGER_PIN_CLIPBOARD, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_TRIGGER_SEARCH_GOOGLE, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_COMMAND, MSGFLT_ALLOW, nullptr);
 
     PepperSnapDaemon::RegisterImageContextMenu();
@@ -19930,6 +20653,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     UnregisterHotKey(g_Daemon.hTrayWnd, HK_FULL_SNAP);
     UnregisterHotKey(g_Daemon.hTrayWnd, HK_PREV_REGION);
     UnregisterHotKey(g_Daemon.hTrayWnd, HK_PIN_CLIPBOARD);
+    UnregisterHotKey(g_Daemon.hTrayWnd, HK_SEARCH_GOOGLE);
 
     g_Daemon.DestroyCustomCursors();
     GdiplusShutdown(g_Daemon.gdiplusToken);

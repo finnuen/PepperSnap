@@ -166,7 +166,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         body = (
             "<!doctype html><html><head><meta charset=\"utf-8\">"
-            "<title>PepperSnap v3.10.1 — Pure Win32 C++17 Application</title>"
+            "<title>PepperSnap v3.11.1 — Pure Win32 C++17 Application</title>"
             "<style>"
             "body{margin:0;background:#090D16;color:#F8FAFC;font-family:\x27Segoe UI\x27,system-ui,sans-serif;line-height:1.5}"
             ".wrap{max-width:1080px;margin:0 auto;padding:32px 24px}"
@@ -184,9 +184,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "</style></head><body><div class=\"wrap\">"
             "<div class=\"card\">"
             "<div class=\"badge\">100% PURE WIN32 API + GDI+ C++17 · ZERO WEB / ZERO NODE.JS / ZERO ELECTRON / ZERO TYPESCRIPT</div>"
-            "<h1>PepperSnap.exe v3.10.1 — Standalone Native Windows Executable</h1>"
+            "<h1>PepperSnap.exe v3.11.1 — Standalone Native Windows Executable</h1>"
             "<p>This repository is a pure standalone C++17 Win32 API application (<code>PepperSnap.cpp</code>, <code>PepperSnap.h</code>, <code>peppersnap.rc</code>, <code>CMakeLists.txt</code>, <code>PepperSnap.sln</code>, <code>PepperSnap.vcxproj</code>, <code>Makefile</code>, <code>build.bat</code>).</p>"
-            f"<a class=\"btn\" href=\"/PepperSnap.exe?v=3.10.1\" download=\"PepperSnap.exe\">Download Standalone PepperSnap.exe v3.10.1 ({status_label})</a>"
+            f"<a class=\"btn\" href=\"/PepperSnap.exe?v=3.11.1\" download=\"PepperSnap.exe\">Download Standalone PepperSnap.exe v3.11.1 ({status_label})</a>"
             "<div class=\"grid\">"
             f"<div class=\"kv\"><span>BINARY TARGET</span>PE32+ GUI (x86_64-windows-gnu) · {exe_bytes} bytes</div>"
             f"<div class=\"kv\"><span>WIN32 SOURCE SIZE</span>{cpp_lines} lines C++17 (PepperSnap.cpp + PepperSnap.h)</div>"
@@ -217,7 +217,7 @@ class ReusableTCPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 srv = ReusableTCPServer(("0.0.0.0", 3000), Handler)
-print("[PepperSnap Host] Serving PepperSnap.exe v3.10.1 on port 3000", flush=True)
+print("[PepperSnap Host] Serving PepperSnap.exe v3.11.1 on port 3000", flush=True)
 srv.serve_forever()
 '
 }

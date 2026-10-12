@@ -62,6 +62,7 @@ using namespace Gdiplus;
 #define WM_SHORTCUT_RECORDED     (WM_USER + 106)
 #define WM_PROCESS_PIN_QUEUE     (WM_USER + 107)
 #define WM_TRIGGER_PIN_CLIPBOARD (WM_USER + 108)
+#define WM_TRIGGER_SEARCH_GOOGLE (WM_USER + 109)
 
 #define COPYDATA_OPEN_IMAGE        0x5053494DUL
 #define COPYDATA_PIN_IMAGE         0x5053504EUL
@@ -75,6 +76,7 @@ using namespace Gdiplus;
 #define HK_FULL_SNAP           9102
 #define HK_PREV_REGION         9103
 #define HK_PIN_CLIPBOARD       9104
+#define HK_SEARCH_GOOGLE       9105
 
 struct HotkeyBinding {
     UINT modifiers = MOD_CONTROL;
@@ -106,6 +108,7 @@ enum TrayMenuID {
     IDM_TRAY_FULL,
     IDM_TRAY_PREV_REGION,
     IDM_TRAY_PIN_CLIPBOARD,
+    IDM_TRAY_SEARCH_GOOGLE,
     IDM_TRAY_OPEN_IMAGE,
     IDM_TRAY_OPEN_PIN_IMAGE,
     IDM_TRAY_OPEN_FOLDER,
