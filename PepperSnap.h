@@ -32,6 +32,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -61,8 +62,9 @@ using namespace Gdiplus;
 #define WM_UPDATE_CHECK_RESULT (WM_USER + 105)
 #define WM_SHORTCUT_RECORDED     (WM_USER + 106)
 #define WM_PROCESS_PIN_QUEUE     (WM_USER + 107)
-#define WM_TRIGGER_PIN_CLIPBOARD (WM_USER + 108)
-#define WM_TRIGGER_SEARCH_GOOGLE (WM_USER + 109)
+#define WM_TRIGGER_PIN_CLIPBOARD  (WM_USER + 108)
+#define WM_TRIGGER_SEARCH_GOOGLE  (WM_USER + 109)
+#define WM_TRIGGER_EDIT_CLIPBOARD (WM_USER + 110)
 
 #define COPYDATA_OPEN_IMAGE        0x5053494DUL
 #define COPYDATA_PIN_IMAGE         0x5053504EUL
@@ -78,6 +80,7 @@ using namespace Gdiplus;
 #define HK_PREV_REGION         9103
 #define HK_PIN_CLIPBOARD       9104
 #define HK_SEARCH_GOOGLE       9105
+#define HK_EDIT_CLIPBOARD      9106
 
 struct HotkeyBinding {
     UINT modifiers = MOD_CONTROL;
@@ -109,6 +112,7 @@ enum TrayMenuID {
     IDM_TRAY_FULL,
     IDM_TRAY_PREV_REGION,
     IDM_TRAY_PIN_CLIPBOARD,
+    IDM_TRAY_EDIT_CLIPBOARD,
     IDM_TRAY_SEARCH_GOOGLE,
     IDM_TRAY_OPEN_IMAGE,
     IDM_TRAY_OPEN_PIN_IMAGE,
@@ -201,6 +205,7 @@ enum DockBtnID {
     DBTN_ACT_ZOOM_IN,
     DBTN_ACT_ZOOM_RESET,
     DBTN_ACT_POS_RESET,
+    DBTN_ACT_PIN_HIDE_IMAGE,
     DBTN_ACT_PIN_OUTLINE,
     DBTN_ACT_PIN_HIDE_TOOLBAR,
     DBTN_ACT_PIN_UNFILTER,
@@ -254,6 +259,7 @@ struct PinnedWindowData {
     RECT lastRgnStripRect{0, 0, 0, 0};
     bool lastRgnHideToolbar = false;
     bool hasAppliedRgn = false;
+    bool hideImage = false;
     bool hideToolbar = false;
     bool hideOutline = false;
     bool smoothImage = false;

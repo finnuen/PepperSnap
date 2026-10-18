@@ -6,5 +6,10 @@ build/
 *.user
 *.res
 *.exe
+*.lib
 .vs/
 node_modules/
+.aistudio/
+
+# Local working notes - never published
+AGENTS.md

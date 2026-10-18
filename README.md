@@ -15,9 +15,11 @@ One small portable `.exe`. No installer. No account. Nothing to configure before
 
 > 💡 Right-click the tray icon and open **Keyboard shortcuts and info**. It's a searchable guide to everything PepperSnap can do, and it's full of tricks you'd otherwise miss.
 
+> 🔐 **Admin permission.** PepperSnap asks for admin permission when it starts, so that shortcuts and capture keep working while an app running as administrator has focus — without it, a shortcut pressed over such a window silently does nothing. Windows shows a UAC prompt on launch; nothing gets installed and no system settings are changed. If you don't have admin permission, or you decline the prompt, PepperSnap simply runs without it. To avoid the prompt altogether, start it as `PepperSnap.exe --noelevate`, or set `RunElevated=0` in `settings.ini`.
+
 ---
 
-<img width="1920" height="954" alt="Adobe Express - Adobe Express - Desktop 2026 10 13 - 18 39 28 08" src="https://github.com/user-attachments/assets/f9674955-478a-44c2-b152-4f6358ea0b0b" />
+![PepperSnap capturing a region, annotating it, and pinning the result on top of the desktop](assets/demo.gif)
 
 
 ---
@@ -31,8 +33,9 @@ Every shortcut can be changed in **Options → Customize keys**.
 | **Ctrl + Print Screen** | Capture a custom area, then annotate it |
 | **Shift + Print Screen** | Instantly capture and save all monitors |
 | **Ctrl + Shift + Print Screen** | Instantly re-capture and save your previous area |
-| **Alt + Print Screen** | Pin the image from your clipboard on top of the desktop |
-| **Alt + Shift + Print Screen** | Search the image in your clipboard on Google Images |
+| **Alt + Print Screen** | Search the image in your clipboard on Google Lens |
+| **Shift + Alt + Print Screen** | Pin the image from your clipboard on top of the desktop |
+| **Ctrl + Alt + Print Screen** | Edit the image in your clipboard |
 
 ---
 
@@ -58,6 +61,8 @@ Every shortcut can be changed in **Options → Customize keys**.
 - Colour swatches, S / M / L / XL sizes and an exact pixel size box.
 - Full **undo / redo**.
 
+![The annotation editor: selection handles, live pixel dimensions, and the drawing toolbar](assets/editor.png)
+
 ### 📌 Pin screenshots on top
 - Pin any capture as a floating, always-on-top window. Handy for references, designs, notes or chat snippets.
 - **Pin as many as you like.** New pins tile automatically so they don't overlap.
@@ -71,7 +76,7 @@ Every shortcut can be changed in **Options → Customize keys**.
 - The text goes straight to your clipboard, and can optionally be saved as a `.txt` file.
 
 ### 🔍 Search by image
-- Copy any capture or pinned image and search for it on Google Images with one hotkey (or **Shift + click** the Copy button).
+- Copy any capture or pinned image and search for it on Google Lens with one hotkey (or **Shift + click** the Copy button).
 
 ### 🖼️ Edit existing images
 - Right-click any image in Explorer for:
@@ -103,7 +108,11 @@ Every shortcut can be changed in **Options → Customize keys**.
 
 ## 🔒 Privacy
 
-PepperSnap runs entirely on your PC. The only network activity is an optional check for new releases on GitHub, which you can turn off in Options. Your screenshots are never uploaded anywhere. The "Search image" feature simply opens Google Images in your own browser.
+PepperSnap runs entirely on your PC. The only network activity is an optional check for new releases on GitHub, which you can turn off in Options. Your screenshots are never uploaded anywhere. The "Search image" feature simply opens Google Lens in your own browser.
+
+## 📄 License
+
+[MIT](LICENSE) — do whatever you like with it.
 
 ---
 
