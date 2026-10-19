@@ -394,13 +394,14 @@ megabyte of media is a megabyte on every future clone.
 Releases are built from `main` with `build.ps1` and published with the exe it
 produced, `build\PepperSnap_v<version>.exe`, attached. The tag is that same
 number with no `v` prefix (`4.1.1`), because the update check compares the
-release tag against `APP_VERSION`. The **title** does carry the `v`
-(`PepperSnap v4.1.1`), matching the exe filename and the checkpoint names; 4.1.19
-and 4.2.0 were published as `PepperSnap 4.1.19` and `PepperSnap 4.2.0` without it
-and were corrected. So: tag bare, title and filename with `v`. The twelve titles
-from 3.0.0.2 to 3.2.0.6 predate the convention and are deliberately left as they
-are. GitHub's own generated source archives are the source download — there is no
-separate source zip any more.
+release tag against `APP_VERSION`. The **title** always carries the `v`, and is
+exactly `PepperSnap v<tag>` — `PepperSnap v4.2.0`, and `PepperSnap v3.2.0.6` for
+the four-field tags of the 3.0–3.3 era, whose build counter stays in the name.
+So: tag bare, title and filename with `v`. All 38 releases now read that way;
+sixteen of them had drifted (no `v`, a lowercase `s`, a bare `4.2.0`, an empty
+title, `v4` for `4.0.0`) and were normalised in October 2026. GitHub's own
+generated source archives are the source download — there is no separate source
+zip any more.
 
 The build is **not byte-reproducible**: the PE header carries the link time, so
 two builds of identical source differ in that field and therefore in SHA-256.
