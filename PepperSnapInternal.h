@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.1.14";
+    static constexpr const wchar_t* APP_VERSION = L"4.1.19";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -58,6 +58,15 @@ public:
     bool disableRightClickIntegration = false;
     bool disableMagnifierWindow = false;
     bool enableWebImageSearch = true;
+    // What the shell context-menu verbs were last written for. SaveSettings() runs
+    // on every overlay close (twice, via RecordLastCustomSelection), and rewriting
+    // the verbs is a few hundred registry writes; they only depend on these three
+    // inputs, so they are only rewritten when one of them has changed. See
+    // SyncImageContextMenuRegistration in Registry.cpp.
+    mutable bool ctxMenuSynced = false;
+    mutable bool ctxMenuSyncedRegistered = false;
+    mutable bool ctxMenuSyncedWebSearch = false;
+    mutable std::wstring ctxMenuSyncedExePath;
     // Target language for "Shift + click Search on web" (Google Translate's
     // tl= code). Lives in settings.ini as TranslateTargetLang.
     std::wstring translateTargetLang = L"en";
@@ -817,6 +826,9 @@ public:
     static BOOL GetMessageKeepQuit(MSG* msg);
     static void RegisterImageContextMenu();
     static void UnregisterImageContextMenu();
+    // Registers or unregisters the verbs only when the two settings that decide
+    // them, or the executable's own path, have actually changed since last time.
+    void SyncImageContextMenuRegistration() const;
 
     Bitmap* CaptureVirtualDesktop();
     void BuildOverlaySurfaceCache();
@@ -830,6 +842,12 @@ public:
     bool UpdateCtrlWindowHover();
     void StartRegionSnipOverlay(Bitmap* customBmp = nullptr, const RECT* customSelRect = nullptr);
     void CloseRegionSnipOverlay();
+    // Takes the overlay off the screen before work that outlasts the click, so a
+    // heavy dock button does not read as a frozen toolbar. Returns whether it hid
+    // the window (false when closing would hand the window back to an open edit
+    // session instead of taking it away).
+    bool HideOverlayForPendingWork();
+    void RestoreOverlayAfterPendingWork(bool wasHidden);
     void OpenImageIntoOverlay();
     void OpenImageFileIntoOverlay(const std::wstring& filePath);
     bool IsEditingOpenedImage() const { return overlaySingleImageBmp != nullptr || !overlayFrames.empty(); }

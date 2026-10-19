@@ -325,11 +325,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_TRIGGER_SEARCH_GOOGLE, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(g_Daemon.hTrayWnd, WM_COMMAND, MSGFLT_ALLOW, nullptr);
 
-    if (!g_Daemon.disableRightClickIntegration) {
-        PepperSnapDaemon::RegisterImageContextMenu();
-    } else {
-        PepperSnapDaemon::UnregisterImageContextMenu();
-    }
+    g_Daemon.SyncImageContextMenuRegistration();
     g_Daemon.InitTrayIcon();
     g_Daemon.ApplyGlobalHotkeys();
 

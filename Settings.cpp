@@ -94,11 +94,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"RunElevated", runElevated ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"DisableRightClickIntegration", disableRightClickIntegration ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"DisableMagnifierWindow", disableMagnifierWindow ? L"1" : L"0", iniPath.c_str());
-    if (disableRightClickIntegration) {
-        PepperSnapDaemon::UnregisterImageContextMenu();
-    } else {
-        PepperSnapDaemon::RegisterImageContextMenu();
-    }
+    SyncImageContextMenuRegistration();
     WritePrivateProfileStringW(L"PepperSnap", L"EnableWebImageSearch", enableWebImageSearch ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"TranslateTargetLang", translateTargetLang.c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());

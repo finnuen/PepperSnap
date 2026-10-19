@@ -2675,10 +2675,24 @@ void PepperSnapDaemon::Redo() {
 }
 
 void PepperSnapDaemon::ActionCopyAndClose(WebOpenTarget webTarget) {
+    // The overlay goes off the screen before the render, the encode and the
+    // clipboard handoff - a third of a second of straight CPU work on a full-size
+    // region. Nothing below needs the overlay window live, only the daemon state
+    // the bitmap is cut from (see HideOverlayForPendingWork).
+    bool keepOverlayOpen = (webTarget == WebOpenTarget::None && IsEditingOpenedImage() && keepEditWindowOpen);
+    bool hidOverlay = !keepOverlayOpen && HideOverlayForPendingWork();
+
     Bitmap* bmp = RenderCroppedRegionBitmap();
-    if (!bmp) return;
+    if (!bmp) {
+        RestoreOverlayAfterPendingWork(hidOverlay);
+        return;
+    }
     int w = (int)bmp->GetWidth();
     int h = (int)bmp->GetHeight();
+
+    if (!keepOverlayOpen) {
+        CloseRegionSnipOverlay();
+    }
     CopyBitmapToClipboard(bmp);
 
     std::wstring savedNote;
@@ -2692,13 +2706,11 @@ void PepperSnapDaemon::ActionCopyAndClose(WebOpenTarget webTarget) {
         }
     }
     delete bmp;
-    if (webTarget == WebOpenTarget::None && IsEditingOpenedImage() && keepEditWindowOpen) {
+    if (keepOverlayOpen) {
         SaveSettings();
         if (hOverlayWnd && IsWindow(hOverlayWnd)) {
             InvalidateRect(hOverlayWnd, nullptr, FALSE);
         }
-    } else {
-        CloseRegionSnipOverlay();
     }
     if (webTarget == WebOpenTarget::Translate) {
         OpenGoogleTranslateInBrowser(translateTargetLang);
@@ -2766,8 +2778,19 @@ void PepperSnapDaemon::ActionCopyPixelColorAndClose() {
 }
 
 void PepperSnapDaemon::ActionQuickSaveAndClose() {
+    // Down first, then render and encode: both are slow enough to read as a
+    // frozen toolbar (see ActionCopyAndClose).
+    bool keepOverlayOpen = IsEditingOpenedImage() && keepEditWindowOpen;
+    bool hidOverlay = !keepOverlayOpen && HideOverlayForPendingWork();
+
     Bitmap* bmp = RenderCroppedRegionBitmap();
-    if (!bmp) return;
+    if (!bmp) {
+        RestoreOverlayAfterPendingWork(hidOverlay);
+        return;
+    }
+    if (!keepOverlayOpen) {
+        CloseRegionSnipOverlay();
+    }
     CreateDirectoryW(saveFolder.c_str(), nullptr);
     std::wstring quickExt = GetFormatExtension(regionFormat);
     std::wstring full = saveFolder + L"\\" + NextFreeCaptureStem(quickExt) + quickExt;
@@ -2779,13 +2802,11 @@ void PepperSnapDaemon::ActionQuickSaveAndClose() {
         );
     }
     delete bmp;
-    if (IsEditingOpenedImage() && keepEditWindowOpen) {
+    if (keepOverlayOpen) {
         SaveSettings();
         if (hOverlayWnd && IsWindow(hOverlayWnd)) {
             InvalidateRect(hOverlayWnd, nullptr, FALSE);
         }
-    } else {
-        CloseRegionSnipOverlay();
     }
 }
 
@@ -2822,20 +2843,25 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
     isSavingAsModalOpen = false;
 
     if (savedOk) {
+        // Same reasoning as ActionCopyAndClose: the encode should not run with
+        // the overlay still up. Here the dialog has already answered the click,
+        // but the window still outlives it by the length of the write.
+        bool keepOverlayOpen = IsEditingOpenedImage() && keepEditWindowOpen;
+        if (!keepOverlayOpen) {
+            CloseRegionSnipOverlay();
+        }
         if (SaveBitmapToPath(bmp, szFile.data())) {
             lastSavedFilePath = szFile.data();
             ShowTrayToast(L"Saved capture", std::wstring(szFile.data()) + L"\n(click to open in Explorer)");
         }
         delete bmp;
-        if (IsEditingOpenedImage() && keepEditWindowOpen) {
+        if (keepOverlayOpen) {
             SaveSettings();
             if (hOverlayWnd && IsWindow(hOverlayWnd)) {
                 SetForegroundWindow(hOverlayWnd);
                 SetFocus(hOverlayWnd);
                 InvalidateRect(hOverlayWnd, nullptr, FALSE);
             }
-        } else {
-            CloseRegionSnipOverlay();
         }
     } else {
         delete bmp;
@@ -3755,7 +3781,13 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
             g_Daemon.ClearAnnotationSelection();
             if (IsWindow(hWnd)) InvalidateRect(hWnd, nullptr, FALSE);
             return;
-        case DBTN_ACT_CLOSE:     g_Daemon.CloseRegionSnipOverlay(); return;
+        case DBTN_ACT_CLOSE:
+            // Closing is not one call's work either: the settings write and the
+            // surface-cache frees sit behind the window going away (see
+            // HideOverlayForPendingWork), so the window goes first here too.
+            g_Daemon.HideOverlayForPendingWork();
+            g_Daemon.CloseRegionSnipOverlay();
+            return;
     }
 }
 
@@ -4064,6 +4096,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.hoveredBtnId = b.id;
                     SetCapture(hWnd);
                     InvalidateRect(hWnd, nullptr, FALSE);
+                    UpdateWindow(hWnd); // Show the pressed state at once, not at the next idle moment
                     return 0;
                 }
             }
@@ -4392,6 +4425,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.hoveredBtnId = b.id;
                     SetCapture(hWnd);
                     InvalidateRect(hWnd, nullptr, FALSE);
+                    UpdateWindow(hWnd); // Show the pressed state at once, not at the next idle moment
                     return 0;
                 }
             }
@@ -5470,6 +5504,10 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (hitBtn) {
                     DockButton copyBtn = *hitBtn;
                     ExecuteOverlayDockButtonAction(hWnd, copyBtn);
+                    // Paint the result now instead of leaving it to the next idle
+                    // moment: WM_PAINT is only synthesised when the queue is empty,
+                    // and the 40 ms hover poll plus a moving mouse keep it busy.
+                    if (IsWindow(hWnd)) UpdateWindow(hWnd);
                 } else if (IsWindow(hWnd)) {
                     InvalidateRect(hWnd, nullptr, FALSE);
                 }
@@ -7106,10 +7144,51 @@ void PepperSnapDaemon::RaisePinnedWindowsAboveOverlay() {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Getting the overlay off the screen before slow work
+//
+// A click on Copy, Pin, Quick save, Extract text or Close used to keep the
+// toolbar on screen through everything the button does. Two of those things are
+// slow: RenderCroppedRegionBitmap() alone is about 100 ms on a full-screen
+// custom-area selection (the crop clone plus the mosaic and highlighter passes),
+// and the encode, the clipboard handoff and OCR add a few hundred more. So the
+// overlay sat there frozen and only then did the job, which reads - correctly -
+// as the click having been ignored.
+//
+// The bitmap those actions work from is cut out of daemon state, not out of the
+// window, so the window can leave first. It cannot simply be closed first,
+// because closing deletes that state, so it is hidden now and closed when the
+// work is done. Hiding is immediate; the work then happens with nothing on
+// screen, which is what "throw it to the background" means here.
+//
+// One case must not hide: when the overlay is sitting on top of an image opened
+// for editing, closing hands the window back to that edit session (the
+// savedEditSession path in CloseRegionSnipOverlay) rather than taking it away,
+// and a window that is never shown again is a stuck app.
+// ----------------------------------------------------------------------------
+bool PepperSnapDaemon::HideOverlayForPendingWork() {
+    if (savedEditSession.active) return false;
+    if (!hOverlayWnd || !IsWindow(hOverlayWnd) || !IsWindowVisible(hOverlayWnd)) return false;
+    // Nothing shows this window again except the two entry points that create it,
+    // so a plain hide holds. The 40 ms poll is stopped only because its hover and
+    // window-enumeration work has nothing to show for itself while hidden.
+    KillTimer(hOverlayWnd, 2);
+    KillTimer(hOverlayWnd, 4);
+    ShowWindow(hOverlayWnd, SW_HIDE);
+    return true;
+}
+
+void PepperSnapDaemon::RestoreOverlayAfterPendingWork(bool wasHidden) {
+    if (!wasHidden || !hOverlayWnd || !IsWindow(hOverlayWnd)) return;
+    ShowWindow(hOverlayWnd, SW_SHOW);
+    SetForegroundWindow(hOverlayWnd);
+    SetFocus(hOverlayWnd);
+    SetTimer(hOverlayWnd, 2, 40, nullptr);
+    InvalidateRect(hOverlayWnd, nullptr, FALSE);
+}
+
 void PepperSnapDaemon::CloseRegionSnipOverlay() {
     isSavingAsModalOpen = false;
-    RecordLastCustomSelection();
-    SaveSettings();
     hasCustomHudPos = false;
     showingCustomAreaHoverTip = false;
     lastCustomAreaHoverMouse = { -10000, -10000 };
@@ -7217,6 +7296,13 @@ void PepperSnapDaemon::CloseRegionSnipOverlay() {
         DestroyWindow(hOverlayWnd);
         hOverlayWnd = nullptr;
     }
+    // The window is off the screen now. Everything left is bookkeeping the user
+    // cannot see - and there is a lot of it: the two SaveSettings() calls below
+    // each rewrite the whole ini file about 130 times, and the pair measured
+    // 300-420 ms. Before this ordering existed that time was spent with the
+    // toolbar still drawn, which is the freeze a close used to be.
+    RecordLastCustomSelection();
+    SaveSettings();
     RestoreSuppressedAboveOverlayWindows();
     FreeOverlaySurfaceCache();
     ClearOverlayFrames();

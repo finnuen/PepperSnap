@@ -92,6 +92,35 @@ void PepperSnapDaemon::ToggleRunAtStartup() {
     }
 }
 
+void PepperSnapDaemon::SyncImageContextMenuRegistration() const {
+    // Callers: WinMain at startup, and SaveSettings() - which runs on every
+    // overlay close, twice, because RecordLastCustomSelection() saves as well.
+    // Writing the verbs walks ten shell keys, creating and deleting sub-keys and
+    // rewriting the verbs for a dozen image extensions under
+    // HKCU\Software\Classes. None of that varies between one close and the next:
+    // it depends only on whether the verbs are wanted at all, on the executable's
+    // path, and on whether the "Search image on web" verb is wanted. So it is
+    // worth doing when one of those three moves, and not on every save.
+    std::wstring exePath = GetModuleFilePathDynamic(nullptr);
+    bool wantRegistered = !disableRightClickIntegration;
+    if (ctxMenuSynced &&
+        wantRegistered == ctxMenuSyncedRegistered &&
+        exePath == ctxMenuSyncedExePath &&
+        (!wantRegistered || enableWebImageSearch == ctxMenuSyncedWebSearch)) {
+        return;
+    }
+
+    if (wantRegistered) {
+        RegisterImageContextMenu();
+    } else {
+        UnregisterImageContextMenu();
+    }
+    ctxMenuSynced = true;
+    ctxMenuSyncedRegistered = wantRegistered;
+    ctxMenuSyncedWebSearch = enableWebImageSearch;
+    ctxMenuSyncedExePath = exePath;
+}
+
 void PepperSnapDaemon::RegisterImageContextMenu() {
     std::wstring exePath = GetModuleFilePathDynamic(nullptr);
     if (exePath.empty()) return;

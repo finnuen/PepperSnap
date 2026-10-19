@@ -3040,8 +3040,15 @@ HWND PepperSnapDaemon::CreatePinnedWindow(Bitmap* bmp, int x, int y, float initi
 }
 
 void PepperSnapDaemon::ActionPinToDesktop() {
+    // Off the screen before the render and the optional file write, both of which
+    // are slow enough to read as a frozen toolbar (see HideOverlayForPendingWork).
+    // Everything below reads daemon state, not the window.
+    bool hidOverlay = HideOverlayForPendingWork();
     Bitmap* cropped = RenderCroppedRegionBitmap();
-    if (!cropped) return;
+    if (!cropped) {
+        RestoreOverlayAfterPendingWork(hidOverlay);
+        return;
+    }
     int rx = std::max(0, (int)std::min(selRect.left, selRect.right));
     int ry = std::max(0, (int)std::min(selRect.top, selRect.bottom));
     int rw = std::max(1, (int)cropped->GetWidth());
@@ -3058,6 +3065,10 @@ void PepperSnapDaemon::ActionPinToDesktop() {
         }
     }
 
+    // Take the overlay down before the optional file write, but after the pin's
+    // geometry has been read above.
+    CloseRegionSnipOverlay();
+
     std::wstring savedNote;
     if (alsoSavePinned) {
         CreateDirectoryW(saveFolder.c_str(), nullptr);
@@ -3069,7 +3080,6 @@ void PepperSnapDaemon::ActionPinToDesktop() {
         }
     }
 
-    CloseRegionSnipOverlay();
     HWND hPin = CreatePinnedWindow(cropped, sx, sy, 1.0f);
     if (hPin && (pinHasCustomQuad || pinHasEllipseMask)) {
         PinnedWindowData* pData = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);

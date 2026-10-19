@@ -174,6 +174,44 @@ than the old `FormatFilename(captureCounter++)`. If you add a save path, use the
 helper. It also bails out as soon as the generated name stops changing, because
 a purely timestamp-based pattern would otherwise loop forever.
 
+### The overlay leaves the screen before a heavy button does its work
+
+Copy, Pin, Quick save, Save as, Extract text and both "Search on web" entries cut
+their bitmap out of daemon state in `RenderCroppedRegionBitmap()` and then close
+the overlay. That render alone is about 100 ms on a full-screen custom-area
+selection (the crop clone plus the mosaic and highlighter passes), and the encode,
+the clipboard handoff, the file write and OCR add a few hundred more. With the
+window still up, all of that read as the toolbar freezing for a moment and *then*
+doing the job — the most-complained-about thing in the app for five builds, and
+two wrong theories (the 40 ms hover poll, then a starved message queue) were
+chased before the log showed the work was simply sitting in front of
+`DestroyWindow`.
+
+The shape is therefore: `HideOverlayForPendingWork()`, then the render, then
+close, then the work. The render reads daemon state and not the window, which is
+exactly what makes hiding first safe. Do not "simplify" it back to
+render-then-close, and give any new heavy button the same shape. The one exception
+is a snip started on top of an edit session: closing there hands the window back
+to the editor instead of taking it away, so the helper refuses to hide
+(`savedEditSession.active`) and the window has to stay up.
+
+The settings write is the other half, and it is bigger than it looks. The log for
+one close reads `up-to-hide 2 ms`, then `close/record-selection 210 ms` and
+`close/save-settings 95 ms`: `CloseRegionSnipOverlay()` runs `SaveSettings()` twice
+— once directly and once through `RecordLastCustomSelection()` — and each call
+makes about 130 `WritePrivateProfileStringW` calls, each of which rewrites the
+whole file. That pair measured 300–420 ms. It is deliberately *after*
+`DestroyWindow()`, where none of it can be seen; before that ordering existed it
+was exactly the 300 ms the toolbar spent frozen.
+
+`SaveSettings()` also used to rewrite every Explorer image context-menu verb on
+every call — ten shell keys plus nine file extensions' worth of
+`HKCU\Software\Classes`. Those verbs depend on three inputs only (the setting, the
+web-search setting, the exe's own path), so `SyncImageContextMenuRegistration()`
+now runs that work only when one of them moves; measured, it was 0.0 ms per save
+afterwards. Anything expensive that either function grows must stay behind the
+close, and anything static must be guarded the way the verbs are.
+
 ### The in-app guide is hand-written documentation and drifts
 
 "Keyboard shortcuts and info" (`ShowShortcutsModal` in `Pinned.cpp`) is a
@@ -347,6 +385,9 @@ megabyte of media is a megabyte on every future clone.
    counters of `o`, `e`, `a` and `4`, follow the text colour (black behind the
    bright swatches, white behind black), and look the same in the saved file as
    it did in the overlay.
+9. In a custom-area session, click Copy, Pin, Quick save, Extract text and Close:
+   the overlay should leave on the click, with the toast, pin or file following a
+   moment later — no frozen toolbar in between.
 
 ## Release
 
@@ -362,3 +403,15 @@ A hash quoted for a release is only ever valid for the exact file that gets
 attached, and rebuilding — even to fix a comment — invalidates it. Take the
 hash from the finished asset and do not build again between writing it down and
 publishing; if a rebuild does happen, re-take the hash.
+
+The version number is part of the same decision. Patch is the default and needs no
+thought; a minor bump (`build.ps1 -Version 4.2.0`) is right when the build adds a
+user-visible capability or changes a behaviour users will notice. That call belongs
+to whoever prepares the release — here the assistant, acting for the maintainer —
+rather than being a question to ask each time: the number only means something
+because someone weighed it, and the reasoning goes into the message that
+accompanies the release, where a veto is still cheap. Two mechanics constrain it.
+PATCH doubles as the build counter, so starting a minor resets it — the next plain
+build after 4.2.0 is 4.2.1, not 4.1.15. And the number is fixed by the build that
+gets published, since the exe embeds it and a rebuild changes the hash, so a wrong
+call is corrected by a later release, never by renumbering.

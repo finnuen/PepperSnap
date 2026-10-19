@@ -295,8 +295,14 @@ bool PepperSnapDaemon::RecognizeBitmapTextNativeWinRT(Bitmap* srcBmp, std::wstri
 }
 
 void PepperSnapDaemon::ActionOcrAndClose() {
+    // Off the screen before the render and the OCR pass, which is the slowest of
+    // these buttons at about a third of a second (see HideOverlayForPendingWork).
+    bool hidOverlay = HideOverlayForPendingWork();
     Bitmap* bmp = RenderCroppedRegionBitmap();
-    if (!bmp) return;
+    if (!bmp) {
+        RestoreOverlayAfterPendingWork(hidOverlay);
+        return;
+    }
     CloseRegionSnipOverlay();
 
     std::wstring recognized;
