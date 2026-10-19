@@ -1000,7 +1000,7 @@ void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWind
         bSearch.id = DBTN_ACT_PIN_SEARCH_GOOGLE;
         bSearch.rect = { rx, ry, rx + toolBtnW, ry + actBtnH };
         bSearch.label = L"";
-        bSearch.tooltip = FormatLabelWithShortcut(L"Search on web", g_Daemon.hkPinSearchGoogle);
+        bSearch.tooltip = FormatLabelWithShortcut(L"Search on web", g_Daemon.hkPinSearchGoogle) + L"\nShift + click to translate";
         bSearch.isPrimaryAction = false;
         data->buttons.push_back(bSearch);
 
@@ -1933,7 +1933,9 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
             SetFocus(hWnd);
             if (data->bmp) {
                 g_Daemon.CopyBitmapToClipboard(data->bmp);
-                g_Daemon.SearchClipboardImageOnGoogle();
+                // Shift asks for Translate instead of Lens, matching the overlay
+                // toolbar's Search on web button.
+                g_Daemon.SearchClipboardImageOnGoogle(IsPinShiftHeld());
             }
             return;
         case DBTN_ACT_COPY:
@@ -2869,7 +2871,10 @@ LRESULT CALLBACK PinWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     RenderPinnedLayeredWindow(hWnd, data);
                     if (hit) {
                         if (releasedBtnId == DBTN_ACT_COPY && releasedWithShift) {
-                            ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_PIN_SEARCH_GOOGLE, false);
+                            // Shift + click Copy means every pinned image, which is
+                            // what Shift means to every other button here and to the
+                            // Copy shortcut key. It is no longer a search.
+                            ExecutePinnedWindowAction(hWnd, data, DBTN_ACT_COPY, true);
                         } else {
                             ExecutePinnedWindowAction(hWnd, data, releasedBtnId, releasedWithShift);
                         }
@@ -4434,7 +4439,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_UNDO,     false,  FormatLabelWithShortcut(L"Undo",                      hkActUndo),           L"Undo last annotation action");
     addActionRow(DBTN_ACT_REDO,     false,  FormatLabelWithShortcut(L"Redo",                      hkActRedo),           L"Redo undone annotation action");
     addActionRow(DBTN_ACT_CLEAR,    false,  FormatLabelWithShortcut(L"Clear all annotations",     hkActClear),          L"Remove all annotations from current custom area");
-    addActionRow(DBTN_ACT_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",          hkActSearchGoogle),   L"Copy custom area to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image (Shift + click Copy button does the same; customizable in Customize keys)");
+    addActionRow(DBTN_ACT_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",          hkActSearchGoogle),   L"Copy custom area to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image. Shift + click opens https://translate.google.com/ instead, translating into the language chosen under Options (customizable in Customize keys)");
     addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",                hkActPin),            L"Pin custom area capture as a floating topmost desktop window (preserves rectangle, irregular quad / triangle, or circle / ellipse transparency)");
     addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in custom area via Windows OCR & copy to clipboard");
     addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for custom area");
@@ -4444,11 +4449,11 @@ void PepperSnapDaemon::ShowShortcutsModal() {
 
     addSection(L"Pin on top — floating window toolbar & mechanisms");
     addRow(L"You can pin multiple image at once", L"Pin multiple captures, multi-select images in \"Open image to pin on top...\", use \"Pin the image in clipboard on top\" (" + FormatHotkeyString(hkPinClipboard) + L" or tray menu), or multi-select images in Explorer and click \"Pin on top\" (auto-tiled so they don't overlap, fit-to-screen capped at 40% of screen size, and multi-selected by default so you can immediately move them all together)");
-    addRow(L"Hold Shift + any action / key / button", L"Apply any pinned image button, mouse action, size/percentage input, or shortcut key (including Shift + Save As) to all pinned images at once (e.g. Shift + Quick save saves all pinned images; Shift + click Copy button searches image on web; Shift + double right-click closes all)");
+    addRow(L"Hold Shift + any action / key / button", L"Apply any pinned image button, mouse action, size/percentage input, or shortcut key (including Shift + Save As) to all pinned images at once (e.g. Shift + Quick save saves all pinned images; Shift + click Copy button copies all of them to the clipboard; Shift + double right-click closes all)");
     addRow(L"Animated GIF & WebP support",   L"Pinned .gif and animated .webp images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
     addRow(L"Ctrl + Left-click pinned image", L"Select or deselect pinned images for multi-selection (shows a blue outline on selected pinned images; pinning multiple images at once multi-selects them by default; drag any selected pinned image to move all selected pinned images together with group screen-edge snapping; left-click without Ctrl to clear selection)");
     addRow(L"Alt + Click / Alt + Shift + Click", L"Pause or play pinned animation on current frame (only shown & active on animated .gif / multi-frame animated .webp; hold Alt + Shift + click to pause/play all pinned animations)");
-    addActionRow(DBTN_ACT_PIN_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",      hkPinSearchGoogle),  L"Leftmost button of the [W\x00D7H px | %] row: copy pinned image to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image (Shift + click Copy button does the same; customizable in Customize keys)");
+    addActionRow(DBTN_ACT_PIN_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",      hkPinSearchGoogle),  L"Leftmost button of the [W\x00D7H px | %] row: copy pinned image to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image. Shift + click opens https://translate.google.com/ instead, translating into the language chosen under Options (customizable in Customize keys)");
     addRow(L"Click W × H px or % indicator", L"Second toolbar row shows editable [W×H px | %] — click to type W×H, width only (200 or 200x), height only (xx200 or x200), or zoom % (keeps aspect ratio; Shift + Enter applies to all pinned images)");
     addActionRow(DBTN_ACT_SCALE_RESET_100, false, L"Set to 100% (beside % indicator)", L"On the right side of the % scale indicator ([W×H px | % [reset icon]]) — click to set scale to 100% (hold Shift + click to set all pinned images to 100%)");
     addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", \"Middle-click to reset size\", \"Ctrl + middle-click to reset position\", \"Ctrl + click to multi-select (drag together)\", \"Alt + click to pause/play\" (on animations only), and Shift multi-pin hint");
@@ -4473,7 +4478,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_PIN_UNFILTER,     false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),      L"Smooth image with filter when on; unfiltered (pixelated) when off (hold Shift to apply to all pinned images; default: off)");
     addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image (hold Shift to Save As all pinned images; customizable in Customize keys)");
     addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder (hold Shift to quick-save all pinned images; customizable in Customize keys)");
-    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),          L"Copy pinned image to clipboard");
+    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),          L"Copy pinned image to clipboard (hold Shift + click to copy every pinned image at once)");
     addActionRow(DBTN_ACT_CLOSE,        false, FormatLabelWithShortcut(L"Close pinned image",       hkPinClose),         L"Close pinned image (hold Shift to close all pinned images, or double right-click, or use tray menu)");
 
     int maxKeyW = 220;

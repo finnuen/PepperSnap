@@ -106,6 +106,15 @@ enum class UpdateCheckInterval {
     EveryMonth  = 4
 };
 
+// What a finished copy leaves behind: just the clipboard, or the clipboard plus a
+// browser page waiting for one Ctrl + V. Shift + click on the overlay's Search on
+// web button asks for Translate; every other entry point asks for Lens.
+enum class WebOpenTarget {
+    None      = 0,
+    Lens      = 1,
+    Translate = 2
+};
+
 enum TrayMenuID {
     IDM_TRAY_REGION = 2001,
     IDM_TRAY_FULL,

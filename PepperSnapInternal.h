@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.1.12";
+    static constexpr const wchar_t* APP_VERSION = L"4.1.14";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -58,6 +58,9 @@ public:
     bool disableRightClickIntegration = false;
     bool disableMagnifierWindow = false;
     bool enableWebImageSearch = true;
+    // Target language for "Shift + click Search on web" (Google Translate's
+    // tl= code). Lives in settings.ini as TranslateTargetLang.
+    std::wstring translateTargetLang = L"en";
     int optionsWindowHeight = 944;
     int customizeKeysWindowHeight = 620;
     int shortcutsWindowWidth = 900;
@@ -844,9 +847,10 @@ public:
     void OpenImageToPinOnTop();
     void PinClipboardImageOnTop();
     void EditClipboardImage();
-    void SearchClipboardImageOnGoogle();
+    void SearchClipboardImageOnGoogle(bool translateToTarget = false);
     void SearchImageFileOnGoogle(const std::wstring& filePath);
     static void OpenGoogleLensInBrowser();
+    static void OpenGoogleTranslateInBrowser(const std::wstring& targetLang);
     void OpenImageFilesToPinOnTop(const std::vector<std::wstring>& filePaths);
     HWND CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale = 1.0f, std::vector<Bitmap*> animFrames = {}, std::vector<int> animDelaysMs = {}, bool initiallySelected = false);
 
@@ -864,7 +868,7 @@ public:
     static bool SaveBitmapAsMetadataFreeBMP(Bitmap* bmp, const std::wstring& path);
     static bool WriteMetadataFreeJPEG(IStream* stream, const std::wstring& path);
     static bool WriteMetadataFreePNG(IStream* stream, const std::wstring& path);
-    void ActionCopyAndClose(bool searchOnGoogle = false);
+    void ActionCopyAndClose(WebOpenTarget webTarget = WebOpenTarget::None);
     void ActionCopyPixelColorAndClose();
     void ActionQuickSaveAndClose();
     void ActionSaveAsAndClose();

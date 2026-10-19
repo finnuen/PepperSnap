@@ -100,6 +100,7 @@ void PepperSnapDaemon::SaveSettings() const {
         PepperSnapDaemon::RegisterImageContextMenu();
     }
     WritePrivateProfileStringW(L"PepperSnap", L"EnableWebImageSearch", enableWebImageSearch ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"TranslateTargetLang", translateTargetLang.c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"OptionsWindowHeight", std::to_wstring(optionsWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"CustomizeKeysWindowHeight", std::to_wstring(customizeKeysWindowHeight).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"ShortcutsWindowWidth", std::to_wstring(shortcutsWindowWidth).c_str(), iniPath.c_str());
@@ -195,6 +196,302 @@ bool IsValidGithubRepoSlug(const std::wstring& s) {
     return true;
 }
 
+// --- Google Translate target languages ---------------------------------------
+//
+// "Shift + click Search on web" opens the image-translation view of Google
+// Translate, and the "tl=" in that URL is a language code. This is Google's own
+// list of them, taken from the endpoint the translate site itself uses
+// (translate.google.com/translate_a/l?client=te&alpha=true&hl=en) and baked in,
+// because the app does nothing over the network at run time. 249 codes, sorted
+// by the English name Google gives each one, which is also what the Options
+// dropdown shows.
+//
+// It ages: Google added 110 languages at once in 2024 and will add more, and
+// nothing here learns about them on its own. Refreshing it means re-running that
+// URL and replacing the table.
+struct TranslateLanguage {
+    const wchar_t* code;
+    const wchar_t* name;
+};
+
+static const TranslateLanguage kTranslateLanguages[] = {
+    { L"ab", L"Abkhaz" },
+    { L"ace", L"Acehnese" },
+    { L"ach", L"Acholi" },
+    { L"aa", L"Afar" },
+    { L"af", L"Afrikaans" },
+    { L"sq", L"Albanian" },
+    { L"alz", L"Alur" },
+    { L"am", L"Amharic" },
+    { L"ar", L"Arabic" },
+    { L"hy", L"Armenian" },
+    { L"as", L"Assamese" },
+    { L"av", L"Avar" },
+    { L"awa", L"Awadhi" },
+    { L"ay", L"Aymara" },
+    { L"az", L"Azerbaijani" },
+    { L"ban", L"Balinese" },
+    { L"bal", L"Baluchi" },
+    { L"bm", L"Bambara" },
+    { L"bci", L"Baoulé" },
+    { L"ba", L"Bashkir" },
+    { L"eu", L"Basque" },
+    { L"btx", L"Batak Karo" },
+    { L"bts", L"Batak Simalungun" },
+    { L"bbc", L"Batak Toba" },
+    { L"be", L"Belarusian" },
+    { L"bem", L"Bemba" },
+    { L"bn", L"Bengali" },
+    { L"bew", L"Betawi" },
+    { L"bho", L"Bhojpuri" },
+    { L"bik", L"Bikol" },
+    { L"bs", L"Bosnian" },
+    { L"br", L"Breton" },
+    { L"bg", L"Bulgarian" },
+    { L"bua", L"Buryat" },
+    { L"yue", L"Cantonese" },
+    { L"ca", L"Catalan" },
+    { L"ceb", L"Cebuano" },
+    { L"ch", L"Chamorro" },
+    { L"ce", L"Chechen" },
+    { L"ny", L"Chichewa" },
+    { L"zh-CN", L"Chinese (Simplified)" },
+    { L"zh-TW", L"Chinese (Traditional)" },
+    { L"chk", L"Chuukese" },
+    { L"cv", L"Chuvash" },
+    { L"co", L"Corsican" },
+    { L"crh", L"Crimean Tatar (Cyrillic)" },
+    { L"crh-Latn", L"Crimean Tatar (Latin)" },
+    { L"hr", L"Croatian" },
+    { L"cs", L"Czech" },
+    { L"da", L"Danish" },
+    { L"fa-AF", L"Dari" },
+    { L"dv", L"Dhivehi" },
+    { L"din", L"Dinka" },
+    { L"doi", L"Dogri" },
+    { L"dov", L"Dombe" },
+    { L"nl", L"Dutch" },
+    { L"dyu", L"Dyula" },
+    { L"dz", L"Dzongkha" },
+    { L"en", L"English" },
+    { L"eo", L"Esperanto" },
+    { L"et", L"Estonian" },
+    { L"ee", L"Ewe" },
+    { L"fo", L"Faroese" },
+    { L"fj", L"Fijian" },
+    { L"tl", L"Filipino" },
+    { L"fi", L"Finnish" },
+    { L"fon", L"Fon" },
+    { L"fr", L"French" },
+    { L"fr-CA", L"French (Canada)" },
+    { L"fy", L"Frisian" },
+    { L"fur", L"Friulian" },
+    { L"ff", L"Fulani" },
+    { L"gaa", L"Ga" },
+    { L"gl", L"Galician" },
+    { L"ka", L"Georgian" },
+    { L"de", L"German" },
+    { L"el", L"Greek" },
+    { L"gn", L"Guarani" },
+    { L"gu", L"Gujarati" },
+    { L"ht", L"Haitian Creole" },
+    { L"cnh", L"Hakha Chin" },
+    { L"ha", L"Hausa" },
+    { L"haw", L"Hawaiian" },
+    { L"iw", L"Hebrew" },
+    { L"hil", L"Hiligaynon" },
+    { L"hi", L"Hindi" },
+    { L"hmn", L"Hmong" },
+    { L"hu", L"Hungarian" },
+    { L"hrx", L"Hunsrik" },
+    { L"iba", L"Iban" },
+    { L"is", L"Icelandic" },
+    { L"ig", L"Igbo" },
+    { L"ilo", L"Ilocano" },
+    { L"id", L"Indonesian" },
+    { L"iu-Latn", L"Inuktut (Latin)" },
+    { L"iu", L"Inuktut (Syllabics)" },
+    { L"ga", L"Irish" },
+    { L"it", L"Italian" },
+    { L"jam", L"Jamaican Patois" },
+    { L"ja", L"Japanese" },
+    { L"jw", L"Javanese" },
+    { L"kac", L"Jingpo" },
+    { L"kl", L"Kalaallisut" },
+    { L"kn", L"Kannada" },
+    { L"kr", L"Kanuri" },
+    { L"pam", L"Kapampangan" },
+    { L"kk", L"Kazakh" },
+    { L"kha", L"Khasi" },
+    { L"km", L"Khmer" },
+    { L"cgg", L"Kiga" },
+    { L"kg", L"Kikongo" },
+    { L"rw", L"Kinyarwanda" },
+    { L"ktu", L"Kituba" },
+    { L"trp", L"Kokborok" },
+    { L"kv", L"Komi" },
+    { L"gom", L"Konkani" },
+    { L"ko", L"Korean" },
+    { L"kri", L"Krio" },
+    { L"ku", L"Kurdish (Kurmanji)" },
+    { L"ckb", L"Kurdish (Sorani)" },
+    { L"ky", L"Kyrgyz" },
+    { L"lo", L"Lao" },
+    { L"ltg", L"Latgalian" },
+    { L"la", L"Latin" },
+    { L"lv", L"Latvian" },
+    { L"lij", L"Ligurian" },
+    { L"li", L"Limburgish" },
+    { L"ln", L"Lingala" },
+    { L"lt", L"Lithuanian" },
+    { L"lmo", L"Lombard" },
+    { L"lg", L"Luganda" },
+    { L"luo", L"Luo" },
+    { L"lb", L"Luxembourgish" },
+    { L"mk", L"Macedonian" },
+    { L"mad", L"Madurese" },
+    { L"mai", L"Maithili" },
+    { L"mak", L"Makassar" },
+    { L"mg", L"Malagasy" },
+    { L"ms", L"Malay" },
+    { L"ms-Arab", L"Malay (Jawi)" },
+    { L"ml", L"Malayalam" },
+    { L"mt", L"Maltese" },
+    { L"mam", L"Mam" },
+    { L"gv", L"Manx" },
+    { L"mi", L"Maori" },
+    { L"mr", L"Marathi" },
+    { L"mh", L"Marshallese" },
+    { L"mwr", L"Marwadi" },
+    { L"mfe", L"Mauritian Creole" },
+    { L"chm", L"Meadow Mari" },
+    { L"mni-Mtei", L"Meiteilon (Manipuri)" },
+    { L"min", L"Minang" },
+    { L"lus", L"Mizo" },
+    { L"mn", L"Mongolian" },
+    { L"my", L"Myanmar (Burmese)" },
+    { L"nhe", L"Nahuatl (Eastern Huasteca)" },
+    { L"ndc-ZW", L"Ndau" },
+    { L"nr", L"Ndebele (South)" },
+    { L"new", L"Nepalbhasa (Newari)" },
+    { L"ne", L"Nepali" },
+    { L"bm-Nkoo", L"NKo" },
+    { L"no", L"Norwegian" },
+    { L"nus", L"Nuer" },
+    { L"oc", L"Occitan" },
+    { L"or", L"Odia (Oriya)" },
+    { L"om", L"Oromo" },
+    { L"os", L"Ossetian" },
+    { L"pag", L"Pangasinan" },
+    { L"pap", L"Papiamento" },
+    { L"ps", L"Pashto" },
+    { L"fa", L"Persian" },
+    { L"pl", L"Polish" },
+    { L"pt", L"Portuguese (Brazil)" },
+    { L"pt-PT", L"Portuguese (Portugal)" },
+    { L"pa", L"Punjabi (Gurmukhi)" },
+    { L"pa-Arab", L"Punjabi (Shahmukhi)" },
+    { L"kek", L"Qʼeqchiʼ" },
+    { L"qu", L"Quechua" },
+    { L"rom", L"Romani" },
+    { L"ro", L"Romanian" },
+    { L"rn", L"Rundi" },
+    { L"ru", L"Russian" },
+    { L"se", L"Sami (North)" },
+    { L"sm", L"Samoan" },
+    { L"sg", L"Sango" },
+    { L"sa", L"Sanskrit" },
+    { L"sat-Latn", L"Santali (Latin)" },
+    { L"sat", L"Santali (Ol Chiki)" },
+    { L"gd", L"Scots Gaelic" },
+    { L"nso", L"Sepedi" },
+    { L"sr", L"Serbian" },
+    { L"st", L"Sesotho" },
+    { L"crs", L"Seychellois Creole" },
+    { L"shn", L"Shan" },
+    { L"sn", L"Shona" },
+    { L"scn", L"Sicilian" },
+    { L"szl", L"Silesian" },
+    { L"sd", L"Sindhi" },
+    { L"si", L"Sinhala" },
+    { L"sk", L"Slovak" },
+    { L"sl", L"Slovenian" },
+    { L"so", L"Somali" },
+    { L"es", L"Spanish" },
+    { L"su", L"Sundanese" },
+    { L"sus", L"Susu" },
+    { L"sw", L"Swahili" },
+    { L"ss", L"Swati" },
+    { L"sv", L"Swedish" },
+    { L"ty", L"Tahitian" },
+    { L"tg", L"Tajik" },
+    { L"ber-Latn", L"Tamazight" },
+    { L"ber", L"Tamazight (Tifinagh)" },
+    { L"ta", L"Tamil" },
+    { L"tt", L"Tatar" },
+    { L"te", L"Telugu" },
+    { L"tet", L"Tetum" },
+    { L"th", L"Thai" },
+    { L"bo", L"Tibetan" },
+    { L"ti", L"Tigrinya" },
+    { L"tiv", L"Tiv" },
+    { L"tpi", L"Tok Pisin" },
+    { L"to", L"Tongan" },
+    { L"lua", L"Tshiluba" },
+    { L"ts", L"Tsonga" },
+    { L"tn", L"Tswana" },
+    { L"tcy", L"Tulu" },
+    { L"tum", L"Tumbuka" },
+    { L"tr", L"Turkish" },
+    { L"tk", L"Turkmen" },
+    { L"tyv", L"Tuvan" },
+    { L"ak", L"Twi" },
+    { L"udm", L"Udmurt" },
+    { L"uk", L"Ukrainian" },
+    { L"ur", L"Urdu" },
+    { L"ug", L"Uyghur" },
+    { L"uz", L"Uzbek" },
+    { L"ve", L"Venda" },
+    { L"vec", L"Venetian" },
+    { L"vi", L"Vietnamese" },
+    { L"war", L"Waray" },
+    { L"cy", L"Welsh" },
+    { L"wo", L"Wolof" },
+    { L"xh", L"Xhosa" },
+    { L"sah", L"Yakut" },
+    { L"yi", L"Yiddish" },
+    { L"yo", L"Yoruba" },
+    { L"yua", L"Yucatec Maya" },
+    { L"zap", L"Zapotec" },
+    { L"zu", L"Zulu" },
+};
+static const int kTranslateLanguageCount = (int)(sizeof(kTranslateLanguages) / sizeof(kTranslateLanguages[0]));
+
+// Falls back to English when settings.ini holds a code this table does not know
+// -- an ini written by a newer build, or hand-edited -- so the URL can never
+// carry a tl= that Google rejects.
+static std::wstring NormalizeTranslateLang(const std::wstring& code) {
+    for (int i = 0; i < kTranslateLanguageCount; ++i) {
+        if (code == kTranslateLanguages[i].code) return code;
+    }
+    return L"en";
+}
+
+// Index of a stored code in the dropdown, so the Options window can preselect
+// it. Normalising first means every code has an entry.
+static int TranslateLangIndex(const std::wstring& code) {
+    std::wstring wanted = NormalizeTranslateLang(code);
+    for (int i = 0; i < kTranslateLanguageCount; ++i) {
+        if (wanted == kTranslateLanguages[i].code) return i;
+    }
+    return 0;
+}
+
+static std::wstring TranslateLangCodeAt(int index) {
+    if (index < 0 || index >= kTranslateLanguageCount) return L"en";
+    return kTranslateLanguages[index].code;
+}
+
 void PepperSnapDaemon::LoadSettings() {
     std::wstring iniPath = GetAppDataSettingsFile();
     if (GetFileAttributesW(iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -233,6 +530,9 @@ void PepperSnapDaemon::LoadSettings() {
     disableRightClickIntegration = (GetPrivateProfileIntW(L"PepperSnap", L"DisableRightClickIntegration", 0, iniPath.c_str()) != 0);
     disableMagnifierWindow = (GetPrivateProfileIntW(L"PepperSnap", L"DisableMagnifierWindow", 0, iniPath.c_str()) != 0);
     enableWebImageSearch = (GetPrivateProfileIntW(L"PepperSnap", L"EnableWebImageSearch", 1, iniPath.c_str()) != 0);
+    // A code the table does not know (an ini from a newer build, or hand-edited)
+    // falls back to English rather than reaching the URL.
+    translateTargetLang = NormalizeTranslateLang(GetPrivateProfileStringDynamic(L"PepperSnap", L"TranslateTargetLang", L"en", iniPath));
     int optWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"OptionsWindowHeight", 944, iniPath.c_str());
     optionsWindowHeight = std::clamp(optWinH, 320, 2160);
     int ckWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"CustomizeKeysWindowHeight", 620, iniPath.c_str());
@@ -464,6 +764,7 @@ struct OptionsDlgState {
     ImageFormat copyFmt = ImageFormat::PNG;
     int jpgQuality = 90;
     std::wstring naming;
+    std::wstring translateTargetLang;
     bool autoSaveCopy = true;
     bool alsoCopyFull = true;
     bool alsoSavePin = true;
@@ -565,6 +866,7 @@ struct OptionsDlgState {
     HWND hPenSmoothValLbl = nullptr;
     HWND hAutoUpdateChk = nullptr;
     HWND hComboUpdateInterval = nullptr;
+    HWND hComboTranslateLang = nullptr;
     HWND hCheckUpdateNowBtn = nullptr;
     HWND hCustomizeKeysBtn = nullptr;
     HWND hShortcutsInfoBtn = nullptr;
@@ -627,6 +929,7 @@ struct OptionsDlgState {
 #define IDC_OPT_RUN_ELEVATED_CHK   1032
 #define IDC_OPT_DISABLE_RIGHT_CLICK_CHK 1033
 #define IDC_OPT_DISABLE_MAGNIFIER_CHK   1034
+#define IDC_OPT_TRANSLATE_LANG          1035
 
 #define IDC_CK_BTN_BASE          2100
 #define IDC_CK_RESTORE_DEFAULTS  2201
@@ -2558,33 +2861,47 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE, 434, 39, 100, 28, hVp, (HMENU)IDC_OPT_FOLDER_DEFAULT, nullptr, nullptr);
             SendMessageW(hDeskDef, WM_SETFONT, (WPARAM)hFont, TRUE);
 
+            // Translate target for "Shift + click Search on web": a bold label and
+            // its dropdown on one line, like the Shortcut keys row.
+            HWND hLblTranslate = CreateWindowExW(0, L"STATIC", L"Translate to:",
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 78, 155, 22, hVp, nullptr, nullptr, nullptr);
+            SendMessageW(hLblTranslate, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
+
+            st->hComboTranslateLang = CreateWindowExW(0, L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 74, 175, 320, hVp, (HMENU)IDC_OPT_TRANSLATE_LANG, nullptr, nullptr);
+            SendMessageW(st->hComboTranslateLang, WM_SETFONT, (WPARAM)hFont, TRUE);
+            for (int i = 0; i < kTranslateLanguageCount; ++i) {
+                SendMessageW(st->hComboTranslateLang, CB_ADDSTRING, 0, (LPARAM)kTranslateLanguages[i].name);
+            }
+            SendMessageW(st->hComboTranslateLang, CB_SETCURSEL, (WPARAM)TranslateLangIndex(st->translateTargetLang), 0);
+
             // Save Format & JPEG Quality Slider
             HWND hLblFormats = CreateWindowExW(0, L"STATIC", L"Save format",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 80, 516, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 112, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblFormats, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             HWND hLblCopy = CreateWindowExW(0, L"STATIC", L"Copy format:",
-                WS_CHILD | WS_VISIBLE, 18, 108, 155, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 140, 155, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblCopy, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hComboCopy = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 104, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_COPY, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 136, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_COPY, nullptr, nullptr);
             SendMessageW(st->hComboCopy, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hLblReg = CreateWindowExW(0, L"STATIC", L"Custom area format:",
-                WS_CHILD | WS_VISIBLE, 18, 140, 155, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 172, 155, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblReg, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hComboRegion = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 136, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_REGION, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 168, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_REGION, nullptr, nullptr);
             SendMessageW(st->hComboRegion, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hLblFull = CreateWindowExW(0, L"STATIC", L"Instant fullscreen format:",
-                WS_CHILD | WS_VISIBLE, 18, 172, 155, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 204, 155, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblFull, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hComboFull = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 168, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_FULL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 176, 200, 175, 140, hVp, (HMENU)IDC_OPT_COMBO_FULL, nullptr, nullptr);
             SendMessageW(st->hComboFull, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             const wchar_t* fmtItems[4] = { L"JPEG (.jpg)", L"PNG (.png)", L"WebP (.webp)", L"BMP (.bmp)" };
@@ -2600,11 +2917,11 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             // JPEG Quality Slider (10% - 100%)
             std::wstring qText = L"JPEG quality: " + std::to_wstring(st->jpgQuality) + L"%";
             st->hQualityValLbl = CreateWindowExW(0, L"STATIC", qText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 206, 150, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 238, 150, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hQualityValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hQualitySlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 172, 202, 362, 32, hVp, (HMENU)IDC_OPT_QUALITY_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 172, 234, 362, 32, hVp, (HMENU)IDC_OPT_QUALITY_SLIDER, nullptr, nullptr);
             SendMessageW(st->hQualitySlider, TBM_SETRANGE, TRUE, MAKELONG(10, 100));
             SendMessageW(st->hQualitySlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hQualitySlider, TBM_SETPOS, TRUE, st->jpgQuality);
@@ -2612,49 +2929,49 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             // Timestamp Naming Pattern + Restore Default Button + Syntax Info (ⓘ) Button
             HWND hLblNaming = CreateWindowExW(0, L"STATIC",
                 L"Naming pattern:",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 244, 516, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 276, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblNaming, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hNamingEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st->naming.c_str(),
-                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 18, 270, 352, 26, hVp, (HMENU)IDC_OPT_NAMING_EDIT, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 18, 302, 352, 26, hVp, (HMENU)IDC_OPT_NAMING_EDIT, nullptr, nullptr);
             SendMessageW(st->hNamingEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hRestoreNaming = CreateWindowExW(0, L"BUTTON", L"Restore default",
-                WS_CHILD | WS_VISIBLE, 376, 269, 122, 28, hVp, (HMENU)IDC_OPT_NAMING_RESTORE, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 376, 301, 122, 28, hVp, (HMENU)IDC_OPT_NAMING_RESTORE, nullptr, nullptr);
             SendMessageW(hRestoreNaming, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             HWND hNamingSyntax = CreateWindowExW(0, L"BUTTON", L"\x24D8",
-                WS_CHILD | WS_VISIBLE, 504, 269, 30, 28, hVp, (HMENU)IDC_OPT_NAMING_SYNTAX, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 504, 301, 30, 28, hVp, (HMENU)IDC_OPT_NAMING_SYNTAX, nullptr, nullptr);
             SendMessageW(hNamingSyntax, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hPreviewLbl = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 302, 516, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 334, 516, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPreviewLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Shortcut keys: [Customize keys] + [Keyboard shortcuts and info] buttons
             HWND hLblShortcuts = CreateWindowExW(0, L"STATIC",
                 L"Shortcut keys:",
-                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 338, 108, 24, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 370, 108, 24, hVp, nullptr, nullptr, nullptr);
             SendMessageW(hLblShortcuts, WM_SETFONT, (WPARAM)hBoldFont, TRUE);
 
             st->hCustomizeKeysBtn = CreateWindowExW(0, L"BUTTON", L"Customize keys",
-                WS_CHILD | WS_VISIBLE, 130, 334, 136, 28, hVp, (HMENU)IDC_OPT_CUSTOMIZE_KEYS, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 130, 366, 136, 28, hVp, (HMENU)IDC_OPT_CUSTOMIZE_KEYS, nullptr, nullptr);
             SendMessageW(st->hCustomizeKeysBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hShortcutsInfoBtn = CreateWindowExW(0, L"BUTTON", L"Keyboard shortcuts and info",
-                WS_CHILD | WS_VISIBLE, 274, 334, 210, 28, hVp, (HMENU)IDC_OPT_SHORTCUTS_INFO, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 274, 366, 210, 28, hVp, (HMENU)IDC_OPT_SHORTCUTS_INFO, nullptr, nullptr);
             SendMessageW(st->hShortcutsInfoBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Toggles at Bottom of Option Window (below Shortcut keys row):
             // Check for updates (GitHub Releases)
             st->hAutoUpdateChk = CreateWindowExW(0, L"BUTTON",
                 L"Automatically check for updates (GitHub releases):",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 376, 310, 24, hVp, (HMENU)IDC_OPT_AUTOUPDATE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 408, 310, 24, hVp, (HMENU)IDC_OPT_AUTOUPDATE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoUpdateChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoUpdateChk, BM_SETCHECK, st->autoUpdateEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             st->hComboUpdateInterval = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 332, 374, 98, 160, hVp, (HMENU)IDC_OPT_UPDATE_INTERVAL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 332, 406, 98, 160, hVp, (HMENU)IDC_OPT_UPDATE_INTERVAL, nullptr, nullptr);
             SendMessageW(st->hComboUpdateInterval, WM_SETFONT, (WPARAM)hFont, TRUE);
             const wchar_t* intervalItems[5] = {
                 L"Every day",
@@ -2670,107 +2987,107 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             EnableWindow(st->hComboUpdateInterval, st->autoUpdateEnabled ? TRUE : FALSE);
 
             st->hCheckUpdateNowBtn = CreateWindowExW(0, L"BUTTON", L"Check now",
-                WS_CHILD | WS_VISIBLE, 436, 373, 98, 28, hVp, (HMENU)IDC_OPT_CHECK_UPDATE_NOW, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 436, 405, 98, 28, hVp, (HMENU)IDC_OPT_CHECK_UPDATE_NOW, nullptr, nullptr);
             SendMessageW(st->hCheckUpdateNowBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Non-Stacking Highlighter
             st->hNonStackingChk = CreateWindowExW(0, L"BUTTON",
                 L"Non-stacking highlighter (prevent overlapping highlighter strokes from darkening)",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 408, 516, 24, hVp, (HMENU)IDC_OPT_NONSTACK_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 440, 516, 24, hVp, (HMENU)IDC_OPT_NONSTACK_CHK, nullptr, nullptr);
             SendMessageW(st->hNonStackingChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hNonStackingChk, BM_SETCHECK, st->nonStackingHi ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Also save screenshot when copying custom area
             st->hAutoSaveChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save screenshot when copying custom area",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 436, 516, 24, hVp, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 468, 516, 24, hVp, (HMENU)IDC_OPT_AUTOSAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoSaveChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoSaveChk, BM_SETCHECK, st->autoSaveCopy ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Also copy instant fullscreen
             st->hCopyFullChk = CreateWindowExW(0, L"BUTTON",
                 L"Also copy instant fullscreen",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 464, 516, 24, hVp, (HMENU)IDC_OPT_NOCOPY_SAVE_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 496, 516, 24, hVp, (HMENU)IDC_OPT_NOCOPY_SAVE_CHK, nullptr, nullptr);
             SendMessageW(st->hCopyFullChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hCopyFullChk, BM_SETCHECK, st->alsoCopyFull ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Also save pinned screenshot
             st->hSavePinChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save pinned screenshot",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 492, 516, 24, hVp, (HMENU)IDC_OPT_SAVE_PIN_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 524, 516, 24, hVp, (HMENU)IDC_OPT_SAVE_PIN_CHK, nullptr, nullptr);
             SendMessageW(st->hSavePinChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hSavePinChk, BM_SETCHECK, st->alsoSavePin ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Also save copied text
             st->hSaveOcrChk = CreateWindowExW(0, L"BUTTON",
                 L"Also save copied text",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 520, 516, 24, hVp, (HMENU)IDC_OPT_SAVE_OCR_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 552, 516, 24, hVp, (HMENU)IDC_OPT_SAVE_OCR_CHK, nullptr, nullptr);
             SendMessageW(st->hSaveOcrChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hSaveOcrChk, BM_SETCHECK, st->alsoSaveOcr ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Keep cursor on screenshot
             st->hKeepCursorChk = CreateWindowExW(0, L"BUTTON",
                 L"Keep cursor on screenshot",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 548, 516, 24, hVp, (HMENU)IDC_OPT_KEEP_CURSOR_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 580, 516, 24, hVp, (HMENU)IDC_OPT_KEEP_CURSOR_CHK, nullptr, nullptr);
             SendMessageW(st->hKeepCursorChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hKeepCursorChk, BM_SETCHECK, st->keepCursor ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Auto-hide frame list
             st->hAutoHideFramesChk = CreateWindowExW(0, L"BUTTON",
                 L"Auto-hide frame list",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 576, 516, 24, hVp, (HMENU)IDC_OPT_AUTOHIDE_FRM_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 608, 516, 24, hVp, (HMENU)IDC_OPT_AUTOHIDE_FRM_CHK, nullptr, nullptr);
             SendMessageW(st->hAutoHideFramesChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hAutoHideFramesChk, BM_SETCHECK, st->autoHideFrames ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Put pinned image above edit window (above Enable pen and highlighter smoothing)
             st->hPinAboveEditChk = CreateWindowExW(0, L"BUTTON",
                 L"Put pinned image above edit window",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 604, 516, 24, hVp, (HMENU)IDC_OPT_PIN_ABOVE_EDIT_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 636, 516, 24, hVp, (HMENU)IDC_OPT_PIN_ABOVE_EDIT_CHK, nullptr, nullptr);
             SendMessageW(st->hPinAboveEditChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPinAboveEditChk, BM_SETCHECK, st->pinAboveEdit ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Keep edit window open after save and copy
             st->hKeepEditOpenChk = CreateWindowExW(0, L"BUTTON",
                 L"Keep edit window open after save and copy",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 632, 516, 24, hVp, (HMENU)IDC_OPT_KEEP_EDIT_OPEN_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 664, 516, 24, hVp, (HMENU)IDC_OPT_KEEP_EDIT_OPEN_CHK, nullptr, nullptr);
             SendMessageW(st->hKeepEditOpenChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hKeepEditOpenChk, BM_SETCHECK, st->keepEditOpen ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Run as administrator (enable if shortcut doesnt work or fails to capture)
             st->hRunElevatedChk = CreateWindowExW(0, L"BUTTON",
                 L"Run as administrator (enable if shortcut doesnt work or fails to capture)",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 660, 516, 24, hVp, (HMENU)IDC_OPT_RUN_ELEVATED_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 692, 516, 24, hVp, (HMENU)IDC_OPT_RUN_ELEVATED_CHK, nullptr, nullptr);
             SendMessageW(st->hRunElevatedChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hRunElevatedChk, BM_SETCHECK, st->runElevated ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Disable right-click integration
             st->hDisableRightClickChk = CreateWindowExW(0, L"BUTTON",
                 L"Disable right-click integration",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 688, 516, 24, hVp, (HMENU)IDC_OPT_DISABLE_RIGHT_CLICK_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 720, 516, 24, hVp, (HMENU)IDC_OPT_DISABLE_RIGHT_CLICK_CHK, nullptr, nullptr);
             SendMessageW(st->hDisableRightClickChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hDisableRightClickChk, BM_SETCHECK, st->disableRightClickIntegration ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Disable magnifier window
             st->hDisableMagnifierChk = CreateWindowExW(0, L"BUTTON",
                 L"Disable magnifier window",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 716, 516, 24, hVp, (HMENU)IDC_OPT_DISABLE_MAGNIFIER_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 748, 516, 24, hVp, (HMENU)IDC_OPT_DISABLE_MAGNIFIER_CHK, nullptr, nullptr);
             SendMessageW(st->hDisableMagnifierChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hDisableMagnifierChk, BM_SETCHECK, st->disableMagnifierWindow ? BST_CHECKED : BST_UNCHECKED, 0);
 
             // Enable pen and highlighter smoothing.
             st->hPenSmoothChk = CreateWindowExW(0, L"BUTTON",
                 L"Enable pen and highlighter smoothing.",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 744, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 776, 516, 24, hVp, (HMENU)IDC_OPT_PENSMOOTH_CHK, nullptr, nullptr);
             SendMessageW(st->hPenSmoothChk, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessageW(st->hPenSmoothChk, BM_SETCHECK, st->penSmoothEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
             std::wstring psText = FormatPenSmoothLabel(st->penSmoothEnabled, st->penSmoothStrength);
             st->hPenSmoothValLbl = CreateWindowExW(0, L"STATIC", psText.c_str(),
-                WS_CHILD | WS_VISIBLE, 18, 776, 224, 22, hVp, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 808, 224, 22, hVp, nullptr, nullptr, nullptr);
             SendMessageW(st->hPenSmoothValLbl, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->hPenSmoothSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 772, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, 244, 804, 290, 32, hVp, (HMENU)IDC_OPT_PENSMOOTH_SLIDER, nullptr, nullptr);
             SendMessageW(st->hPenSmoothSlider, TBM_SETRANGE, TRUE, MAKELONG(5, 100));
             SendMessageW(st->hPenSmoothSlider, TBM_SETTICFREQ, 10, 0);
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
@@ -2778,7 +3095,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             // Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 812, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 844, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->scrollControls.clear();
@@ -2811,7 +3128,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 839, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            st->scrollContentHeight = 856;
+            st->scrollContentHeight = 888;
             st->footerHeight = 56;
             st->lastFooterTop = -1;
             UpdateOptionsPreviewLabel(st);
@@ -3015,6 +3332,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->naming = PepperSnapDaemon::DEFAULT_NAMING_PATTERN;
                 SetWindowTextW(st->hNamingEdit, st->naming.c_str());
                 UpdateOptionsPreviewLabel(st);
+
+                st->translateTargetLang = L"en";
+                SendMessageW(st->hComboTranslateLang, CB_SETCURSEL, (WPARAM)TranslateLangIndex(st->translateTargetLang), 0);
 
                 st->hkRegion        = { MOD_CONTROL, VK_SNAPSHOT };
                 st->hkFull          = { MOD_SHIFT, VK_SNAPSHOT };
@@ -3224,6 +3544,9 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->autoUpdateEnabled = (SendMessageW(st->hAutoUpdateChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 int uSel = (int)SendMessageW(st->hComboUpdateInterval, CB_GETCURSEL, 0, 0);
                 if (uSel >= 0 && uSel <= 4) st->updateInterval = (UpdateCheckInterval)uSel;
+
+                int tSel = (int)SendMessageW(st->hComboTranslateLang, CB_GETCURSEL, 0, 0);
+                st->translateTargetLang = TranslateLangCodeAt(tSel);
                 st->confirmed = true;
                 g_RecordingHotkeySlot = 0;
                 DestroyWindow(hWnd);
@@ -3286,6 +3609,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.copyFmt = copyFormat;
     st.jpgQuality = jpegQuality;
     st.naming = namingPattern;
+    st.translateTargetLang = translateTargetLang;
     st.autoSaveCopy = autoSaveOnCopy;
     st.alsoCopyFull = alsoCopyFullscreen;
     st.alsoSavePin  = alsoSavePinned;
@@ -3347,7 +3671,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = 0;
-    const int totalOptClientH = 856 + 56;
+    const int totalOptClientH = 888 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
@@ -3391,7 +3715,8 @@ void PepperSnapDaemon::ShowOptionsModal() {
         if (msg.message == WM_MOUSEWHEEL && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
             bool comboDropped = (
                 (msg.hwnd == st.hComboRegion || msg.hwnd == st.hComboFull ||
-                 msg.hwnd == st.hComboCopy   || msg.hwnd == st.hComboUpdateInterval) &&
+                 msg.hwnd == st.hComboCopy   || msg.hwnd == st.hComboUpdateInterval ||
+                 msg.hwnd == st.hComboTranslateLang) &&
                 SendMessageW(msg.hwnd, CB_GETDROPPEDSTATE, 0, 0) != 0
             );
             if (!comboDropped) {
@@ -3419,6 +3744,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         copyFormat = st.copyFmt;
         jpegQuality = st.jpgQuality;
         namingPattern = st.naming;
+        translateTargetLang = st.translateTargetLang;
         autoSaveOnCopy = st.autoSaveCopy;
         alsoCopyFullscreen = st.alsoCopyFull;
         alsoSavePinned = st.alsoSavePin;

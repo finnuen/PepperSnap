@@ -3,8 +3,8 @@
 IDI_APPICON ICON "peppersnap.ico"
 
 1 VERSIONINFO
-FILEVERSION 4,1,12,0
-PRODUCTVERSION 4,1,12,0
+FILEVERSION 4,1,14,0
+PRODUCTVERSION 4,1,14,0
 FILEOS 0x40004L
 FILETYPE 0x1L
 BEGIN
@@ -14,11 +14,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "PepperSnap\0"
             VALUE "FileDescription", "PepperSnap\0"
-            VALUE "FileVersion", "4.1.12.0\0"
+            VALUE "FileVersion", "4.1.14.0\0"
             VALUE "InternalName", "PepperSnap\0"
-            VALUE "OriginalFilename", "PepperSnap_v4.1.12.exe\0"
+            VALUE "OriginalFilename", "PepperSnap_v4.1.14.exe\0"
             VALUE "ProductName", "PepperSnap\0"
-            VALUE "ProductVersion", "4.1.12.0\0"
+            VALUE "ProductVersion", "4.1.14.0\0"
         END
     END
     BLOCK "VarFileInfo"

@@ -76,7 +76,8 @@ Every shortcut can be changed in **Options → Customize keys**.
 - The text goes straight to your clipboard, and can optionally be saved as a `.txt` file.
 
 ### 🔍 Search by image
-- Copy any capture or pinned image and search it on Google Lens with the **Search on web** button in the toolbar (**Shift + click** the Copy button still works too).
+- Copy any capture or pinned image and search it on Google Lens with the **Search on web** button in the toolbar.
+- **Shift + click Search on web** translates the image instead, on Google Translate's image view. Pick the target language under Options; it starts out English. On a pinned image, **Shift + click Copy** takes every pinned image at once.
 
 ### 🖼️ Edit existing images
 - Right-click any image in Explorer for:
@@ -108,7 +109,7 @@ Every shortcut can be changed in **Options → Customize keys**.
 
 ## 🔒 Privacy
 
-PepperSnap runs entirely on your PC. The only network activity is an optional check for new releases on GitHub, which you can turn off in Options. Your screenshots are never uploaded anywhere. The "Search on web" feature simply opens Google Lens in your own browser.
+PepperSnap runs entirely on your PC. The only network activity is an optional check for new releases on GitHub, which you can turn off in Options. Your screenshots are never uploaded anywhere. The "Search on web" feature simply opens Google Lens in your own browser, and its Shift + click translate variant opens Google Translate the same way.
 
 ## 📄 License
 

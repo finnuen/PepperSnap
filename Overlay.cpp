@@ -2484,7 +2484,7 @@ void PepperSnapDaemon::BuildDockedHUD() {
         { DBTN_ACT_UNDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Undo",                     hkActUndo),    false },
         { DBTN_ACT_REDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Redo",                     hkActRedo),    false },
         { DBTN_ACT_CLEAR,    toolBtnW, L"", FormatLabelWithShortcut(L"Clear all annotations",    hkActClear),   false },
-        { DBTN_ACT_SEARCH_GOOGLE, toolBtnW, L"", FormatLabelWithShortcut(L"Search on web",       hkActSearchGoogle), false },
+        { DBTN_ACT_SEARCH_GOOGLE, toolBtnW, L"", FormatLabelWithShortcut(L"Search on web",       hkActSearchGoogle) + L"\nShift + click to translate", false },
         { DBTN_ACT_PIN,      toolBtnW, L"", FormatLabelWithShortcut(L"Pin on top",               hkActPin),     false },
         { DBTN_ACT_OCR,      toolBtnW, L"", FormatLabelWithShortcut(L"Extract text with OCR",    hkActOcr),     false },
         { DBTN_ACT_SAVE_AS,  toolBtnW, L"", FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkActSaveAs),  false },
@@ -2674,7 +2674,7 @@ void PepperSnapDaemon::Redo() {
     if (hOverlayWnd) InvalidateRect(hOverlayWnd, nullptr, FALSE);
 }
 
-void PepperSnapDaemon::ActionCopyAndClose(bool searchOnGoogle) {
+void PepperSnapDaemon::ActionCopyAndClose(WebOpenTarget webTarget) {
     Bitmap* bmp = RenderCroppedRegionBitmap();
     if (!bmp) return;
     int w = (int)bmp->GetWidth();
@@ -2692,7 +2692,7 @@ void PepperSnapDaemon::ActionCopyAndClose(bool searchOnGoogle) {
         }
     }
     delete bmp;
-    if (!searchOnGoogle && IsEditingOpenedImage() && keepEditWindowOpen) {
+    if (webTarget == WebOpenTarget::None && IsEditingOpenedImage() && keepEditWindowOpen) {
         SaveSettings();
         if (hOverlayWnd && IsWindow(hOverlayWnd)) {
             InvalidateRect(hOverlayWnd, nullptr, FALSE);
@@ -2700,7 +2700,13 @@ void PepperSnapDaemon::ActionCopyAndClose(bool searchOnGoogle) {
     } else {
         CloseRegionSnipOverlay();
     }
-    if (searchOnGoogle) {
+    if (webTarget == WebOpenTarget::Translate) {
+        OpenGoogleTranslateInBrowser(translateTargetLang);
+        ShowTrayToast(
+            L"Directing to Google Translate",
+            L"Image copied to clipboard, Press Ctrl + V once the page loaded"
+        );
+    } else if (webTarget == WebOpenTarget::Lens) {
         OpenGoogleLensInBrowser();
         ShowTrayToast(
             L"Directing to Google image search",
@@ -3719,14 +3725,19 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
         return;
     }
     switch (b.id) {
-        case DBTN_ACT_SEARCH_GOOGLE:
-            g_Daemon.ActionCopyAndClose(true);
-            return;
-        case DBTN_ACT_COPY: {
+        case DBTN_ACT_SEARCH_GOOGLE: {
+            // Shift turns the search into a translate: same clipboard handoff,
+            // different page. See OpenGoogleTranslateInBrowser.
             bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-            g_Daemon.ActionCopyAndClose(shiftHeld);
+            g_Daemon.ActionCopyAndClose(shiftHeld ? WebOpenTarget::Translate : WebOpenTarget::Lens);
             return;
         }
+        case DBTN_ACT_COPY:
+            // Shift does nothing here. The browser handoff belongs to the Search
+            // on web button (and its Shift + click translate) alone; the pinned
+            // toolbar's Copy is the one place Shift still changes what is copied.
+            g_Daemon.ActionCopyAndClose(WebOpenTarget::None);
+            return;
         case DBTN_ACT_SAVE:      g_Daemon.ActionQuickSaveAndClose(); return;
         case DBTN_ACT_SAVE_AS:   g_Daemon.ActionSaveAsAndClose(); return;
         case DBTN_ACT_PIN:       g_Daemon.ActionPinToDesktop(); return;
@@ -5990,7 +6001,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (g_Daemon.hasSelection &&
                     g_Daemon.dragMode != DragMode::CreatingSelection &&
                     g_Daemon.dragMode != DragMode::PendingOutsideSelection) {
-                    g_Daemon.ActionCopyAndClose(true);
+                    g_Daemon.ActionCopyAndClose(WebOpenTarget::Lens);
                 }
                 return 0;
             }
@@ -5998,7 +6009,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (g_Daemon.hasSelection &&
                     g_Daemon.dragMode != DragMode::CreatingSelection &&
                     g_Daemon.dragMode != DragMode::PendingOutsideSelection) {
-                    g_Daemon.ActionCopyAndClose(false);
+                    g_Daemon.ActionCopyAndClose(WebOpenTarget::None);
                 }
                 return 0;
             }
@@ -8710,9 +8721,21 @@ void PepperSnapDaemon::EditClipboardImage() {
 // Opening the page is what the README promises ("simply opens Google Lens in
 // your own browser"), and it needs none of that: the toast says the image is on
 // the clipboard, and one Ctrl+V finishes the job.
+//
+// Shift + click on the same button opens Translate instead of Lens. Both are
+// only opened; the clipboard handoff and the Ctrl+V are the user's either way.
 
 void PepperSnapDaemon::OpenGoogleLensInBrowser() {
     ShellExecuteW(nullptr, L"open", L"https://lens.google.com/", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void PepperSnapDaemon::OpenGoogleTranslateInBrowser(const std::wstring& targetLang) {
+    // "op=images" is the image-translation view -- the one with the upload panel
+    // instead of the two text boxes -- and "sl=auto" leaves the source language
+    // to Google. "tl" is the code picked in Options; it comes from the same
+    // table that fills that dropdown, so it is always one this URL accepts.
+    std::wstring url = L"https://translate.google.com/?sl=auto&tl=" + targetLang + L"&op=images";
+    ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 bool IsValidExistingImageFilePath(const std::wstring& rawPath, std::wstring* outResolvedPath) {
@@ -8797,7 +8820,7 @@ void PepperSnapDaemon::SearchImageFileOnGoogle(const std::wstring& filePath) {
     }
 }
 
-void PepperSnapDaemon::SearchClipboardImageOnGoogle() {
+void PepperSnapDaemon::SearchClipboardImageOnGoogle(bool translateToTarget) {
     if (hOverlayWnd && IsWindow(hOverlayWnd)) {
         if (!IsEditingOpenedImage()) {
             CloseRegionSnipOverlay();
@@ -8874,11 +8897,19 @@ void PepperSnapDaemon::SearchClipboardImageOnGoogle() {
         return;
     }
 
-    OpenGoogleLensInBrowser();
-    ShowTrayToast(
-        L"Directing to Google image search",
-        L"Image copied to clipboard, Press Ctrl + V once the page loaded"
-    );
+    if (translateToTarget) {
+        OpenGoogleTranslateInBrowser(translateTargetLang);
+        ShowTrayToast(
+            L"Directing to Google Translate",
+            L"Image copied to clipboard, Press Ctrl + V once the page loaded"
+        );
+    } else {
+        OpenGoogleLensInBrowser();
+        ShowTrayToast(
+            L"Directing to Google image search",
+            L"Image copied to clipboard, Press Ctrl + V once the page loaded"
+        );
+    }
 }
 
 
