@@ -9,13 +9,13 @@ One small portable `.exe`. No installer. No account. Nothing to configure before
 
 ## 🚀 Get started
 
-1. Download `PepperSnap.exe` from the [Releases](https://github.com/finnuen/PepperSnap/releases) page.
+1. Grab the latest `PepperSnap_v4.x.x.exe` from the [Releases](https://github.com/finnuen/PepperSnap/releases) page — the file name carries its version.
 2. Run it. PepperSnap appears in your system tray.
 3. Press **Ctrl + Print Screen** (or left-click the tray icon) and start capturing.
 
 > 💡 Right-click the tray icon and open **Keyboard shortcuts and info**. It's a searchable guide to everything PepperSnap can do, and it's full of tricks you'd otherwise miss.
 
-> 🔐 **Admin permission.** PepperSnap asks for admin permission when it starts, so that shortcuts and capture keep working while an app running as administrator has focus — without it, a shortcut pressed over such a window silently does nothing. Windows shows a UAC prompt on launch; nothing gets installed and no system settings are changed. If you don't have admin permission, or you decline the prompt, PepperSnap simply runs without it. To avoid the prompt altogether, start it as `PepperSnap.exe --noelevate`, or set `RunElevated=0` in `settings.ini`.
+> 🔐 **Admin permission.** PepperSnap runs with admin permission so shortcuts and capture keep working while an app running as administrator has focus — without it, a shortcut pressed over such a window silently does nothing. Windows therefore asks for that permission, with the usual UAC prompt, every time PepperSnap starts. Nothing is installed to save you that prompt: no scheduled task, no service, and no system setting beyond the per-user startup entry listed under features. If you decline the prompt, or your account has no admin permission, PepperSnap simply runs without it. One launch never prompts: if PepperSnap is already running, starting it again — or using its right-click entries — just hands the request to the copy already in the tray. To never run elevated at all, start it with the `--noelevate` switch or set `RunElevated=0` in `settings.ini`.
 
 ---
 
@@ -49,16 +49,16 @@ Every shortcut can be changed in **Options → Customize keys**.
 - **Non-rectangular captures.** Draw circles and ellipses (hold **Alt**), or drag corners to reshape the area into a quadrilateral or triangle.
 - **Aspect ratio shortcuts.** Lock to 1:1, 16:9, 9:16, 1:2 or 2:1 while dragging, or type any width, height or ratio you like.
 - **Color picker.** Hold **Shift** and click to copy the hex code of any pixel on screen.
-- **Optional cursor capture** if you want the mouse pointer in your screenshots. Use the arrow keys to nudge by one pixel.
+- **Optional cursor capture** if you want the mouse pointer in your screenshots.
 
 ### ✏️ Annotate right on the screen
 - **Pen** and **Stabilo highlighter**, with optional smoothing so your strokes look clean.
 - **Lines, arrows, rectangles and ellipses.** Hold **Shift** for straight 15° angles and perfect squares or circles.
 - **Numbered step arrows** for tutorials and bug reports, with a one-click counter reset.
-- **Text boxes** you type directly onto the image.
+- **Text boxes** you type directly onto the image, in Calibri Light with an automatic glyph outline so the words read over any background.
 - **Mosaic / pixelate** (square or circle) to hide sensitive information.
 - **Select mode.** Move, resize, recolor or delete any annotation, individually or several at once.
-- Colour swatches, S / M / L / XL sizes and an exact pixel size box.
+- A one-click red swatch, S / M / L / XL sizes and an exact pixel size box.
 - Full **undo / redo**.
 
 ![The annotation editor: selection handles, live pixel dimensions, and the drawing toolbar](assets/editor.png)
@@ -76,7 +76,7 @@ Every shortcut can be changed in **Options → Customize keys**.
 - The text goes straight to your clipboard, and can optionally be saved as a `.txt` file.
 
 ### 🔍 Search by image
-- Copy any capture or pinned image and search for it on Google Lens with one hotkey (or **Shift + click** the Copy button).
+- Copy any capture or pinned image and search it on Google Lens with the **Search on web** button in the toolbar (**Shift + click** the Copy button still works too).
 
 ### 🖼️ Edit existing images
 - Right-click any image in Explorer for:
@@ -94,7 +94,7 @@ Every shortcut can be changed in **Options → Customize keys**.
 
 ### ⚙️ Made to fit your workflow
 - **Rebind any shortcut**: global hotkeys, drawing tools, editor actions and pinned-image controls.
-- **Launch at Windows startup** (optional).
+- **Launch at Windows startup** (optional) — starts it in the tray when you log on. With admin permission on, logging on shows the UAC prompt.
 - **Automatic update checks** (daily to monthly, or off) through GitHub releases.
 - **Restore everything to default** at any time.
 - Your settings live in a plain `settings.ini` file in `%appdata%\PepperSnap`, so they're easy to back up or move to another PC.
@@ -108,11 +108,11 @@ Every shortcut can be changed in **Options → Customize keys**.
 
 ## 🔒 Privacy
 
-PepperSnap runs entirely on your PC. The only network activity is an optional check for new releases on GitHub, which you can turn off in Options. Your screenshots are never uploaded anywhere. The "Search image" feature simply opens Google Lens in your own browser.
+PepperSnap runs entirely on your PC. The only network activity is an optional check for new releases on GitHub, which you can turn off in Options. Your screenshots are never uploaded anywhere. The "Search on web" feature simply opens Google Lens in your own browser.
 
 ## 📄 License
 
-[MIT](LICENSE) — do whatever you like with it.
+[Apache License 2.0](LICENSE) — do whatever you like with it.
 
 ---
 

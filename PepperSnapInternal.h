@@ -26,13 +26,13 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.0.0";
+    static constexpr const wchar_t* APP_VERSION = L"4.1.10";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
     std::wstring saveFolder;
-    std::wstring namingPattern = L"PepperSnap_{YYYY}-{MM}-{DD}_{HH}-{mm}-{ss}";
-    static constexpr const wchar_t* DEFAULT_NAMING_PATTERN = L"PepperSnap_{YYYY}-{MM}-{DD}_{HH}-{mm}-{ss}";
+    std::wstring namingPattern = L"PepperSnap_{N}";
+    static constexpr const wchar_t* DEFAULT_NAMING_PATTERN = L"PepperSnap_{N}";
     ImageFormat regionFormat = ImageFormat::PNG;
     ImageFormat fullscreenFormat = ImageFormat::JPEG;
     ImageFormat copyFormat = ImageFormat::PNG;
@@ -61,7 +61,7 @@ public:
     int optionsWindowHeight = 944;
     int customizeKeysWindowHeight = 620;
     int shortcutsWindowWidth = 900;
-    int shortcutsWindowHeight = 620;
+    int shortcutsWindowHeight = 781;
     int namingSyntaxWindowHeight = 760;
     bool autoCheckUpdates = true;
     bool autoUpdatePromptShown = true;
@@ -80,47 +80,48 @@ public:
     HotkeyBinding hkSearchGoogle{ MOD_ALT, VK_SNAPSHOT };
 
     // Custom Area Tool Shortcut Bindings
-    HotkeyBinding hkToolSelect{ 0, 'V' };
-    HotkeyBinding hkToolPen{ 0, 'P' };
-    HotkeyBinding hkToolStabilo{ 0, 'H' };
-    HotkeyBinding hkToolLine{ 0, 'L' };
-    HotkeyBinding hkToolArrow{ 0, 'A' };
-    HotkeyBinding hkToolNumber{ 0, 'N' };
+    // Unbound out of the box: single letters clash with in-place text editing
+    // and with the tools' own modifier behaviour, so they are opt-in.
+    HotkeyBinding hkToolSelect{ 0, 0 };
+    HotkeyBinding hkToolPen{ 0, 0 };
+    HotkeyBinding hkToolStabilo{ 0, 0 };
+    HotkeyBinding hkToolLine{ 0, 0 };
+    HotkeyBinding hkToolArrow{ 0, 0 };
+    HotkeyBinding hkToolNumber{ 0, 0 };
     HotkeyBinding hkToolResetNum{ 0, 0 };
-    HotkeyBinding hkToolRect{ 0, 'R' };
-    HotkeyBinding hkToolEllipse{ 0, 'E' };
-    HotkeyBinding hkToolText{ 0, 'T' };
-    HotkeyBinding hkToolMosaicSq{ 0, 'X' };
-    HotkeyBinding hkToolMosaicCir{ 0, 'M' };
+    HotkeyBinding hkToolRect{ 0, 0 };
+    HotkeyBinding hkToolEllipse{ 0, 0 };
+    HotkeyBinding hkToolText{ 0, 0 };
+    HotkeyBinding hkToolMosaicSq{ 0, 0 };
+    HotkeyBinding hkToolMosaicCir{ 0, 0 };
 
     // Custom Area Toolbar Action Shortcut Bindings
     HotkeyBinding hkActUndo{ MOD_CONTROL, 'Z' };
     HotkeyBinding hkActRedo{ MOD_CONTROL, 'Y' };
-    HotkeyBinding hkActClear{ 0, 0 };
-    HotkeyBinding hkActOptions{ 0, 0 };
-    HotkeyBinding hkActPin{ 0, 'F' };
-    HotkeyBinding hkActOcr{ 0, 'O' };
+    HotkeyBinding hkActClear{ MOD_CONTROL, 'D' };
+    HotkeyBinding hkActPin{ 0, 0 };
+    HotkeyBinding hkActOcr{ 0, 0 };
     HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
-    HotkeyBinding hkActSearchGoogle{ MOD_SHIFT, 'C' };
+    HotkeyBinding hkActSearchGoogle{ 0, 0 };
 
     // Multi-Frame GIF / WebP Editor Shortcut Bindings
     HotkeyBinding hkFramePlayPause{ 0, VK_SPACE };
     HotkeyBinding hkFrameToggleStrip{ 0, 0 };
 
     // Pinned Image Toolbar Shortcut Bindings
-    HotkeyBinding hkPinZoomOut{ 0, VK_OEM_MINUS };
-    HotkeyBinding hkPinZoomIn{ 0, VK_OEM_PLUS };
-    HotkeyBinding hkPinZoomReset{ 0, '0' };
-    HotkeyBinding hkPinPosReset{ MOD_CONTROL, '0' };
-    HotkeyBinding hkPinOutline{ 0, 'O' };
-    HotkeyBinding hkPinHideToolbar{ 0, 'H' };
-    HotkeyBinding hkPinSmooth{ 0, 'S' };
-    HotkeyBinding hkPinSaveAs{ 0, 0 };
-    HotkeyBinding hkPinSave{ 0, 0 };
+    HotkeyBinding hkPinZoomOut{ 0, 0 };
+    HotkeyBinding hkPinZoomIn{ 0, 0 };
+    HotkeyBinding hkPinZoomReset{ 0, 0 };
+    HotkeyBinding hkPinPosReset{ 0, 0 };
+    HotkeyBinding hkPinOutline{ 0, 0 };
+    HotkeyBinding hkPinHideToolbar{ 0, 0 };
+    HotkeyBinding hkPinSmooth{ 0, 0 };
+    HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
+    HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
-    HotkeyBinding hkPinSearchGoogle{ MOD_SHIFT, 'C' };
+    HotkeyBinding hkPinSearchGoogle{ 0, 0 };
     HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
 
     // Previously Selected Custom Window Size & Position
@@ -599,6 +600,7 @@ public:
     }
     Color activeColor = Color(255, 239, 68, 68);
     float activeStroke = 4.0f;
+
     int nextStepNum = 1;
     int nextAnnotationId = 1;
     int selectedAnnotationId = -1;
@@ -792,7 +794,6 @@ public:
     void LoadSettings();
     void SaveSettings() const;
     static std::wstring GetFormatExtension(ImageFormat fmt);
-    static const wchar_t* GetFormatLabel(ImageFormat fmt);
     HICON CreateCustomTrayIcon();
     void InitCustomCursors();
     void DestroyCustomCursors();
@@ -803,10 +804,14 @@ public:
     void RemoveTrayIcon();
     std::wstring FormatFilename(int seqNum) const;
     static std::wstring FormatFilenameWithPattern(const std::wstring& pattern, int seqNum);
+    std::wstring NextFreeCaptureStem(const std::wstring& extension);
     bool IsRunAtStartupEnabled() const;
     void ToggleRunAtStartup();
     void ApplyGlobalHotkeys();
     static std::wstring FormatHotkeyString(const HotkeyBinding& hk);
+    // GetMessageW for the windows that run their own modal message loop; a
+    // WM_QUIT is handed back to the thread queue instead of being swallowed.
+    static BOOL GetMessageKeepQuit(MSG* msg);
     static void RegisterImageContextMenu();
     static void UnregisterImageContextMenu();
 
@@ -842,7 +847,6 @@ public:
     void SearchClipboardImageOnGoogle();
     void SearchImageFileOnGoogle(const std::wstring& filePath);
     static void LaunchGoogleImagesAndPasteClipboard();
-    void OpenImageFileToPinOnTop(const std::wstring& filePath);
     void OpenImageFilesToPinOnTop(const std::vector<std::wstring>& filePaths);
     HWND CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale = 1.0f, std::vector<Bitmap*> animFrames = {}, std::vector<int> animDelaysMs = {}, bool initiallySelected = false);
 
@@ -856,7 +860,6 @@ public:
     bool CopyBitmapToClipboard(Bitmap* bmp);
     bool CopyMultipleBitmapsToClipboard(const std::vector<Bitmap*>& bmps);
     bool SaveBitmapToPath(Bitmap* bmp, const std::wstring& path);
-    static bool SaveBitmapAsWebPViaWIC(Bitmap* bmp, const std::wstring& path, int quality);
     static bool SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path);
     static bool SaveBitmapAsMetadataFreeBMP(Bitmap* bmp, const std::wstring& path);
     static bool WriteMetadataFreeJPEG(IStream* stream, const std::wstring& path);
@@ -896,7 +899,7 @@ public:
     static void DrawVectorAnnotation(Graphics& g, const Annotation& ann, int offsetX, int offsetY, bool isSelected, bool isEditingCaret, bool forceOpaqueHighlighter = false);
     static void RenderHighlighterLayer(Graphics& destG, int regionX, int regionY, int regionW, int regionH, const std::vector<Annotation>& anns, const Annotation* draft, bool nonStacking);
     static void DrawDockButtonIcon(Graphics& g, const DockButton& b, const RectF& rf);
-    static void DrawHoverBubbleTooltip(Graphics& g, const DockButton& b, int screenW, int screenH);
+    static void DrawHoverBubbleTooltip(Graphics& g, const DockButton& b, int screenW);
     void GetDimensionPillAnchor(bool& outRightAlign, bool& outBottomAlign) const;
     void BuildDockedHUD();
     DragMode HitTestSelectionHandles(int mx, int my) const;

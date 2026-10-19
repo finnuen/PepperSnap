@@ -38,6 +38,34 @@ void RegEnumSubKeyNamesDynamic(HKEY hKey, std::vector<std::wstring>& outNames) {
 }
 
 
+// ---------------------------------------------------------------------------
+// Launch at Windows startup
+//
+// This is a plain HKCU\...\Run entry, and it stays that way on purpose.
+//
+// Windows starts Run entries with the user's filtered (non-elevated) token, so
+// a Run entry followed by the usual self-elevation means a UAC prompt at logon.
+// That is annoying, and the tempting fixes - a Task Scheduler logon task with
+// RunLevel=HighestAvailable, and/or the same task driven on demand via
+// `schtasks /Run` so a manual launch never asks either - DO NOT WORK here. Both
+// were built and shipped into a test build, and Microsoft Defender flagged the
+// resulting executable:
+//
+//     Trojan:Win32/Bearfoos.A!ml     (Alert level: Severe)
+//
+// The detection was behavioural, not merely string-based: Defender attached it
+// to the exe *and* to C:\Windows\System32\Tasks\PepperSnap plus its
+// TaskCache registry keys - that is, to the act of registering an elevated task
+// from an unsigned portable binary. That is exactly the pattern this family is
+// defined by, so no renaming or restructuring makes it safe: it would only be
+// evasion, and it would still be caught. Do not reintroduce a scheduled task, a
+// service, or an IFEO / silent-exit trick for this. Live with the prompt.
+//
+// The one legitimate reduction is in PepperSnap.cpp: when a daemon is already
+// running elevated, a second launch hands its request to that instance instead
+// of re-launching, so no elevation is requested at all.
+// ---------------------------------------------------------------------------
+
 bool PepperSnapDaemon::IsRunAtStartupEnabled() const {
     ScopedHKey hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, hKey.put()) != ERROR_SUCCESS) {
@@ -204,11 +232,8 @@ void PepperSnapDaemon::UnregisterImageContextMenu() {
         }
     }
 
-    ScopedHKey hRunKey;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ | KEY_WRITE, hRunKey.put()) == ERROR_SUCCESS) {
-        std::wstring runVal;
-        if (RegQueryStringValueDynamic(hRunKey, nullptr, L"PepperSnap", runVal) && wcsstr(runVal.c_str(), exePath.c_str()) != nullptr) {
-            RegDeleteValueW(hRunKey, L"PepperSnap");
-        }
-    }
+    // Deliberately does NOT touch the HKCU\...\Run entry. This runs when the
+    // user ticks "Disable right-click integration", and deleting the startup
+    // value here silently switched "Launch PepperSnap at Windows startup" off
+    // as well - a separate setting the user never asked to change.
 }

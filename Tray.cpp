@@ -52,6 +52,25 @@ void PepperSnapDaemon::InitTrayIcon() {
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
+// GetMessageW for the windows that run their own message loop while they are
+// open: Options, Customize keys, the naming-syntax window, the shortcuts window
+// and the clipboard-history prompt. It behaves identically, except that a
+// retrieved WM_QUIT is posted straight back to the thread queue.
+//
+// The tray's "Exit" posts WM_QUIT from a menu handler, and when one of those
+// windows is open it is that window's loop which is pumping, so it is that loop
+// which would consume the quit. The outer loop in PepperSnap.cpp would then
+// block for ever: the app gone from the tray, its window still on screen, and no
+// way out but Task Manager. Handing the message back lets every nested loop
+// unwind and still leaves the outermost one something to end on.
+BOOL PepperSnapDaemon::GetMessageKeepQuit(MSG* msg) {
+    BOOL got = GetMessageW(msg, nullptr, 0, 0);
+    if (got == 0) {
+        PostQuitMessage((int)msg->wParam);
+    }
+    return got;
+}
+
 void PepperSnapDaemon::ShowTrayToast(const std::wstring& title, const std::wstring& message, const std::wstring& clickFolder) {
     lastBalloonClickFolder = clickFolder;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;

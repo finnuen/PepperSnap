@@ -3,8 +3,9 @@
     PepperSnap build script - the only one in this repository.
 
 .DESCRIPTION
-    Builds build\PepperSnap.exe as a single self-contained Win32 executable,
-    using Zig 0.13.0 as the C++17 cross-compiler for x86_64-windows-gnu.
+    Builds build\PepperSnap_v<version>.exe as a single self-contained Win32
+    executable, using Zig 0.13.0 as the C++17 cross-compiler for
+    x86_64-windows-gnu.
 
     WHY ZIG 0.13.0 SPECIFICALLY
         The flags below are 0.13-era. Newer Zig releases (winget currently
@@ -21,19 +22,26 @@
         import table afterwards to catch exactly that regression.
 
     VERSIONING
-        PRODUCTVERSION is the release version and should match the git tag
-        (e.g. 4.0.0.0 for tag 4.0.0).
-        FILEVERSION's 4th field is a build number. It is set automatically
-        from the git commit count, so it needs no discipline and a given
-        commit always produces the same number. A build made outside a git
-        checkout leaves the existing number alone.
+        One visible version, MAJOR.MINOR.PATCH, kept in sync in three places:
+        FILEVERSION / PRODUCTVERSION and their strings in peppersnap.rc, and
+        APP_VERSION in PepperSnapInternal.h. The exe is named after it, so the
+        release asset, the git tag and the version the app reports all agree.
+
+        PATCH is the build counter and advances by one on every build, which
+        makes each build its own release. The fourth field is always 0 - it
+        used to carry the git commit count.
 
 .PARAMETER Zig
     Directory containing zig.exe, or the path to zig.exe itself.
     Defaults to $env:ZIG_HOME, then to C:\Users\kuuha\zig-0.13.0.
 
+.PARAMETER Version
+    Build this version instead of incrementing, e.g. 4.1.1. Use it for the
+    first build of a new minor or major series.
+
 .PARAMETER NoVersionBump
-    Skip the FILEVERSION build-number update.
+    Build the version already recorded in peppersnap.rc, unchanged. This is
+    what a repeat build of the same source uses, so the number cannot creep.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\build.ps1
@@ -41,6 +49,7 @@
 [CmdletBinding()]
 param(
     [string] $Zig,
+    [string] $Version,
     [switch] $NoVersionBump
 )
 
@@ -51,8 +60,8 @@ Set-Location $root
 
 $RequiredZig   = '0.13.0'
 $RcFile        = Join-Path $root 'peppersnap.rc'
+$HeaderFile    = Join-Path $root 'PepperSnapInternal.h'
 $OutDir        = Join-Path $root 'build'
-$OutExe        = Join-Path $OutDir 'PepperSnap.exe'
 $OutRes        = Join-Path $OutDir 'peppersnap.res'
 
 $Sources = @(
@@ -61,6 +70,7 @@ $Sources = @(
     'Registry.cpp'
     'InputHook.cpp'
     'Capture.cpp'
+    'WebPEncode.cpp'
     'Overlay.cpp'
     'Pinned.cpp'
     'Ocr.cpp'
@@ -112,59 +122,79 @@ if ($zigVersion -ne $RequiredZig) {
 }
 Write-Ok "zig $zigVersion  ($zigExe)"
 
-# ------------------------------------------------------------- version bump
-function Set-BuildNumber {
-    if ($NoVersionBump) { Write-Warn2 'version bump skipped (-NoVersionBump)'; return $null }
-
-    $inside = $false
-    try { & git rev-parse --is-inside-work-tree *> $null; $inside = ($LASTEXITCODE -eq 0) } catch { $inside = $false }
-    if (-not $inside) {
-        Write-Warn2 'not a git checkout - leaving FILEVERSION build number unchanged'
-        return $null
-    }
-
-    # The 4th field is the ordinal of the commit that will contain this build.
-    $count = [int]((& git rev-list --count HEAD).Trim())
-    $buildNumber = $count + 1
-
-    $text = [System.IO.File]::ReadAllText($RcFile)
-    $m = [regex]::Match($text, 'FILEVERSION\s+(\d+),(\d+),(\d+),(\d+)')
+# ------------------------------------------------------------- version stamp
+function Set-Version {
+    $rc = [System.IO.File]::ReadAllText($RcFile)
+    $m = [regex]::Match($rc, 'FILEVERSION\s+(\d+),(\d+),(\d+),(\d+)')
     if (-not $m.Success) { throw "Could not find FILEVERSION in $RcFile" }
-    $major = $m.Groups[1].Value; $minor = $m.Groups[2].Value; $patch = $m.Groups[3].Value
 
-    $expectedNow = "$major.$minor.$patch.$buildNumber"
-    $numericOk = ($m.Groups[4].Value -eq [string]$buildNumber)
-    $stringOk  = ($text -match ('"FileVersion",\s*"' + [regex]::Escape($expectedNow)))
-    if ($numericOk -and $stringOk) {
-        Write-Ok "FILEVERSION already $major,$minor,$patch,$buildNumber"
-        return $buildNumber
+    $major = [int]$m.Groups[1].Value
+    $minor = [int]$m.Groups[2].Value
+    $patch = [int]$m.Groups[3].Value
+
+    if ($Version) {
+        if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+            throw "-Version must look like 4.1.1 (got '$Version')"
+        }
+        $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
+        Write-Step "version set explicitly to $major.$minor.$patch"
+    } elseif ($NoVersionBump) {
+        Write-Warn2 "version left at $major.$minor.$patch (-NoVersionBump)"
+    } else {
+        $patch++
+        Write-Step "version bumped to $major.$minor.$patch"
     }
 
-    $text = $text -replace 'FILEVERSION\s+\d+,\d+,\d+,\d+', "FILEVERSION $major,$minor,$patch,$buildNumber"
-    # The resource script writes these with a trailing escape ("4.0.0.5\0"), so match
-    # the dotted version without requiring a closing quote straight after it.
-    $text = $text -replace '("FileVersion",\s*")\d+(\.\d+){3}', "`${1}$major.$minor.$patch.$buildNumber"
+    $dotted  = "$major.$minor.$patch"
+    $full    = "$dotted.0"
+    $exeName = "PepperSnap_v$dotted.exe"
 
-    # Guard: never let a half-applied rewrite through again.
-    $expected = "$major.$minor.$patch.$buildNumber"
-    if ($text -notmatch ('FILEVERSION\s+' + [regex]::Escape("$major,$minor,$patch,$buildNumber"))) {
-        throw "version rewrite failed: FILEVERSION does not read $expected in $RcFile"
-    }
-    if ($text -notmatch ('"FileVersion",\s*"' + [regex]::Escape($expected))) {
-        throw "version rewrite failed: the FileVersion string does not read $expected in $RcFile"
-    }
+    $rc = $rc -replace 'FILEVERSION\s+\d+,\d+,\d+,\d+',       "FILEVERSION $major,$minor,$patch,0"
+    $rc = $rc -replace 'PRODUCTVERSION\s+\d+,\d+,\d+,\d+',    "PRODUCTVERSION $major,$minor,$patch,0"
+    # The resource script writes these with a trailing escape ("4.1.1.0\0"), so the
+    # match stops at the dotted version rather than requiring a closing quote after it.
+    $rc = $rc -replace '("FileVersion",\s*")\d+(\.\d+){3}',    "`${1}$full"
+    $rc = $rc -replace '("ProductVersion",\s*")\d+(\.\d+){3}', "`${1}$full"
+    # OriginalFilename is what installers and scanners read back, so it has to be
+    # the name the file actually ships under, not a stale constant.
+    $rc = $rc -replace '("OriginalFilename",\s*")[^"\\]+',    "`${1}$exeName"
 
-    [System.IO.File]::WriteAllText($RcFile, $text, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Ok "FILEVERSION -> $major,$minor,$patch,$buildNumber  (file version $expected)"
-    return $buildNumber
+    # Never let a half-applied rewrite through again: every field is checked by name.
+    $checks = @(
+        @{ Needle = "FILEVERSION $major,$minor,$patch,0";    What = 'FILEVERSION' },
+        @{ Needle = "PRODUCTVERSION $major,$minor,$patch,0"; What = 'PRODUCTVERSION' },
+        @{ Needle = '"FileVersion", "'    + $full;           What = 'FileVersion string' },
+        @{ Needle = '"ProductVersion", "' + $full;           What = 'ProductVersion string' },
+        @{ Needle = '"OriginalFilename", "' + $exeName;      What = 'OriginalFilename' }
+    )
+    foreach ($c in $checks) {
+        if ($rc -notmatch [regex]::Escape($c.Needle)) {
+            throw "version rewrite failed: $($c.What) does not read '$($c.Needle)' in peppersnap.rc"
+        }
+    }
+    [System.IO.File]::WriteAllText($RcFile, $rc, (New-Object System.Text.UTF8Encoding($false)))
+
+    # APP_VERSION is what the tray, the About box and the update check report.
+    $hdr = [System.IO.File]::ReadAllText($HeaderFile)
+    $hdr = $hdr -replace '(APP_VERSION\s*=\s*L")\d+(\.\d+){2}"', "`${1}$dotted`""
+    if ($hdr -notmatch ('APP_VERSION\s*=\s*L"' + [regex]::Escape($dotted) + '"')) {
+        throw "version rewrite failed: APP_VERSION does not read $dotted in PepperSnapInternal.h"
+    }
+    [System.IO.File]::WriteAllText($HeaderFile, $hdr, (New-Object System.Text.UTF8Encoding($false)))
+
+    Write-Ok "version $dotted  ->  FILEVERSION $major,$minor,$patch,0, APP_VERSION, $exeName"
+    return $dotted
 }
 
 # ---------------------------------------------------------------- compile
-Write-Step 'compiling resources'
 if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
 
-$buildNumber = Set-BuildNumber
+# Stamp the version before the resources are compiled, so the icon-less .res
+# carries it and the output file is named after it.
+$version = Set-Version
+$OutExe  = Join-Path $OutDir "PepperSnap_v$version.exe"
 
+Write-Step 'compiling resources'
 & $zigExe rc -- peppersnap.rc $OutRes
 if ($LASTEXITCODE -ne 0) { throw "resource compilation failed (exit $LASTEXITCODE)" }
 Write-Ok "peppersnap.res  ($((Get-Item $OutRes).Length) bytes)"
@@ -187,7 +217,7 @@ if (-not (Test-Path -LiteralPath $OutExe)) { throw "compiler reported success bu
 
 # ---------------------------------------------------------------- verify
 $sizeBytes = (Get-Item $OutExe).Length
-Write-Ok ("PepperSnap.exe  {0:N0} bytes ({1:N2} MiB)" -f $sizeBytes, ($sizeBytes / 1MB))
+Write-Ok ("{0}  {1:N0} bytes ({2:N2} MiB)" -f (Split-Path -Leaf $OutExe), $sizeBytes, ($sizeBytes / 1MB))
 
 Write-Step 'checking import table for runtime dependencies'
 $bytes = [System.IO.File]::ReadAllBytes($OutExe)

@@ -142,7 +142,6 @@ void PepperSnapDaemon::SaveSettings() const {
     writeHk(L"HkActUndoMod",       L"HkActUndoVk",       hkActUndo);
     writeHk(L"HkActRedoMod",       L"HkActRedoVk",       hkActRedo);
     writeHk(L"HkActClearMod",      L"HkActClearVk",      hkActClear);
-    writeHk(L"HkActOptionsMod",    L"HkActOptionsVk",    hkActOptions);
     writeHk(L"HkActPinMod",        L"HkActPinVk",        hkActPin);
     writeHk(L"HkActOcrMod",        L"HkActOcrVk",        hkActOcr);
     writeHk(L"HkActSaveAsMod",     L"HkActSaveAsVk",     hkActSaveAs);
@@ -240,7 +239,7 @@ void PepperSnapDaemon::LoadSettings() {
     customizeKeysWindowHeight = std::clamp(ckWinH, 280, 2160);
     int scWinW = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowWidth", 900, iniPath.c_str());
     shortcutsWindowWidth = std::clamp(scWinW, 680, 3840);
-    int scWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowHeight", 620, iniPath.c_str());
+    int scWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"ShortcutsWindowHeight", 781, iniPath.c_str());
     shortcutsWindowHeight = std::clamp(scWinH, 260, 2160);
     int nsWinH = (int)GetPrivateProfileIntW(L"PepperSnap", L"NamingSyntaxWindowHeight", 760, iniPath.c_str());
     namingSyntaxWindowHeight = std::clamp(nsWinH, 260, 2160);
@@ -292,41 +291,40 @@ void PepperSnapDaemon::LoadSettings() {
     readHk(L"HkPinClipboardMod",  L"HkPinClipboardVk",  hkPinClipboard,  MOD_ALT | MOD_SHIFT,     VK_SNAPSHOT);
     readHk(L"HkEditClipboardMod", L"HkEditClipboardVk", hkEditClipboard, MOD_CONTROL | MOD_ALT, VK_SNAPSHOT);
     readHk(L"HkSearchGoogleMod",  L"HkSearchGoogleVk",  hkSearchGoogle,  MOD_ALT,                 VK_SNAPSHOT);
-    readHk(L"HkToolSelectMod",    L"HkToolSelectVk",    hkToolSelect,    0,                       'V');
-    readHk(L"HkToolPenMod",       L"HkToolPenVk",       hkToolPen,       0,                       'P');
-    readHk(L"HkToolStabiloMod",   L"HkToolStabiloVk",   hkToolStabilo,   0,                       'H');
-    readHk(L"HkToolLineMod",      L"HkToolLineVk",      hkToolLine,      0,                       'L');
-    readHk(L"HkToolArrowMod",     L"HkToolArrowVk",     hkToolArrow,     0,                       'A');
-    readHk(L"HkToolNumberMod",    L"HkToolNumberVk",    hkToolNumber,    0,                       'N');
+    readHk(L"HkToolSelectMod",    L"HkToolSelectVk",    hkToolSelect,    0,                       0);
+    readHk(L"HkToolPenMod",       L"HkToolPenVk",       hkToolPen,       0,                       0);
+    readHk(L"HkToolStabiloMod",   L"HkToolStabiloVk",   hkToolStabilo,   0,                       0);
+    readHk(L"HkToolLineMod",      L"HkToolLineVk",      hkToolLine,      0,                       0);
+    readHk(L"HkToolArrowMod",     L"HkToolArrowVk",     hkToolArrow,     0,                       0);
+    readHk(L"HkToolNumberMod",    L"HkToolNumberVk",    hkToolNumber,    0,                       0);
     readHk(L"HkToolResetNumMod",  L"HkToolResetNumVk",  hkToolResetNum,  0,                       0);
-    readHk(L"HkToolRectMod",      L"HkToolRectVk",      hkToolRect,      0,                       'R');
-    readHk(L"HkToolEllipseMod",   L"HkToolEllipseVk",   hkToolEllipse,   0,                       'E');
-    readHk(L"HkToolTextMod",      L"HkToolTextVk",      hkToolText,      0,                       'T');
-    readHk(L"HkToolMosaicSqMod",  L"HkToolMosaicSqVk",  hkToolMosaicSq,  0,                       'X');
-    readHk(L"HkToolMosaicCirMod", L"HkToolMosaicCirVk", hkToolMosaicCir, 0,                       'M');
+    readHk(L"HkToolRectMod",      L"HkToolRectVk",      hkToolRect,      0,                       0);
+    readHk(L"HkToolEllipseMod",   L"HkToolEllipseVk",   hkToolEllipse,   0,                       0);
+    readHk(L"HkToolTextMod",      L"HkToolTextVk",      hkToolText,      0,                       0);
+    readHk(L"HkToolMosaicSqMod",  L"HkToolMosaicSqVk",  hkToolMosaicSq,  0,                       0);
+    readHk(L"HkToolMosaicCirMod", L"HkToolMosaicCirVk", hkToolMosaicCir, 0,                       0);
     readHk(L"HkActUndoMod",       L"HkActUndoVk",       hkActUndo,          MOD_CONTROL,             'Z');
     readHk(L"HkActRedoMod",       L"HkActRedoVk",       hkActRedo,          MOD_CONTROL,             'Y');
-    readHk(L"HkActClearMod",      L"HkActClearVk",      hkActClear,         0,                       0);
-    readHk(L"HkActOptionsMod",    L"HkActOptionsVk",    hkActOptions,       0,                       0);
-    readHk(L"HkActPinMod",        L"HkActPinVk",        hkActPin,           0,                       'F');
-    readHk(L"HkActOcrMod",        L"HkActOcrVk",        hkActOcr,           0,                       'O');
+    readHk(L"HkActClearMod",      L"HkActClearVk",      hkActClear,         MOD_CONTROL,             'D');
+    readHk(L"HkActPinMod",        L"HkActPinVk",        hkActPin,           0,                       0);
+    readHk(L"HkActOcrMod",        L"HkActOcrVk",        hkActOcr,           0,                       0);
     readHk(L"HkActSaveAsMod",     L"HkActSaveAsVk",     hkActSaveAs,        MOD_CONTROL | MOD_SHIFT, 'S');
     readHk(L"HkActSaveMod",       L"HkActSaveVk",       hkActSave,          MOD_CONTROL,             'S');
     readHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy,          MOD_CONTROL,             'C');
-    readHk(L"HkActSearchGoogleMod", L"HkActSearchGoogleVk", hkActSearchGoogle, MOD_SHIFT,            'C');
+    readHk(L"HkActSearchGoogleMod", L"HkActSearchGoogleVk", hkActSearchGoogle, 0,                     0);
     readHk(L"HkFramePlayMod",     L"HkFramePlayVk",     hkFramePlayPause,   0,                       VK_SPACE);
     readHk(L"HkFrameToggleMod",   L"HkFrameToggleVk",   hkFrameToggleStrip, 0,                       0);
-    readHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut,       0,                       VK_OEM_MINUS);
-    readHk(L"HkPinZoomInMod",     L"HkPinZoomInVk",     hkPinZoomIn,     0,                       VK_OEM_PLUS);
-    readHk(L"HkPinZoomResetMod",   L"HkPinZoomResetVk",   hkPinZoomReset,   0,                       '0');
-    readHk(L"HkPinPosResetMod",    L"HkPinPosResetVk",    hkPinPosReset,    MOD_CONTROL,             '0');
-    readHk(L"HkPinOutlineMod",     L"HkPinOutlineVk",     hkPinOutline,     0,                       'O');
-    readHk(L"HkPinHideToolbarMod", L"HkPinHideToolbarVk", hkPinHideToolbar, 0,                       'H');
-    readHk(L"HkPinSmoothMod",      L"HkPinSmoothVk",      hkPinSmooth,      0,                       'S');
-    readHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs,     0,                       0);
-    readHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave,       0,                       0);
+    readHk(L"HkPinZoomOutMod",    L"HkPinZoomOutVk",    hkPinZoomOut,       0,                       0);
+    readHk(L"HkPinZoomInMod",     L"HkPinZoomInVk",     hkPinZoomIn,        0,                       0);
+    readHk(L"HkPinZoomResetMod",   L"HkPinZoomResetVk",   hkPinZoomReset,   0,                       0);
+    readHk(L"HkPinPosResetMod",    L"HkPinPosResetVk",    hkPinPosReset,    0,                       0);
+    readHk(L"HkPinOutlineMod",     L"HkPinOutlineVk",     hkPinOutline,     0,                       0);
+    readHk(L"HkPinHideToolbarMod", L"HkPinHideToolbarVk", hkPinHideToolbar, 0,                       0);
+    readHk(L"HkPinSmoothMod",      L"HkPinSmoothVk",      hkPinSmooth,      0,                       0);
+    readHk(L"HkPinSaveAsMod",     L"HkPinSaveAsVk",     hkPinSaveAs,     MOD_CONTROL | MOD_SHIFT, 'S');
+    readHk(L"HkPinSaveMod",       L"HkPinSaveVk",       hkPinSave,       MOD_CONTROL,             'S');
     readHk(L"HkPinCopyMod",       L"HkPinCopyVk",       hkPinCopy,       MOD_CONTROL,             'C');
-    readHk(L"HkPinSearchGoogleMod", L"HkPinSearchGoogleVk", hkPinSearchGoogle, MOD_SHIFT,         'C');
+    readHk(L"HkPinSearchGoogleMod", L"HkPinSearchGoogleVk", hkPinSearchGoogle, 0,                0);
     readHk(L"HkPinCloseMod",      L"HkPinCloseVk",      hkPinClose,      0,                       VK_ESCAPE);
 
     hasLastCustomSel = (GetPrivateProfileIntW(L"PepperSnap", L"HasLastCustomSel", 0, iniPath.c_str()) != 0);
@@ -362,16 +360,6 @@ std::wstring PepperSnapDaemon::GetFormatExtension(ImageFormat fmt) {
         case ImageFormat::WEBP: return L".webp";
         case ImageFormat::BMP:  return L".bmp";
         default:                return L".jpg";
-    }
-}
-
-const wchar_t* PepperSnapDaemon::GetFormatLabel(ImageFormat fmt) {
-    switch (fmt) {
-        case ImageFormat::JPEG: return L"JPEG (.jpg)";
-        case ImageFormat::PNG:  return L"PNG (.png)";
-        case ImageFormat::WEBP: return L"WebP (.webp)";
-        case ImageFormat::BMP:  return L"BMP (.bmp)";
-        default:                return L"JPEG (.jpg)";
     }
 }
 
@@ -447,6 +435,27 @@ std::wstring PepperSnapDaemon::FormatFilename(int seqNum) const {
     return FormatFilenameWithPattern(namingPattern, seqNum);
 }
 
+// Expand the naming pattern and step the counter past any name already on disk,
+// so a capture never silently overwrites an earlier one. This matters because
+// the default pattern is counter based (PepperSnap_{N}) and the counter is
+// restored from settings.ini: point the save folder at a machine that already
+// holds PepperSnap_1.png and the first capture must become PepperSnap_2.png.
+// A pattern built only from timestamps renders the same name for every counter
+// value, so bail out as soon as the name stops changing instead of spinning.
+std::wstring PepperSnapDaemon::NextFreeCaptureStem(const std::wstring& extension) {
+    int seq = captureCounter;
+    std::wstring stem = FormatFilename(seq);
+    while (GetFileAttributesW((saveFolder + L"\\" + stem + extension).c_str()) != INVALID_FILE_ATTRIBUTES) {
+        int nextSeq = seq + 1;
+        std::wstring nextStem = FormatFilename(nextSeq);
+        if (nextStem == stem) break;
+        seq = nextSeq;
+        stem = nextStem;
+    }
+    captureCounter = seq + 1;
+    return stem;
+}
+
 // Unified Options Modal (Save Folder, Default Formats, JPEG Quality Slider, Naming Pattern + Restore Default, Non-Stacking Highlighter)
 struct OptionsDlgState {
     std::wstring folder;
@@ -477,41 +486,40 @@ struct OptionsDlgState {
     HotkeyBinding hkPinClipboard{ MOD_ALT | MOD_SHIFT, VK_SNAPSHOT };
     HotkeyBinding hkEditClipboard{ MOD_CONTROL | MOD_ALT, VK_SNAPSHOT };
     HotkeyBinding hkSearchGoogle{ MOD_ALT, VK_SNAPSHOT };
-    HotkeyBinding hkToolSelect{ 0, 'V' };
-    HotkeyBinding hkToolPen{ 0, 'P' };
-    HotkeyBinding hkToolStabilo{ 0, 'H' };
-    HotkeyBinding hkToolLine{ 0, 'L' };
-    HotkeyBinding hkToolArrow{ 0, 'A' };
-    HotkeyBinding hkToolNumber{ 0, 'N' };
+    HotkeyBinding hkToolSelect{ 0, 0 };
+    HotkeyBinding hkToolPen{ 0, 0 };
+    HotkeyBinding hkToolStabilo{ 0, 0 };
+    HotkeyBinding hkToolLine{ 0, 0 };
+    HotkeyBinding hkToolArrow{ 0, 0 };
+    HotkeyBinding hkToolNumber{ 0, 0 };
     HotkeyBinding hkToolResetNum{ 0, 0 };
-    HotkeyBinding hkToolRect{ 0, 'R' };
-    HotkeyBinding hkToolEllipse{ 0, 'E' };
-    HotkeyBinding hkToolText{ 0, 'T' };
-    HotkeyBinding hkToolMosaicSq{ 0, 'X' };
-    HotkeyBinding hkToolMosaicCir{ 0, 'M' };
+    HotkeyBinding hkToolRect{ 0, 0 };
+    HotkeyBinding hkToolEllipse{ 0, 0 };
+    HotkeyBinding hkToolText{ 0, 0 };
+    HotkeyBinding hkToolMosaicSq{ 0, 0 };
+    HotkeyBinding hkToolMosaicCir{ 0, 0 };
     HotkeyBinding hkActUndo{ MOD_CONTROL, 'Z' };
     HotkeyBinding hkActRedo{ MOD_CONTROL, 'Y' };
-    HotkeyBinding hkActClear{ 0, 0 };
-    HotkeyBinding hkActOptions{ 0, 0 };
-    HotkeyBinding hkActPin{ 0, 'F' };
-    HotkeyBinding hkActOcr{ 0, 'O' };
+    HotkeyBinding hkActClear{ MOD_CONTROL, 'D' };
+    HotkeyBinding hkActPin{ 0, 0 };
+    HotkeyBinding hkActOcr{ 0, 0 };
     HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
-    HotkeyBinding hkActSearchGoogle{ MOD_SHIFT, 'C' };
+    HotkeyBinding hkActSearchGoogle{ 0, 0 };
     HotkeyBinding hkFramePlayPause{ 0, VK_SPACE };
     HotkeyBinding hkFrameToggleStrip{ 0, 0 };
-    HotkeyBinding hkPinZoomOut{ 0, VK_OEM_MINUS };
-    HotkeyBinding hkPinZoomIn{ 0, VK_OEM_PLUS };
-    HotkeyBinding hkPinZoomReset{ 0, '0' };
-    HotkeyBinding hkPinPosReset{ MOD_CONTROL, '0' };
-    HotkeyBinding hkPinOutline{ 0, 'O' };
-    HotkeyBinding hkPinHideToolbar{ 0, 'H' };
-    HotkeyBinding hkPinSmooth{ 0, 'S' };
-    HotkeyBinding hkPinSaveAs{ 0, 0 };
-    HotkeyBinding hkPinSave{ 0, 0 };
+    HotkeyBinding hkPinZoomOut{ 0, 0 };
+    HotkeyBinding hkPinZoomIn{ 0, 0 };
+    HotkeyBinding hkPinZoomReset{ 0, 0 };
+    HotkeyBinding hkPinPosReset{ 0, 0 };
+    HotkeyBinding hkPinOutline{ 0, 0 };
+    HotkeyBinding hkPinHideToolbar{ 0, 0 };
+    HotkeyBinding hkPinSmooth{ 0, 0 };
+    HotkeyBinding hkPinSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
+    HotkeyBinding hkPinSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkPinCopy{ MOD_CONTROL, 'C' };
-    HotkeyBinding hkPinSearchGoogle{ MOD_SHIFT, 'C' };
+    HotkeyBinding hkPinSearchGoogle{ 0, 0 };
     HotkeyBinding hkPinClose{ 0, VK_ESCAPE };
     bool confirmed = false;
     bool openedAppData = false;
@@ -1343,7 +1351,7 @@ static void ShowNamingSyntaxModal(HWND hParentOptWnd) {
     SetForegroundWindow(hDlg);
 
     MSG msg;
-    while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (IsWindow(hDlg) && PepperSnapDaemon::GetMessageKeepQuit(&msg)) {
         if (msg.message == WM_MOUSEWHEEL && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
             SendMessageW(hDlg, WM_MOUSEWHEEL, msg.wParam, msg.lParam);
             continue;
@@ -1405,7 +1413,6 @@ struct CustomizeKeysDlgState {
     HotkeyBinding hkActUndo;
     HotkeyBinding hkActRedo;
     HotkeyBinding hkActClear;
-    HotkeyBinding hkActOptions;
     HotkeyBinding hkActPin;
     HotkeyBinding hkActOcr;
     HotkeyBinding hkActSaveAs;
@@ -1650,7 +1657,6 @@ static void UpdateCustomizeKeysScroll(HWND hWnd, CustomizeKeysDlgState* ck, int 
     if (!hWnd || !ck) return;
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
-    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
     int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
     int viewportH = std::max(1, clientH - ck->footerHeight);
     int maxScroll = std::max(0, ck->scrollContentHeight - viewportH);
@@ -2050,7 +2056,6 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     ck.hkActUndo          = optSt->hkActUndo;
     ck.hkActRedo          = optSt->hkActRedo;
     ck.hkActClear         = optSt->hkActClear;
-    ck.hkActOptions       = optSt->hkActOptions;
     ck.hkActPin           = optSt->hkActPin;
     ck.hkActOcr           = optSt->hkActOcr;
     ck.hkActSaveAs        = optSt->hkActSaveAs;
@@ -2122,47 +2127,46 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
 
     // Custom area annotation tools
     addSectionHdr(L"Custom area — annotation tools");
-    addToolRow(OverlayTool::SelectMove,   L"Select mode",         &ck.hkToolSelect,    { 0, 'V' });
-    addToolRow(OverlayTool::Pen,          L"Pen",                 &ck.hkToolPen,       { 0, 'P' });
-    addToolRow(OverlayTool::Highlighter,  L"Stabilo highlighter", &ck.hkToolStabilo,   { 0, 'H' });
-    addToolRow(OverlayTool::Line,         L"Line",                &ck.hkToolLine,      { 0, 'L' });
-    addToolRow(OverlayTool::Arrow,        L"Arrow",               &ck.hkToolArrow,     { 0, 'A' });
-    addToolRow(OverlayTool::NumberArrow,  L"Numbering arrow",     &ck.hkToolNumber,    { 0, 'N' });
+    addToolRow(OverlayTool::SelectMove,   L"Select mode",         &ck.hkToolSelect,    { 0, 0 });
+    addToolRow(OverlayTool::Pen,          L"Pen",                 &ck.hkToolPen,       { 0, 0 });
+    addToolRow(OverlayTool::Highlighter,  L"Stabilo highlighter", &ck.hkToolStabilo,   { 0, 0 });
+    addToolRow(OverlayTool::Line,         L"Line",                &ck.hkToolLine,      { 0, 0 });
+    addToolRow(OverlayTool::Arrow,        L"Arrow",               &ck.hkToolArrow,     { 0, 0 });
+    addToolRow(OverlayTool::NumberArrow,  L"Numbering arrow",     &ck.hkToolNumber,    { 0, 0 });
     addActRow(DBTN_ACT_RESET_NUM,  false, L"Reset counter to 1",  &ck.hkToolResetNum,  { 0, 0 });
-    addToolRow(OverlayTool::Rectangle,    L"Square / rectangle",  &ck.hkToolRect,      { 0, 'R' });
-    addToolRow(OverlayTool::Ellipse,      L"Circle / ellipse",    &ck.hkToolEllipse,   { 0, 'E' });
-    addToolRow(OverlayTool::TextBox,      L"Text box",            &ck.hkToolText,      { 0, 'T' });
-    addToolRow(OverlayTool::MosaicSquare, L"Mosaic square",       &ck.hkToolMosaicSq,  { 0, 'X' });
-    addToolRow(OverlayTool::MosaicCircle, L"Mosaic circle",       &ck.hkToolMosaicCir, { 0, 'M' });
+    addToolRow(OverlayTool::Rectangle,    L"Square / rectangle",  &ck.hkToolRect,      { 0, 0 });
+    addToolRow(OverlayTool::Ellipse,      L"Circle / ellipse",    &ck.hkToolEllipse,   { 0, 0 });
+    addToolRow(OverlayTool::TextBox,      L"Text box",            &ck.hkToolText,      { 0, 0 });
+    addToolRow(OverlayTool::MosaicSquare, L"Mosaic square",       &ck.hkToolMosaicSq,  { 0, 0 });
+    addToolRow(OverlayTool::MosaicCircle, L"Mosaic circle",       &ck.hkToolMosaicCir, { 0, 0 });
 
     // Custom area toolbar actions, multi-frame editor & export
     addSectionHdr(L"Custom area — toolbar actions & multi-frame editor");
     addActRow(DBTN_ACT_UNDO,             false, L"Undo",                          &ck.hkActUndo,          { MOD_CONTROL, 'Z' });
     addActRow(DBTN_ACT_REDO,             false, L"Redo",                          &ck.hkActRedo,          { MOD_CONTROL, 'Y' });
-    addActRow(DBTN_ACT_CLEAR,            false, L"Clear all annotations",         &ck.hkActClear,         { 0, 0 });
-    addActRow(DBTN_ACT_OPTIONS,          false, L"Options",                       &ck.hkActOptions,       { 0, 0 });
-    addActRow(DBTN_ACT_PIN,              false, L"Pin on top",                    &ck.hkActPin,           { 0, 'F' });
-    addActRow(DBTN_ACT_OCR,              false, L"Extract text with OCR",         &ck.hkActOcr,           { 0, 'O' });
+    addActRow(DBTN_ACT_CLEAR,            false, L"Clear all annotations",         &ck.hkActClear,         { MOD_CONTROL, 'D' });
+    addActRow(DBTN_ACT_PIN,              false, L"Pin on top",                    &ck.hkActPin,           { 0, 0 });
+    addActRow(DBTN_ACT_OCR,              false, L"Extract text with OCR",         &ck.hkActOcr,           { 0, 0 });
     addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkActSaveAs,        { MOD_CONTROL | MOD_SHIFT, 'S' });
     addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkActSave,          { MOD_CONTROL, 'S' });
     addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkActCopy,          { MOD_CONTROL, 'C' });
-    addActRow(DBTN_ACT_COPY,             true,  L"Search image",                  &ck.hkActSearchGoogle,  { MOD_SHIFT, 'C' });
+    addActRow(DBTN_ACT_SEARCH_GOOGLE,    false, L"Search on web",                 &ck.hkActSearchGoogle,  { 0, 0 });
     addActRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, L"Play / Pause frames (GIF/WebP)",&ck.hkFramePlayPause,   { 0, VK_SPACE });
     addActRow(DBTN_ACT_FRAME_TOGGLE,     false, L"Hide / Show frames (GIF/WebP)", &ck.hkFrameToggleStrip, { 0, 0 });
 
     // Pinned image toolbar actions & export
     addSectionHdr(L"Pin on top — toolbar actions & export");
-    addActRow(DBTN_ACT_ZOOM_OUT,         false, L"Zoom out",                      &ck.hkPinZoomOut,       { 0, VK_OEM_MINUS });
-    addActRow(DBTN_ACT_ZOOM_IN,          false, L"Zoom in",                       &ck.hkPinZoomIn,        { 0, VK_OEM_PLUS });
-    addActRow(DBTN_ACT_ZOOM_RESET,       false, L"Reset to original size",        &ck.hkPinZoomReset,     { 0, '0' });
-    addActRow(DBTN_ACT_POS_RESET,        false, L"Reset to original position",    &ck.hkPinPosReset,      { MOD_CONTROL, '0' });
-    addActRow(DBTN_ACT_PIN_OUTLINE,      false, L"Show / Hide outline",           &ck.hkPinOutline,       { 0, 'O' });
-    addActRow(DBTN_ACT_PIN_HIDE_TOOLBAR, false, L"Hide / Show toolbar",           &ck.hkPinHideToolbar,   { 0, 'H' });
-    addActRow(DBTN_ACT_PIN_UNFILTER,     false, L"Smooth the image",              &ck.hkPinSmooth,        { 0, 'S' });
-    addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkPinSaveAs,        { 0, 0 });
-    addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkPinSave,          { 0, 0 });
+    addActRow(DBTN_ACT_ZOOM_OUT,         false, L"Zoom out",                      &ck.hkPinZoomOut,       { 0, 0 });
+    addActRow(DBTN_ACT_ZOOM_IN,          false, L"Zoom in",                       &ck.hkPinZoomIn,        { 0, 0 });
+    addActRow(DBTN_ACT_ZOOM_RESET,       false, L"Reset to original size",        &ck.hkPinZoomReset,     { 0, 0 });
+    addActRow(DBTN_ACT_POS_RESET,        false, L"Reset to original position",    &ck.hkPinPosReset,      { 0, 0 });
+    addActRow(DBTN_ACT_PIN_OUTLINE,      false, L"Show / Hide outline",           &ck.hkPinOutline,       { 0, 0 });
+    addActRow(DBTN_ACT_PIN_HIDE_TOOLBAR, false, L"Hide / Show toolbar",           &ck.hkPinHideToolbar,   { 0, 0 });
+    addActRow(DBTN_ACT_PIN_UNFILTER,     false, L"Smooth the image",              &ck.hkPinSmooth,        { 0, 0 });
+    addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkPinSaveAs,        { MOD_CONTROL | MOD_SHIFT, 'S' });
+    addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkPinSave,          { MOD_CONTROL, 'S' });
     addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkPinCopy,          { MOD_CONTROL, 'C' });
-    addActRow(DBTN_ACT_COPY,             true,  L"Search image",                  &ck.hkPinSearchGoogle,  { MOD_SHIFT, 'C' });
+    addActRow(DBTN_ACT_PIN_SEARCH_GOOGLE,false, L"Search on web",                 &ck.hkPinSearchGoogle,  { 0, 0 });
     addActRow(DBTN_ACT_CLOSE,            false, L"Close pinned image",            &ck.hkPinClose,         { 0, VK_ESCAPE });
 
     int curY = 6;
@@ -2207,7 +2211,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     SetForegroundWindow(hDlg);
 
     MSG msg;
-    while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (IsWindow(hDlg) && PepperSnapDaemon::GetMessageKeepQuit(&msg)) {
         if (g_RecordingHotkeySlot != 0 &&
             (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN ||
              ((msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP) && msg.wParam == VK_SNAPSHOT))) {
@@ -2277,7 +2281,6 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         optSt->hkActUndo          = ck.hkActUndo;
         optSt->hkActRedo          = ck.hkActRedo;
         optSt->hkActClear         = ck.hkActClear;
-        optSt->hkActOptions       = ck.hkActOptions;
         optSt->hkActPin           = ck.hkActPin;
         optSt->hkActOcr           = ck.hkActOcr;
         optSt->hkActSaveAs        = ck.hkActSaveAs;
@@ -2320,7 +2323,6 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         g_Daemon.hkActUndo          = ck.hkActUndo;
         g_Daemon.hkActRedo          = ck.hkActRedo;
         g_Daemon.hkActClear         = ck.hkActClear;
-        g_Daemon.hkActOptions       = ck.hkActOptions;
         g_Daemon.hkActPin           = ck.hkActPin;
         g_Daemon.hkActOcr           = ck.hkActOcr;
         g_Daemon.hkActSaveAs        = ck.hkActSaveAs;
@@ -2405,7 +2407,6 @@ static void UpdateOptionsScroll(HWND hWnd, OptionsDlgState* st, int newScrollY, 
     if (!hWnd || !st) return;
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
-    int clientW = std::max(1, (int)(rcClient.right - rcClient.left));
     int clientH = std::max(1, (int)(rcClient.bottom - rcClient.top));
     int viewportH = std::max(1, clientH - st->footerHeight);
     int maxScroll = std::max(0, st->scrollContentHeight - viewportH);
@@ -3021,41 +3022,40 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkPinClipboard  = { MOD_ALT | MOD_SHIFT, VK_SNAPSHOT };
                 st->hkEditClipboard = { MOD_CONTROL | MOD_ALT, VK_SNAPSHOT };
                 st->hkSearchGoogle  = { MOD_ALT, VK_SNAPSHOT };
-                st->hkToolSelect    = { 0, 'V' };
-                st->hkToolPen       = { 0, 'P' };
-                st->hkToolStabilo   = { 0, 'H' };
-                st->hkToolLine      = { 0, 'L' };
-                st->hkToolArrow     = { 0, 'A' };
-                st->hkToolNumber    = { 0, 'N' };
+                st->hkToolSelect    = { 0, 0 };
+                st->hkToolPen       = { 0, 0 };
+                st->hkToolStabilo   = { 0, 0 };
+                st->hkToolLine      = { 0, 0 };
+                st->hkToolArrow     = { 0, 0 };
+                st->hkToolNumber    = { 0, 0 };
                 st->hkToolResetNum  = { 0, 0 };
-                st->hkToolRect      = { 0, 'R' };
-                st->hkToolEllipse   = { 0, 'E' };
-                st->hkToolText      = { 0, 'T' };
-                st->hkToolMosaicSq  = { 0, 'X' };
-                st->hkToolMosaicCir = { 0, 'M' };
+                st->hkToolRect      = { 0, 0 };
+                st->hkToolEllipse   = { 0, 0 };
+                st->hkToolText      = { 0, 0 };
+                st->hkToolMosaicSq  = { 0, 0 };
+                st->hkToolMosaicCir = { 0, 0 };
                 st->hkActUndo          = { MOD_CONTROL, 'Z' };
                 st->hkActRedo          = { MOD_CONTROL, 'Y' };
-                st->hkActClear         = { 0, 0 };
-                st->hkActOptions       = { 0, 0 };
-                st->hkActPin           = { 0, 'F' };
-                st->hkActOcr           = { 0, 'O' };
+                st->hkActClear         = { MOD_CONTROL, 'D' };
+                st->hkActPin           = { 0, 0 };
+                st->hkActOcr           = { 0, 0 };
                 st->hkActSaveAs        = { MOD_CONTROL | MOD_SHIFT, 'S' };
                 st->hkActSave          = { MOD_CONTROL, 'S' };
                 st->hkActCopy          = { MOD_CONTROL, 'C' };
-                st->hkActSearchGoogle  = { MOD_SHIFT, 'C' };
+                st->hkActSearchGoogle  = { 0, 0 };
                 st->hkFramePlayPause   = { 0, VK_SPACE };
                 st->hkFrameToggleStrip = { 0, 0 };
-                st->hkPinZoomOut       = { 0, VK_OEM_MINUS };
-                st->hkPinZoomIn     = { 0, VK_OEM_PLUS };
-                st->hkPinZoomReset   = { 0, '0' };
-                st->hkPinPosReset    = { MOD_CONTROL, '0' };
-                st->hkPinOutline     = { 0, 'O' };
-                st->hkPinHideToolbar = { 0, 'H' };
-                st->hkPinSmooth      = { 0, 'S' };
-                st->hkPinSaveAs     = { 0, 0 };
-                st->hkPinSave       = { 0, 0 };
+                st->hkPinZoomOut       = { 0, 0 };
+                st->hkPinZoomIn     = { 0, 0 };
+                st->hkPinZoomReset   = { 0, 0 };
+                st->hkPinPosReset    = { 0, 0 };
+                st->hkPinOutline     = { 0, 0 };
+                st->hkPinHideToolbar = { 0, 0 };
+                st->hkPinSmooth      = { 0, 0 };
+                st->hkPinSaveAs     = { MOD_CONTROL | MOD_SHIFT, 'S' };
+                st->hkPinSave       = { MOD_CONTROL, 'S' };
                 st->hkPinCopy       = { MOD_CONTROL, 'C' };
-                st->hkPinSearchGoogle = { MOD_SHIFT, 'C' };
+                st->hkPinSearchGoogle = { 0, 0 };
                 st->hkPinClose      = { 0, VK_ESCAPE };
 
                 st->autoUpdateEnabled = true;
@@ -3323,7 +3323,6 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkActUndo          = hkActUndo;
     st.hkActRedo          = hkActRedo;
     st.hkActClear         = hkActClear;
-    st.hkActOptions       = hkActOptions;
     st.hkActPin           = hkActPin;
     st.hkActOcr           = hkActOcr;
     st.hkActSaveAs        = hkActSaveAs;
@@ -3371,7 +3370,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     BringWindowToTop(hDlg);
     SetForegroundWindow(hDlg);
     MSG msg;
-    while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (IsWindow(hDlg) && PepperSnapDaemon::GetMessageKeepQuit(&msg)) {
         if (g_RecordingHotkeySlot != 0 && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
             DWORD vk = (DWORD)msg.wParam;
             if (vk == VK_ESCAPE) {
@@ -3457,7 +3456,6 @@ void PepperSnapDaemon::ShowOptionsModal() {
         hkActUndo          = st.hkActUndo;
         hkActRedo          = st.hkActRedo;
         hkActClear         = st.hkActClear;
-        hkActOptions       = st.hkActOptions;
         hkActPin           = st.hkActPin;
         hkActOcr           = st.hkActOcr;
         hkActSaveAs        = st.hkActSaveAs;
@@ -3589,19 +3587,19 @@ LRESULT CALLBACK ClipHistoryPromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
             HWND hDesc = CreateWindowExW(0, L"STATIC",
                 L"Turning on Windows Clipboard History (Win + V) allows PepperSnap and Windows to preserve your recent captures and copied snippets.",
-                WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 24, 76, 392, 42, hWnd, nullptr, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 24, 76, 392, 60, hWnd, nullptr, nullptr, nullptr);
             SendMessageW(hDesc, WM_SETFONT, (WPARAM)st->hFont, TRUE);
 
             st->hDoNotAskChk = CreateWindowExW(0, L"BUTTON", L"Do not ask again",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 24, 136, 160, 26, hWnd, (HMENU)101, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 24, 146, 160, 26, hWnd, (HMENU)101, nullptr, nullptr);
             SendMessageW(st->hDoNotAskChk, WM_SETFONT, (WPARAM)st->hFont, TRUE);
 
             st->hTurnOnBtn = CreateWindowExW(0, L"BUTTON", L"Turn on",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 206, 132, 106, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 206, 142, 106, 34, hWnd, (HMENU)IDOK, nullptr, nullptr);
             SendMessageW(st->hTurnOnBtn, WM_SETFONT, (WPARAM)st->hBoldFont, TRUE);
 
             st->hKeepOffBtn = CreateWindowExW(0, L"BUTTON", L"Keep it off",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 320, 132, 106, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 320, 142, 106, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hKeepOffBtn, WM_SETFONT, (WPARAM)st->hFont, TRUE);
 
             SetFocus(st->hTurnOnBtn);
@@ -3641,7 +3639,13 @@ LRESULT CALLBACK ClipHistoryPromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             return 0;
         }
         case WM_DESTROY: {
-            PostQuitMessage(0);
+            // Deliberately no PostQuitMessage(0). The loop that runs this dialog
+            // ends when the window is gone, so a WM_QUIT posted here would never
+            // be consumed: it would stay in the thread queue and the caller's own
+            // loop (PepperSnap.cpp, immediately after CheckAndPromptClipboardHistory)
+            // would pick it up and shut the whole app down the moment the user
+            // answered. Losing that message cost a build where "Turn on" and
+            // "Keep it off" both quit PepperSnap.
             return 0;
         }
         case WM_NCDESTROY: {
@@ -3658,127 +3662,6 @@ LRESULT CALLBACK ClipHistoryPromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-struct ClipHistoryInfoDlgState {
-    HFONT hFont = nullptr;
-    HFONT hBoldFont = nullptr;
-};
-
-static LRESULT CALLBACK ClipHistoryInfoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    ClipHistoryInfoDlgState* st = (ClipHistoryInfoDlgState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
-    switch (msg) {
-        case WM_CREATE: {
-            CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
-            st = (ClipHistoryInfoDlgState*)cs->lpCreateParams;
-            SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
-
-            st->hFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            st->hBoldFont = CreateFontW(-13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-
-            HWND hIcon = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | SS_ICON, 24, 24, 32, 32, hWnd, nullptr, nullptr, nullptr);
-            HICON hInfoIcon = LoadIconW(nullptr, IDI_INFORMATION);
-            if (hInfoIcon) SendMessageW(hIcon, STM_SETICON, (WPARAM)hInfoIcon, 0);
-
-            HWND hMsg = CreateWindowExW(0, L"STATIC",
-                L"Press windows logo key + V to open clipboard history",
-                WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 68, 28, 360, 48, hWnd, nullptr, nullptr, nullptr);
-            SendMessageW(hMsg, WM_SETFONT, (WPARAM)st->hFont, TRUE);
-
-            HWND hOkBtn = CreateWindowExW(0, L"BUTTON", L"OK",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 332, 88, 96, 32, hWnd, (HMENU)IDOK, nullptr, nullptr);
-            SendMessageW(hOkBtn, WM_SETFONT, (WPARAM)st->hBoldFont, TRUE);
-
-            SetFocus(hOkBtn);
-            return 0;
-        }
-        case WM_CTLCOLORSTATIC: {
-            HDC hdc = (HDC)wParam;
-            SetBkMode(hdc, TRANSPARENT);
-            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
-        }
-        case WM_COMMAND: {
-            int id = LOWORD(wParam);
-            if (id == IDOK || id == IDCANCEL) {
-                DestroyWindow(hWnd);
-                return 0;
-            }
-            break;
-        }
-        case WM_CLOSE: {
-            DestroyWindow(hWnd);
-            return 0;
-        }
-        case WM_DESTROY: {
-            PostQuitMessage(0);
-            return 0;
-        }
-        case WM_NCDESTROY: {
-            if (st) {
-                if (st->hFont) DeleteObject(st->hFont);
-                if (st->hBoldFont) DeleteObject(st->hBoldFont);
-            }
-            break;
-        }
-        default: break;
-    }
-    return DefWindowProcW(hWnd, msg, wParam, lParam);
-}
-
-static void ShowClipboardHistoryTurnedOnInfoWindow(HINSTANCE hInst) {
-    static bool s_InfoClassRegistered = false;
-    if (!s_InfoClassRegistered) {
-        WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
-        wc.lpfnWndProc = ClipHistoryInfoWndProc;
-        wc.hInstance = hInst;
-        wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APPICON));
-        if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-        wc.lpszClassName = L"PepperSnapClipHistoryInfoClass";
-        RegisterClassExW(&wc);
-        s_InfoClassRegistered = true;
-    }
-
-    ClipHistoryInfoDlgState st;
-    DWORD dwStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-    DWORD dwExStyle = WS_EX_TOPMOST;
-    RECT rcWin = { 0, 0, 452, 136 };
-    AdjustWindowRectEx(&rcWin, dwStyle, FALSE, dwExStyle);
-    int winW = rcWin.right - rcWin.left;
-    int winH = rcWin.bottom - rcWin.top;
-    int posX = (GetSystemMetrics(SM_CXSCREEN) - winW) / 2;
-    int posY = (GetSystemMetrics(SM_CYSCREEN) - winH) / 2;
-
-    HWND hWnd = CreateWindowExW(
-        dwExStyle,
-        L"PepperSnapClipHistoryInfoClass",
-        L"Clipboard history",
-        dwStyle,
-        posX, posY, winW, winH,
-        nullptr, nullptr, hInst, &st
-    );
-    if (!hWnd) {
-        MessageBoxW(nullptr, L"Press windows logo key + V to open clipboard history", L"Clipboard history",
-                    MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
-        return;
-    }
-
-    ShowWindow(hWnd, SW_SHOW);
-    UpdateWindow(hWnd);
-    SetForegroundWindow(hWnd);
-
-    MSG msg;
-    while (IsWindow(hWnd) && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (msg.message == WM_KEYDOWN && (msg.wParam == VK_ESCAPE || msg.wParam == VK_RETURN)) {
-            SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(IDOK, 0), 0);
-            continue;
-        }
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-}
 } // namespace
 
 void PepperSnapDaemon::CheckAndPromptClipboardHistory() {
@@ -3802,7 +3685,7 @@ void PepperSnapDaemon::CheckAndPromptClipboardHistory() {
     ClipHistoryDlgState st;
     DWORD dwStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     DWORD dwExStyle = WS_EX_TOPMOST;
-    RECT rcWin = { 0, 0, 450, 186 };
+    RECT rcWin = { 0, 0, 450, 196 };
     AdjustWindowRectEx(&rcWin, dwStyle, FALSE, dwExStyle);
     int winW = rcWin.right - rcWin.left;
     int winH = rcWin.bottom - rcWin.top;
@@ -3824,7 +3707,7 @@ void PepperSnapDaemon::CheckAndPromptClipboardHistory() {
     SetForegroundWindow(hWnd);
 
     MSG msg;
-    while (IsWindow(hWnd) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (IsWindow(hWnd) && PepperSnapDaemon::GetMessageKeepQuit(&msg)) {
         if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
             SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(IDCANCEL, 0), 0);
             continue;
@@ -3839,7 +3722,6 @@ void PepperSnapDaemon::CheckAndPromptClipboardHistory() {
             L"Clipboard history enabled",
             L"Windows Clipboard History (Win + V) has been enabled."
         );
-        ShowClipboardHistoryTurnedOnInfoWindow(hInst);
     } else if (st.doNotAsk) {
         promptClipboardHistory = false;
         SaveSettings();

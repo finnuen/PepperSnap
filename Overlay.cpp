@@ -79,6 +79,61 @@ void PepperSnapDaemon::ApplyPixelateFilter(Bitmap* bmp, int rx, int ry, int rw, 
     bmp->UnlockBits(&data);
 }
 
+// ----------------------------------------------------------------------------
+// Text annotation face, size and glyph outline
+// ----------------------------------------------------------------------------
+//
+// A text box has no face or size control of its own: the S / M / L / XL buttons
+// set its stroke width, and the type size is derived from that. Drawing,
+// measuring and hit-testing a text box have to agree on all of it, or the caret,
+// the selection box and the exported pixels drift apart - which is what five
+// hand-copied copies of the size formula invited. These five helpers are the
+// single source of truth.
+
+// Calibri Light ships with Windows (calibril.ttf). Asking GDI+ for a family that
+// is not installed is not a graceful failure: it hands back a Font that draws
+// nothing at all, so the text would silently disappear. Probe once, fall back.
+static const wchar_t* AnnotationFontFace() {
+    static const wchar_t* face = nullptr;
+    if (!face) {
+        FontFamily probe(L"Calibri Light");
+        face = (probe.GetLastStatus() == Ok) ? L"Calibri Light" : L"Segoe UI";
+    }
+    return face;
+}
+
+// Calibri Light is installed without a bold face (calibril.ttf is the only
+// upright weight), so asking for bold makes GDI+ synthesise one. That is the
+// weight the earlier Text style window shipped, so it is kept; switch this to
+// FontStyleRegular for the true thin face.
+static const INT kAnnotationFontStyle = FontStyleBold;
+
+static float AnnotationFontSize(float strokeWidth) {
+    return std::max(10.0f, strokeWidth * 3.8f + 6.0f);
+}
+
+// The outline is picked from the fill rather than exposed as a setting, which is
+// what made the earlier Text style window inconvenient. Black is the shipped
+// look for every swatch except black itself, which needs the light border to
+// stay legible over a dark screenshot.
+static Color AnnotationOutlineColor(const Color& fill) {
+    // Lightness, the L of HSL - the value Color::GetBrightness() reports, spelled
+    // out because the mingw GDI+ headers this builds against do not declare that
+    // accessor.
+    BYTE hi = std::max(std::max(fill.GetR(), fill.GetG()), fill.GetB());
+    BYTE lo = std::min(std::min(fill.GetR(), fill.GetG()), fill.GetB());
+    float lightness = (float)(hi + lo) / 510.0f;
+    return (lightness >= 0.35f) ? Color(255, 0, 0, 0) : Color(255, 255, 255, 255);
+}
+
+// At least 2 px, at most 5% of the type size. The floor wins where the two
+// disagree (below 40 px type), because a border thinner than that on small
+// glyphs reads as anti-aliasing rather than as an outline. At the four shipped
+// type sizes - 13.6 / 21.2 / 36.4 / 59.2 px - this gives 2 / 2 / 2 / 3 px.
+static float AnnotationOutlineWidth(float fontSize) {
+    return std::max(2.0f, fontSize * 0.05f);
+}
+
 void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, int offsetX, int offsetY, bool isSelected, bool isEditingCaret, bool forceOpaqueHighlighter) {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     float sx = ann.startPt.x - offsetX;
@@ -300,10 +355,10 @@ void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, 
         }
 
         case OverlayTool::TextBox: {
-            float fSize = std::max(10.0f, ann.strokeWidth * 3.8f + 6.0f);
+            float fSize = AnnotationFontSize(ann.strokeWidth);
             float lineStep = fSize * 1.32f;
-            FontFamily ff(L"Segoe UI");
-            Font font(&ff, fSize, FontStyleBold, UnitPixel);
+            FontFamily ff(AnnotationFontFace());
+            Font font(&ff, fSize, kAnnotationFontStyle, UnitPixel);
             const StringFormat* typoSf = StringFormat::GenericTypographic();
 
             if (ann.text.empty() && !isEditingCaret) break;
@@ -372,10 +427,26 @@ void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, 
             }
 
             SolidBrush fg(ann.color);
+            // Each line is stroked along its glyph outlines and then filled over:
+            // the fill covers the inner half of the stroke, so exactly
+            // AnnotationOutlineWidth() of it stays showing outside the
+            // letterforms. Round joins and caps keep corners and stem ends from
+            // growing spikes at these widths.
+            Pen outlinePen(AnnotationOutlineColor(ann.color), AnnotationOutlineWidth(fSize) * 2.0f);
+            outlinePen.SetLineJoin(LineJoinRound);
+            outlinePen.SetStartCap(LineCapRound);
+            outlinePen.SetEndCap(LineCapRound);
             for (size_t i = 0; i < lines.size(); ++i) {
-                if (!lines[i].second.empty()) {
-                    g.DrawString(lines[i].second.c_str(), -1, &font, PointF(bx, by + (float)i * lineStep), typoSf, &fg);
+                if (lines[i].second.empty()) continue;
+                // Non-zero winding is the rule TrueType contours are defined
+                // with, so counters ("o", "e") stay open in every glyph.
+                GraphicsPath linePath(FillModeWinding);
+                if (linePath.AddString(lines[i].second.c_str(), -1, &ff, kAnnotationFontStyle,
+                                       fSize, PointF(bx, by + (float)i * lineStep), typoSf) != Ok) {
+                    continue;
                 }
+                g.DrawPath(&outlinePen, &linePath);
+                g.FillPath(&fg, &linePath);
             }
 
             if (isEditingCaret) {
@@ -539,10 +610,10 @@ void PepperSnapDaemon::CommitActiveTextBox() {
     textCaretPos = textSelAnchor = 0;
     if (!editingTextAnn.text.empty()) {
         PushUndo();
-        float fSize = std::max(10.0f, editingTextAnn.strokeWidth * 3.8f + 6.0f);
+        float fSize = AnnotationFontSize(editingTextAnn.strokeWidth);
         float lineStep = fSize * 1.32f;
-        FontFamily ff(L"Segoe UI");
-        Font font(&ff, fSize, FontStyleBold, UnitPixel);
+        FontFamily ff(AnnotationFontFace());
+        Font font(&ff, fSize, kAnnotationFontStyle, UnitPixel);
         HDC hdc = GetDC(nullptr);
         Graphics g(hdc);
         float maxW = 0.0f;
@@ -570,10 +641,10 @@ void PepperSnapDaemon::CommitActiveTextBox() {
 RECT PepperSnapDaemon::GetEditingTextBoxRect() const {
     float bx = std::min(editingTextAnn.startPt.x, editingTextAnn.endPt.x);
     float by = std::min(editingTextAnn.startPt.y, editingTextAnn.endPt.y);
-    float fSize = std::max(10.0f, editingTextAnn.strokeWidth * 3.8f + 6.0f);
+    float fSize = AnnotationFontSize(editingTextAnn.strokeWidth);
     float lineStep = fSize * 1.32f;
-    FontFamily ff(L"Segoe UI");
-    Font font(&ff, fSize, FontStyleBold, UnitPixel);
+    FontFamily ff(AnnotationFontFace());
+    Font font(&ff, fSize, kAnnotationFontStyle, UnitPixel);
     HDC hdc = GetDC(nullptr);
     Graphics g(hdc);
     float maxW = 0.0f;
@@ -603,7 +674,7 @@ size_t PepperSnapDaemon::HitTestTextBoxIndex(int mouseX, int mouseY) const {
     if (s.empty()) return 0;
     float bx = std::min(editingTextAnn.startPt.x, editingTextAnn.endPt.x);
     float by = std::min(editingTextAnn.startPt.y, editingTextAnn.endPt.y);
-    float fSize = std::max(10.0f, editingTextAnn.strokeWidth * 3.8f + 6.0f);
+    float fSize = AnnotationFontSize(editingTextAnn.strokeWidth);
     float lineStep = fSize * 1.32f;
 
     std::vector<std::pair<size_t, std::wstring>> lines;
@@ -623,8 +694,8 @@ size_t PepperSnapDaemon::HitTestTextBoxIndex(int mouseX, int mouseY) const {
     float relX = (float)mouseX - bx;
     if (relX <= 0.0f || ln.empty()) return lines[lineIdx].first;
 
-    FontFamily ff(L"Segoe UI");
-    Font font(&ff, fSize, FontStyleBold, UnitPixel);
+    FontFamily ff(AnnotationFontFace());
+    Font font(&ff, fSize, kAnnotationFontStyle, UnitPixel);
     HDC hdc = GetDC(nullptr);
     Graphics g(hdc);
     size_t col = ln.size();
@@ -801,9 +872,9 @@ void PepperSnapDaemon::ApplyStrokeToSelectedAnnotation(float newStroke, bool rec
             }
             a.strokeWidth = newStroke;
             if (a.tool == OverlayTool::TextBox) {
-                FontFamily ff(L"Segoe UI");
-                float fSize = std::max(10.0f, a.strokeWidth * 3.8f + 6.0f);
-                Font font(&ff, fSize, FontStyleBold, UnitPixel);
+                FontFamily ff(AnnotationFontFace());
+                float fSize = AnnotationFontSize(a.strokeWidth);
+                Font font(&ff, fSize, kAnnotationFontStyle, UnitPixel);
                 HDC hdc = GetDC(nullptr);
                 Graphics g(hdc);
                 RectF bounds;
@@ -1956,18 +2027,6 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
             g.DrawString(L"1", -1, &f, PointF(cx + 1.5f, cy - 6.5f), &amberBrush);
             break;
         }
-        case DBTN_ACT_OPTIONS: {
-            // Options Gear / Sliders icon
-            g.DrawEllipse(&whitePen, cx - 5.0f, cy - 5.0f, 10.0f, 10.0f);
-            g.FillEllipse(&whiteBrush, cx - 2.0f, cy - 2.0f, 4.0f, 4.0f);
-            for (int i = 0; i < 8; ++i) {
-                float a = i * 3.14159265f * 0.25f;
-                g.DrawLine(&whitePen,
-                           cx + 5.0f * std::cos(a), cy + 5.0f * std::sin(a),
-                           cx + 7.2f * std::cos(a), cy + 7.2f * std::sin(a));
-            }
-            break;
-        }
         case DBTN_ACT_PIN: {
             // Pushpin icon
             g.FillEllipse(&whiteBrush, cx - 4.0f, cy - 6.5f, 8.0f, 5.0f);
@@ -1992,6 +2051,27 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
             tPen.SetEndCap(LineCapRound);
             g.DrawLine(&tPen, gcx - 2.7f, gcy - 2.5f, gcx + 2.7f, gcy - 2.5f);
             g.DrawLine(&tPen, gcx,        gcy - 2.5f, gcx,        gcy + 3.1f);
+            break;
+        }
+        case DBTN_ACT_SEARCH_GOOGLE:
+        case DBTN_ACT_PIN_SEARCH_GOOGLE: {
+            // Internet globe: outer ring, equator, one meridian ellipse and two
+            // latitude chords. A magnifier with a globe in the lens was tried
+            // first and read as "search inside the image" (OCR and zoom already
+            // own that glyph family), so the lens and handle are gone.
+            const float gr = 7.4f;
+            g.DrawEllipse(&whitePen, cx - gr, cy - gr, gr * 2.0f, gr * 2.0f);
+
+            Pen meridianPen(Color(255, 248, 250, 252), 1.3f);
+            g.DrawLine(&meridianPen, cx - gr, cy, cx + gr, cy);
+            g.DrawEllipse(&meridianPen, cx - gr * 0.46f, cy - gr, gr * 0.92f, gr * 2.0f);
+
+            // Latitude chords sit at +/-0.53r, where the circle is 0.85r wide.
+            Pen latPen(Color(255, 248, 250, 252), 1.1f);
+            latPen.SetStartCap(LineCapRound);
+            latPen.SetEndCap(LineCapRound);
+            g.DrawLine(&latPen, cx - gr * 0.85f, cy - gr * 0.53f, cx + gr * 0.85f, cy - gr * 0.53f);
+            g.DrawLine(&latPen, cx - gr * 0.85f, cy + gr * 0.53f, cx + gr * 0.85f, cy + gr * 0.53f);
             break;
         }
         case DBTN_ACT_ZOOM_OUT: {
@@ -2214,7 +2294,7 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
     }
 }
 
-void PepperSnapDaemon::DrawHoverBubbleTooltip(Graphics& g, const DockButton& b, int screenW, int screenH) {
+void PepperSnapDaemon::DrawHoverBubbleTooltip(Graphics& g, const DockButton& b, int screenW) {
     if (b.tooltip.empty()) return;
     FontFamily ff(L"Segoe UI");
     Font tipFont(&ff, 11.5f, FontStyleBold, UnitPixel);
@@ -2352,7 +2432,7 @@ void PepperSnapDaemon::BuildDockedHUD() {
     // Combined 3-Row Right-Aligned Toolbar:
     //   Row 1: Horizontal Tool Bar (keeping exact tool order)
     //   Row 2: Colors and Sizes Tool Bar (+ Custom px Input Box)
-    //   Row 3: Drag Button + Options, Saves, Copy & Close Tool Bar
+    //   Row 3: Drag Button + Undo / Redo / Clear / Search on web / Pin / OCR / Saves / Copy / Close Tool Bar
     // ------------------------------------------------------------------------
 
     struct ToolEntry { OverlayTool t; const wchar_t* lbl; std::wstring tip; };
@@ -2396,16 +2476,15 @@ void PepperSnapDaemon::BuildDockedHUD() {
     int row2W = colorsTotalW + groupGap + strokesTotalW + gap + customBoxW;
     const int row2H = toolBtnH;
 
-    // Row 3 metrics (Drag Handle + Undo/Redo/Clear/Options/Pin/OCR/SaveAs/Save/Copy/Close)
-    std::wstring copyBtnTip = FormatLabelWithShortcut(L"Copy to clipboard", hkActCopy)
-        + L"\n" + FormatLabelWithShortcut(L"Search image", hkActSearchGoogle);
+    // Row 3 metrics (Drag Handle + Undo/Redo/Clear/Search on web/Pin/OCR/SaveAs/Save/Copy/Close)
+    std::wstring copyBtnTip = FormatLabelWithShortcut(L"Copy to clipboard", hkActCopy);
     struct ActEntry { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     ActEntry acts[] = {
         { DBTN_ACT_DRAG_HUD, toolBtnW, L"", L"Drag to move toolbar (resets when selection moves)", false },
         { DBTN_ACT_UNDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Undo",                     hkActUndo),    false },
         { DBTN_ACT_REDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Redo",                     hkActRedo),    false },
         { DBTN_ACT_CLEAR,    toolBtnW, L"", FormatLabelWithShortcut(L"Clear all annotations",    hkActClear),   false },
-        { DBTN_ACT_OPTIONS,  toolBtnW, L"", FormatLabelWithShortcut(L"Options",                  hkActOptions), false },
+        { DBTN_ACT_SEARCH_GOOGLE, toolBtnW, L"", FormatLabelWithShortcut(L"Search on web",       hkActSearchGoogle), false },
         { DBTN_ACT_PIN,      toolBtnW, L"", FormatLabelWithShortcut(L"Pin on top",               hkActPin),     false },
         { DBTN_ACT_OCR,      toolBtnW, L"", FormatLabelWithShortcut(L"Extract text with OCR",    hkActOcr),     false },
         { DBTN_ACT_SAVE_AS,  toolBtnW, L"", FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkActSaveAs),  false },
@@ -2605,8 +2684,8 @@ void PepperSnapDaemon::ActionCopyAndClose(bool searchOnGoogle) {
     std::wstring savedNote;
     if (autoSaveOnCopy) {
         CreateDirectoryW(saveFolder.c_str(), nullptr);
-        std::wstring fn = FormatFilename(captureCounter++) + GetFormatExtension(copyFormat);
-        std::wstring full = saveFolder + L"\\" + fn;
+        std::wstring copyExt = GetFormatExtension(copyFormat);
+        std::wstring full = saveFolder + L"\\" + NextFreeCaptureStem(copyExt) + copyExt;
         if (SaveBitmapToPath(bmp, full)) {
             lastSavedFilePath = full;
             savedNote = L"\nAuto-saved to: " + full;
@@ -2684,8 +2763,8 @@ void PepperSnapDaemon::ActionQuickSaveAndClose() {
     Bitmap* bmp = RenderCroppedRegionBitmap();
     if (!bmp) return;
     CreateDirectoryW(saveFolder.c_str(), nullptr);
-    std::wstring fn = FormatFilename(captureCounter++) + GetFormatExtension(regionFormat);
-    std::wstring full = saveFolder + L"\\" + fn;
+    std::wstring quickExt = GetFormatExtension(regionFormat);
+    std::wstring full = saveFolder + L"\\" + NextFreeCaptureStem(quickExt) + quickExt;
     if (SaveBitmapToPath(bmp, full)) {
         lastSavedFilePath = full;
         ShowTrayToast(
@@ -2717,7 +2796,8 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
     }
 
     std::vector<WCHAR> szFile(4096, L'\0');
-    std::wstring defName = FormatFilename(captureCounter++) + GetFormatExtension(regionFormat);
+    std::wstring regionSaveExt = GetFormatExtension(regionFormat);
+    std::wstring defName = NextFreeCaptureStem(regionSaveExt) + regionSaveExt;
     wcsncpy_s(szFile.data(), szFile.size(), defName.c_str(), _TRUNCATE);
 
     OPENFILENAMEW ofn = {0};
@@ -3252,7 +3332,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 fakeTip.rect = g_Daemon.customStrokeRect;
                 fakeTip.tooltip = L"Custom size — click to type custom size (1–120px)";
                 fakeTip.isTool = false;
-                PepperSnapDaemon::DrawHoverBubbleTooltip(g, fakeTip, W, H);
+                PepperSnapDaemon::DrawHoverBubbleTooltip(g, fakeTip, W);
             }
         }
 
@@ -3264,14 +3344,14 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             resetTip.rect = g_Daemon.ratioResetBtnRect;
             resetTip.tooltip = L"Reset ratio";
             resetTip.isTool = false;
-            PepperSnapDaemon::DrawHoverBubbleTooltip(g, resetTip, W, H);
+            PepperSnapDaemon::DrawHoverBubbleTooltip(g, resetTip, W);
         }
 
         // Render Floating Speech-Bubble Tooltip when hovering any button (hidden while dragging)
         if (g_Daemon.hoveredBtnId != -1 && g_Daemon.dragMode == DragMode::None) {
             for (const auto& b : g_Daemon.dockButtons) {
                 if (b.id == g_Daemon.hoveredBtnId) {
-                    PepperSnapDaemon::DrawHoverBubbleTooltip(g, b, W, H);
+                    PepperSnapDaemon::DrawHoverBubbleTooltip(g, b, W);
                     break;
                 }
             }
@@ -3639,6 +3719,9 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
         return;
     }
     switch (b.id) {
+        case DBTN_ACT_SEARCH_GOOGLE:
+            g_Daemon.ActionCopyAndClose(true);
+            return;
         case DBTN_ACT_COPY: {
             bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
             g_Daemon.ActionCopyAndClose(shiftHeld);
@@ -3648,10 +3731,6 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
         case DBTN_ACT_SAVE_AS:   g_Daemon.ActionSaveAsAndClose(); return;
         case DBTN_ACT_PIN:       g_Daemon.ActionPinToDesktop(); return;
         case DBTN_ACT_OCR:       g_Daemon.ActionOcrAndClose(); return;
-        case DBTN_ACT_OPTIONS:
-            g_Daemon.ShowOptionsModal();
-            if (g_Daemon.hOverlayWnd && IsWindow(hWnd)) InvalidateRect(hWnd, nullptr, FALSE);
-            return;
         case DBTN_ACT_UNDO:      g_Daemon.Undo(); return;
         case DBTN_ACT_REDO:      g_Daemon.Redo(); return;
         case DBTN_ACT_RESET_NUM:
@@ -5952,11 +6031,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
                 return 0;
             }
-            if (MatchesOverlayShortcut(g_Daemon.hkActOptions, vk, ctrl, shift, alt)) {
-                g_Daemon.ShowOptionsModal();
-                if (g_Daemon.hOverlayWnd && IsWindow(hWnd)) InvalidateRect(hWnd, nullptr, FALSE);
-                return 0;
-            }
             if (MatchesOverlayShortcut(g_Daemon.hkActPin, vk, ctrl, shift, alt)) {
                 g_Daemon.ActionPinToDesktop();
                 return 0;
@@ -6320,6 +6394,15 @@ void PepperSnapDaemon::SnapshotDesktopWindows() {
 
         WCHAR clsName[128] = {0};
         GetClassNameW(hwnd, clsName, 127);
+        // PepperSnap's own top-level windows are deliberately absent from this
+        // skip list, except for the three below. Whatever is visible in the
+        // frozen screenshot has to stay selectable with Ctrl + hover, and that
+        // includes the Options window, the shortcuts window and their sub-windows:
+        // they sit behind the overlay but they are in the bitmap. Filtering only
+        // Options and the shortcuts window (this list used to) meant Ctrl + hover
+        // over them highlighted whatever window was drawn behind, while their own
+        // sub-windows - Customize keys and the naming-syntax list - highlighted
+        // correctly.
         if (wcscmp(clsName, L"Progman") == 0 ||
             wcscmp(clsName, L"WorkerW") == 0 ||
             wcscmp(clsName, L"DummyDWMListenerWindow") == 0 ||
@@ -6330,8 +6413,6 @@ void PepperSnapDaemon::SnapshotDesktopWindows() {
             wcscmp(clsName, L"MSCTFIME UI") == 0 ||
             wcscmp(clsName, L"SysShadow") == 0 ||
             wcscmp(clsName, L"PepperSnapOverlayWnd") == 0 ||
-            wcscmp(clsName, L"PepperSnapOptionsModal") == 0 ||
-            wcscmp(clsName, L"PepperSnapShortcutsModal") == 0 ||
             wcscmp(clsName, L"PepperSnapBubbleTipWnd") == 0 ||
             wcscmp(clsName, L"PepperSnapTrayDaemonClass") == 0) {
             continue;
@@ -7801,7 +7882,7 @@ void PepperSnapDaemon::RenderOverlayFrameStrip(Graphics& g, int screenW, int scr
                 tipBtn.rect = { tr.left, tr.top, playRc.left, tr.bottom };
                 tipBtn.tooltip = FormatLabelWithShortcut(overlayFrameStripCollapsed ? L"Show frames" : L"Hide frames", hkFrameToggleStrip);
             }
-            DrawHoverBubbleTooltip(g, tipBtn, screenW, screenH);
+            DrawHoverBubbleTooltip(g, tipBtn, screenW);
         }
     }
 
@@ -8312,11 +8393,6 @@ void PepperSnapDaemon::OpenImageFilesToPinOnTop(const std::vector<std::wstring>&
             CreatePinnedWindow(firstBmp, px, py, it.scale, {}, {}, selectByDefault);
         }
     }
-}
-
-void PepperSnapDaemon::OpenImageFileToPinOnTop(const std::wstring& filePath) {
-    if (filePath.empty()) return;
-    OpenImageFilesToPinOnTop({ filePath });
 }
 
 void PepperSnapDaemon::OpenImageToPinOnTop() {

@@ -825,6 +825,46 @@ void RenderPinnedLayeredWindow(HWND hWnd, PinnedWindowData* data) {
     ReleaseDC(nullptr, hScreen);
 }
 
+// Where a pinned image's toolbar strip goes: right-aligned to the image's right
+// edge where there is room, below the image by default, above it when the bottom
+// of the screen is too close, and nudged inside the image's bottom-right corner
+// when neither side has room. Returns the strip's top-left corner in screen
+// coordinates.
+static POINT GetPinnedStripOrigin(const PinnedWindowData* data, int imgW, int imgH,
+                                  int stripW, int stripH) {
+    const int hudGap = 8; // Same 8px gap between toolbar and custom area
+
+    int sImgL = data->screenImgX;
+    int sImgT = data->screenImgY;
+    int sImgR = sImgL + imgW;
+    int sImgB = sImgT + imgH;
+
+    RECT rcImgScreen = { sImgL, sImgT, sImgR, sImgB };
+    HMONITOR hMon = MonitorFromRect(&rcImgScreen, MONITOR_DEFAULTTONEAREST);
+    RECT rcScreen = GetPinnedMonitorWorkArea(hMon);
+
+    int sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR));
+    int sStripT = sImgB + hudGap;
+
+    bool hasSpaceBelow = (sImgB + hudGap + stripH <= rcScreen.bottom - 6) && (sImgB + hudGap >= rcScreen.top + 6);
+    bool hasSpaceAbove = (sImgT - hudGap - stripH >= rcScreen.top + 6) && (sImgT - hudGap <= rcScreen.bottom - 6);
+
+    if (hasSpaceBelow) {
+        // Default: snap below bottom-right corner of pinned image
+        sStripT = sImgB + hudGap;
+    } else if (hasSpaceAbove) {
+        // No space below -> snap above top-right corner of pinned image
+        sStripT = sImgT - hudGap - stripH;
+    } else {
+        // No space below or above -> place inside bottom-right of pinned image (clamped to screen bounds)
+        sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR - 8));
+        sStripT = std::max((int)rcScreen.top + 6, std::min((int)rcScreen.bottom - stripH - 6, sImgB - stripH - 8));
+    }
+
+    POINT pt = { sStripR - stripW, sStripT };
+    return pt;
+}
+
 void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWindow) {
     if (!data || !data->bmp) return;
     int imgW = 32, imgH = 32;
@@ -833,54 +873,10 @@ void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWind
     const int toolBtnW = 32;
     const int actBtnH  = 28;
     const int gap      = 3;
-    const int hudGap   = 8; // Same 8px gap between toolbar and custom area
-
-    if (data->hideImage) {
-        const int miniW = toolBtnW * 2 + gap;
-        const int miniH = actBtnH;
-        int winL = data->screenImgX;
-        int winT = data->screenImgY;
-        int winW = miniW;
-        int winH = miniH;
-        data->winX = winL;
-        data->winY = winT;
-        data->winW = winW;
-        data->winH = winH;
-        data->imgRect = { 0, 0, 0, 0 };
-        data->buttons.clear();
-
-        DockButton bDrag;
-        bDrag.id = DBTN_ACT_DRAG_HUD;
-        bDrag.rect = { 0, 0, toolBtnW, actBtnH };
-        bDrag.label = L"";
-        bDrag.tooltip = L"Drag hidden pinned image";
-        bDrag.isPrimaryAction = false;
-        data->buttons.push_back(bDrag);
-
-        DockButton bShow;
-        bShow.id = DBTN_ACT_PIN_HIDE_IMAGE;
-        bShow.rect = { toolBtnW + gap, 0, miniW, actBtnH };
-        bShow.label = L"";
-        bShow.tooltip = L"Show pinned image";
-        bShow.isPrimaryAction = false;
-        data->buttons.push_back(bShow);
-
-        data->sizeRowRect     = { 0, 0, 0, 0 };
-        data->sizeBoxRect     = { 0, 0, 0, 0 };
-        data->pctBoxRect      = { 0, 0, 0, 0 };
-        data->pctResetBtnRect = { 0, 0, 0, 0 };
-
-        if (hWnd) {
-            SetWindowPos(hWnd, nullptr, winL, winT, winW, winH, SWP_NOACTIVATE | SWP_NOZORDER);
-            RenderPinnedLayeredWindow(hWnd, data);
-        }
-        return;
-    }
 
     struct PinBtnSpec { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     const wchar_t* outlineLbl = data->hideOutline ? L"Show outline" : L"Hide outline";
-    std::wstring pinCopyTip = FormatLabelWithShortcut(L"Copy to clipboard", g_Daemon.hkPinCopy)
-        + L"\n" + FormatLabelWithShortcut(L"Search image", g_Daemon.hkPinSearchGoogle);
+    std::wstring pinCopyTip = FormatLabelWithShortcut(L"Copy to clipboard", g_Daemon.hkPinCopy);
     PinBtnSpec specs[7] = {
         { DBTN_ACT_PIN_HIDE_IMAGE, toolBtnW, L"", L"Hide pinned image", false },
         { DBTN_ACT_PIN_OUTLINE,    toolBtnW, L"", FormatLabelWithShortcut(outlineLbl,                  g_Daemon.hkPinOutline),  false },
@@ -899,32 +895,63 @@ void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWind
 
     int sImgL = data->screenImgX;
     int sImgT = data->screenImgY;
-    int sImgR = sImgL + imgW;
-    int sImgB = sImgT + imgH;
 
-    RECT rcImgScreen = { sImgL, sImgT, sImgR, sImgB };
-    HMONITOR hMon = MonitorFromRect(&rcImgScreen, MONITOR_DEFAULTTONEAREST);
-    RECT rcScreen = GetPinnedMonitorWorkArea(hMon);
-
-    int sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR));
-    int sStripT = sImgB + hudGap;
-
-    bool hasSpaceBelow = (sImgB + hudGap + totalHudH <= rcScreen.bottom - 6) && (sImgB + hudGap >= rcScreen.top + 6);
-    bool hasSpaceAbove = (sImgT - hudGap - totalHudH >= rcScreen.top + 6) && (sImgT - hudGap <= rcScreen.bottom - 6);
-
-    if (hasSpaceBelow) {
-        // Default: snap below bottom-right corner of pinned image
-        sStripT = sImgB + hudGap;
-    } else if (hasSpaceAbove) {
-        // No space below -> snap above top-right corner of pinned image
-        sStripT = sImgT - hudGap - totalHudH;
-    } else {
-        // No space below or above -> place inside bottom-right of pinned image (clamped to screen bounds)
-        sStripR = std::max((int)rcScreen.left + stripW + 6, std::min((int)rcScreen.right - 6, sImgR - 8));
-        sStripT = std::max((int)rcScreen.top + 6, std::min((int)rcScreen.bottom - totalHudH - 6, sImgB - totalHudH - 8));
-    }
-    int sStripL = sStripR - stripW;
+    // The strip's origin has to be known before the hidden-image branch below,
+    // because that state parks its mini strip on the toolbar's own first button.
+    // Both states ask for the same placement.
+    POINT stripPt = GetPinnedStripOrigin(data, imgW, imgH, stripW, totalHudH);
+    int sStripL = stripPt.x;
+    int sStripT = stripPt.y;
+    int sStripR = sStripL + stripW;
     int sStripB = sStripT + totalHudH;
+
+    if (data->hideImage) {
+        const int miniW = toolBtnW * 2 + gap;
+        const int miniH = actBtnH;
+        int winL = sStripL;
+        int winT = sStripT;
+        int winW = miniW;
+        int winH = miniH;
+        data->winX = winL;
+        data->winY = winT;
+        data->winW = winW;
+        data->winH = winH;
+        data->imgRect = { 0, 0, 0, 0 };
+        data->buttons.clear();
+
+        // The eye is the mini strip's first button, which is exactly where it sits
+        // in the toolbar's first row, so hiding the image leaves it under the
+        // pointer that just pressed it - and pressing it again does the same thing
+        // in reverse. The drag handle takes the slot the outline button had. The
+        // strip therefore stays inside the toolbar's own footprint; it used to jump
+        // to the pinned image's top-left corner instead.
+        DockButton bShow;
+        bShow.id = DBTN_ACT_PIN_HIDE_IMAGE;
+        bShow.rect = { 0, 0, toolBtnW, actBtnH };
+        bShow.label = L"";
+        bShow.tooltip = L"Show pinned image";
+        bShow.isPrimaryAction = false;
+        data->buttons.push_back(bShow);
+
+        DockButton bDrag;
+        bDrag.id = DBTN_ACT_DRAG_HUD;
+        bDrag.rect = { toolBtnW + gap, 0, miniW, actBtnH };
+        bDrag.label = L"";
+        bDrag.tooltip = L"Drag hidden pinned image";
+        bDrag.isPrimaryAction = false;
+        data->buttons.push_back(bDrag);
+
+        data->sizeRowRect     = { 0, 0, 0, 0 };
+        data->sizeBoxRect     = { 0, 0, 0, 0 };
+        data->pctBoxRect      = { 0, 0, 0, 0 };
+        data->pctResetBtnRect = { 0, 0, 0, 0 };
+
+        if (hWnd) {
+            SetWindowPos(hWnd, nullptr, winL, winT, winW, winH, SWP_NOACTIVATE | SWP_NOZORDER);
+            RenderPinnedLayeredWindow(hWnd, data);
+        }
+        return;
+    }
 
     int viewX = 0, viewY = 0, viewW = imgW, viewH = imgH;
     GetPinnedVisibleSlice(data, imgW, imgH, viewX, viewY, viewW, viewH);
@@ -966,11 +993,23 @@ void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWind
         }
         int rx = sStripL - winL;
         int ry = by + actBtnH + gap;
-        int sizeBoxW = 158;
+        // "Search on web" heads the image-size row; the W x H box gives up one
+        // button plus that button's gap so the row keeps the strip's width and
+        // the percentage box and 100% reset stay exactly where they were.
+        DockButton bSearch;
+        bSearch.id = DBTN_ACT_PIN_SEARCH_GOOGLE;
+        bSearch.rect = { rx, ry, rx + toolBtnW, ry + actBtnH };
+        bSearch.label = L"";
+        bSearch.tooltip = FormatLabelWithShortcut(L"Search on web", g_Daemon.hkPinSearchGoogle);
+        bSearch.isPrimaryAction = false;
+        data->buttons.push_back(bSearch);
+
+        int rowX = rx + toolBtnW + gap;
+        int sizeBoxW = 158 - toolBtnW - gap;
         int resetBtnW = 26;
-        data->sizeRowRect     = { rx, ry, rx + stripW, ry + actBtnH };
-        data->sizeBoxRect     = { rx, ry, rx + sizeBoxW, ry + actBtnH };
-        data->pctBoxRect      = { rx + sizeBoxW, ry, rx + stripW - resetBtnW, ry + actBtnH };
+        data->sizeRowRect     = { rowX, ry, rx + stripW, ry + actBtnH };
+        data->sizeBoxRect     = { rowX, ry, rowX + sizeBoxW, ry + actBtnH };
+        data->pctBoxRect      = { rowX + sizeBoxW, ry, rx + stripW - resetBtnW, ry + actBtnH };
         data->pctResetBtnRect = { rx + stripW - resetBtnW, ry, rx + stripW, ry + actBtnH };
     } else {
         data->sizeRowRect     = { 0, 0, 0, 0 };
@@ -1939,7 +1978,7 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                     if (hPin && IsWindow(hPin)) {
                         PinnedWindowData* d = (PinnedWindowData*)GetWindowLongPtrW(hPin, GWLP_USERDATA);
                         if (d && d->bmp) {
-                            std::wstring stem = g_Daemon.FormatFilename(g_Daemon.captureCounter++);
+                            std::wstring stem = g_Daemon.NextFreeCaptureStem(ext);
                             std::wstring full = BuildUniqueSaveFilePath(g_Daemon.saveFolder, stem, ext, idx++, totalPins);
                             if (g_Daemon.SaveBitmapToPath(d->bmp, full)) {
                                 lastSaved = full;
@@ -1958,8 +1997,8 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 }
             } else if (data->bmp) {
                 CreateDirectoryW(g_Daemon.saveFolder.c_str(), nullptr);
-                std::wstring stem = g_Daemon.FormatFilename(g_Daemon.captureCounter++);
                 std::wstring ext = PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                std::wstring stem = g_Daemon.NextFreeCaptureStem(ext);
                 g_Daemon.SaveSettings();
                 std::wstring full = BuildUniqueSaveFilePath(g_Daemon.saveFolder, stem, ext, 0, 1);
                 if (g_Daemon.SaveBitmapToPath(data->bmp, full)) {
@@ -1974,8 +2013,8 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
         case DBTN_ACT_SAVE_AS:
             if (applyToAll && g_Daemon.pinnedWindows.size() > 1) {
                 std::vector<WCHAR> szFile(4096, L'\0');
-                std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
-                                       PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                std::wstring pinAllExt = PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                std::wstring defName = g_Daemon.NextFreeCaptureStem(pinAllExt) + pinAllExt;
                 g_Daemon.SaveSettings();
                 wcsncpy_s(szFile.data(), szFile.size(), defName.c_str(), _TRUNCATE);
 
@@ -2050,8 +2089,8 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
                 if (IsWindow(hWnd)) SetFocus(hWnd);
             } else if (data->bmp) {
                 std::vector<WCHAR> szFile(4096, L'\0');
-                std::wstring defName = g_Daemon.FormatFilename(g_Daemon.captureCounter++) +
-                                       PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                std::wstring pinOneExt = PepperSnapDaemon::GetFormatExtension(g_Daemon.regionFormat);
+                std::wstring defName = g_Daemon.NextFreeCaptureStem(pinOneExt) + pinOneExt;
                 g_Daemon.SaveSettings();
                 wcsncpy_s(szFile.data(), szFile.size(), defName.c_str(), _TRUNCATE);
 
@@ -3017,8 +3056,8 @@ void PepperSnapDaemon::ActionPinToDesktop() {
     std::wstring savedNote;
     if (alsoSavePinned) {
         CreateDirectoryW(saveFolder.c_str(), nullptr);
-        std::wstring fn = FormatFilename(captureCounter++) + GetFormatExtension(regionFormat);
-        std::wstring full = saveFolder + L"\\" + fn;
+        std::wstring pinExt = GetFormatExtension(regionFormat);
+        std::wstring full = saveFolder + L"\\" + NextFreeCaptureStem(pinExt) + pinExt;
         if (SaveBitmapToPath(cropped, full)) {
             lastSavedFilePath = full;
             savedNote = L"Saved to: " + full + L"\n";
@@ -4325,6 +4364,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(FormatLabelWithShortcut(L"Search on web the image in clipboard", hkSearchGoogle), L"Open default browser to https://lens.google.com/ and paste the image from the clipboard (also in tray menu; customizable in Customize keys)");
     addRow(L"Left-click system tray icon",   L"Start custom area capture");
     addRow(L"Right-click system tray icon",  L"Open tray menu (Pin the image in clipboard on top, Edit the image in clipboard, Search on web the image in clipboard, Open image to edit / pin (supports multi-select), Smooth / Unsmooth all pinned image, Show / Hide toolbar on all pinned image, Show / Hide outline on all pinned image, Close all pinned image, Options, Keyboard shortcuts and info, etc.)");
+    addRow(L"Launch PepperSnap at Windows startup", L"Tray menu toggle that starts PepperSnap in the system tray when you log on. It is an ordinary per-user startup entry, so if \"Run as administrator\" is also on, logging on shows the usual UAC prompt; turn either setting off to avoid it");
     addRow(L"Right-click image in Explorer", L"\"Edit with PepperSnap\" (single image on a checkerboard transparency background; shows selectable bottom frame list for multi-frame .gif / .webp; when \"Put pinned image above edit window\" is enabled in Options, pinned images overlay the edit window and any pinned image in the custom area is included when saving/copying), \"Search image on web\" (copies image to clipboard and searches on https://lens.google.com/), or \"Pin on top\" (single or multi-selected images)");
     addRow(L"Multi-frame GIF / WebP editor", L"When editing a multi-frame .gif or .webp, a horizontally scrollable & vertically resizable frame list appears at the bottom (on top of custom area & toolbar, auto-hides when focusing custom area/toolbar if \"Auto-hide frame list\" is enabled in Options, with a persistent dropdown button & Play / Pause icon on the right side)");
     addActionRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, FormatLabelWithShortcut(L"Play / Pause frames (GIF/WebP)", hkFramePlayPause),   L"Play or pause multi-frame .gif / .webp animation in \"Edit with PepperSnap\" (or click the Play / Pause icon on the right side of the Hide / Show frames button)");
@@ -4341,7 +4381,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Keep cursor & Auto-hide frames", L"Toggle \"Keep cursor on screenshot\" (captures mouse cursor in screenshots) and \"Auto-hide frame list\" (auto-collapses GIF/WebP frame list when focusing custom area/toolbar)");
     addRow(L"Put pinned image above edit window", L"Checkbox in Options (on by default) that keeps pinned images above the \"Edit with PepperSnap\" window so any pinned image inside the custom area is included when saving or copying");
     addRow(L"Keep edit window open after save and copy", L"Checkbox in Options that keeps the \"Edit with PepperSnap\" window open after Quick save, Save as, or Copy to clipboard instead of closing");
-    addRow(L"Run as administrator (admin permission)", L"Checkbox in Options (on by default) that makes PepperSnap ask for admin permission when it starts, so shortcuts and capture keep working while an app running as administrator has focus; without it a shortcut pressed over such a window silently does nothing. If the prompt is declined, or the account has no admin permission, PepperSnap simply runs without it");
+    addRow(L"Run as administrator (admin permission)", L"Checkbox in Options (on by default) that runs PepperSnap with admin permission, so shortcuts and capture keep working while an app running as administrator has focus; without it a shortcut pressed over such a window silently does nothing. Windows asks for that permission with its usual UAC prompt each time PepperSnap starts, because PepperSnap installs nothing and registers no scheduled task or service to avoid it. If the prompt is declined, or the account has no admin permission, PepperSnap simply runs without it. With PepperSnap already running, starting it again - or using its right-click entries - needs no new permission and shows no prompt. Turning this off never runs the app elevated");
     addRow(L"Disable right-click integration", L"Checkbox in Options that removes the PepperSnap entries (\"Edit with PepperSnap\", \"Search image on web\", \"Pin on top\") from the image right-click menu in Explorer");
     addRow(L"Disable magnifier window", L"Checkbox in Options (off by default) that disables the floating loupe magnification window when aiming, selecting, or resizing custom areas");
     addRow(L"Enable pen & highlighter smoothing", L"Toggle freehand stroke smoothing and adjust smoothing strength slider (5%–100%: weak, balanced, strong, ultra smooth)");
@@ -4378,7 +4418,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_RESET_NUM, false, FormatLabelWithShortcut(L"Reset counter to 1",  hkToolResetNum),  L"Appears beside Numbering arrow to reset next step number to 1");
     addToolRow(OverlayTool::Rectangle,      FormatLabelWithShortcut(L"Square / rectangle",  hkToolRect),      L"Rectangle outline (hold Shift for 1:1 square)");
     addToolRow(OverlayTool::Ellipse,        FormatLabelWithShortcut(L"Circle / ellipse",    hkToolEllipse),   L"Ellipse outline (hold Shift for 1:1 circle)");
-    addToolRow(OverlayTool::TextBox,        FormatLabelWithShortcut(L"Text box",            hkToolText),      L"In-place text (Enter commits, Shift + Enter new line, Esc exits)");
+    addToolRow(OverlayTool::TextBox,        FormatLabelWithShortcut(L"Text box",            hkToolText),      L"In-place text in Calibri Light, with a glyph outline chosen for contrast so it reads over any background (Enter commits, Shift + Enter new line, Esc exits)");
     addToolRow(OverlayTool::MosaicSquare,   FormatLabelWithShortcut(L"Mosaic square",       hkToolMosaicSq),  L"Pixelate rectangular area (hold Shift for 1:1 square)");
     addToolRow(OverlayTool::MosaicCircle,   FormatLabelWithShortcut(L"Mosaic circle",       hkToolMosaicCir), L"Pixelate elliptical area (hold Shift for 1:1 circle)");
 
@@ -4394,16 +4434,12 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addActionRow(DBTN_ACT_UNDO,     false,  FormatLabelWithShortcut(L"Undo",                      hkActUndo),           L"Undo last annotation action");
     addActionRow(DBTN_ACT_REDO,     false,  FormatLabelWithShortcut(L"Redo",                      hkActRedo),           L"Redo undone annotation action");
     addActionRow(DBTN_ACT_CLEAR,    false,  FormatLabelWithShortcut(L"Clear all annotations",     hkActClear),          L"Remove all annotations from current custom area");
-    addActionRow(DBTN_ACT_OPTIONS,  false,  FormatLabelWithShortcut(L"Options",                   hkActOptions),        L"Open PepperSnap Options window");
+    addActionRow(DBTN_ACT_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",          hkActSearchGoogle),   L"Copy custom area to clipboard, open the default browser at https://lens.google.com/ and paste the image (Shift + click Copy button does the same; customizable in Customize keys)");
     addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",                hkActPin),            L"Pin custom area capture as a floating topmost desktop window (preserves rectangle, irregular quad / triangle, or circle / ellipse transparency)");
     addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in custom area via Windows OCR & copy to clipboard");
     addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for custom area");
     addActionRow(DBTN_ACT_SAVE,     false,  FormatLabelWithShortcut(L"Quick save",                hkActSave),           L"Save capture directly to default folder & close");
-    std::wstring copySearchShortcut = (hkActSearchGoogle.vk != 0)
-        ? FormatHotkeyString(hkActSearchGoogle)
-        : L"Shift + click Copy button";
-    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close (press " + copySearchShortcut + L" or Shift + click Copy button to search image on https://lens.google.com/)");
-    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Search image",              hkActSearchGoogle),   L"Copy custom area to clipboard, open default browser to https://lens.google.com/ and paste the image (or Shift + click Copy button; customizable in Customize keys)");
+    addActionRow(DBTN_ACT_COPY,     true,   FormatLabelWithShortcut(L"Copy to clipboard",         hkActCopy),           L"Copy capture to clipboard & close");
     addActionRow(DBTN_ACT_CLOSE,    false,  L"Close / Select mode (Esc)",                                               L"Switch active drawing tool to Select mode, or exit custom area");
 
     addSection(L"Pin on top — floating window toolbar & mechanisms");
@@ -4412,6 +4448,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Animated GIF & WebP support",   L"Pinned .gif and animated .webp images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
     addRow(L"Ctrl + Left-click pinned image", L"Select or deselect pinned images for multi-selection (shows a blue outline on selected pinned images; pinning multiple images at once multi-selects them by default; drag any selected pinned image to move all selected pinned images together with group screen-edge snapping; left-click without Ctrl to clear selection)");
     addRow(L"Alt + Click / Alt + Shift + Click", L"Pause or play pinned animation on current frame (only shown & active on animated .gif / multi-frame animated .webp; hold Alt + Shift + click to pause/play all pinned animations)");
+    addActionRow(DBTN_ACT_PIN_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",      hkPinSearchGoogle),  L"Leftmost button of the [W\x00D7H px | %] row: copy pinned image to clipboard, open the default browser at https://lens.google.com/ and paste the image (Shift + click Copy button does the same; customizable in Customize keys)");
     addRow(L"Click W × H px or % indicator", L"Second toolbar row shows editable [W×H px | %] — click to type W×H, width only (200 or 200x), height only (xx200 or x200), or zoom % (keeps aspect ratio; Shift + Enter applies to all pinned images)");
     addActionRow(DBTN_ACT_SCALE_RESET_100, false, L"Set to 100% (beside % indicator)", L"On the right side of the % scale indicator ([W×H px | % [reset icon]]) — click to set scale to 100% (hold Shift + click to set all pinned images to 100%)");
     addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", \"Middle-click to reset size\", \"Ctrl + middle-click to reset position\", \"Ctrl + click to multi-select (drag together)\", \"Alt + click to pause/play\" (on animations only), and Shift multi-pin hint");
@@ -4431,16 +4468,12 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Show / Hide toolbar on all pinned image", L"Tray menu button that cycles showing or hiding the toolbar across all pinned images (keeps tray menu open)");
     addRow(L"Show / Hide outline on all pinned image", L"Tray menu button that cycles showing or hiding the red outline across all pinned images (keeps tray menu open)");
     addRow(L"Smart toolbar positioning",     L"Toolbar moves above or inside image when out of space and stays above taskbar");
-    addActionRow(DBTN_ACT_PIN_HIDE_IMAGE,   false, L"Hide pinned image", L"Hide pinned image and toolbar, replaced with [drag | eye] buttons to drag or show (hold Shift to apply to all pinned images)");
+    addActionRow(DBTN_ACT_PIN_HIDE_IMAGE,   false, L"Hide pinned image", L"Hide pinned image and toolbar, replaced with [eye | drag] buttons in place to show or drag (hold Shift to apply to all pinned images)");
     addActionRow(DBTN_ACT_PIN_OUTLINE,      false, FormatLabelWithShortcut(L"Show / Hide outline",      hkPinOutline),     L"Toggle red border outline around pinned image (hold Shift to apply to all pinned images; default: on)");
     addActionRow(DBTN_ACT_PIN_UNFILTER,     false, FormatLabelWithShortcut(L"Smooth the image",         hkPinSmooth),      L"Smooth image with filter when on; unfiltered (pixelated) when off (hold Shift to apply to all pinned images; default: off)");
-    addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image (hold Shift to Save As all pinned images; shortcut empty by default, customizable in Customize keys)");
-    addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder (hold Shift to quick-save all pinned images; shortcut empty by default, customizable in Customize keys)");
-    std::wstring pinSearchShortcut = (hkPinSearchGoogle.vk != 0)
-        ? FormatHotkeyString(hkPinSearchGoogle)
-        : L"Shift + click Copy button";
-    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),          L"Copy pinned image to clipboard (press " + pinSearchShortcut + L" or Shift + click Copy button to search image on https://lens.google.com/)");
-    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Search image",             hkPinSearchGoogle),  L"Copy pinned image to clipboard, open default browser to https://lens.google.com/ and paste the image (or Shift + click Copy button; customizable in Customize keys)");
+    addActionRow(DBTN_ACT_SAVE_AS,      false, FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkPinSaveAs),    L"Open Save As dialog for pinned image (hold Shift to Save As all pinned images; customizable in Customize keys)");
+    addActionRow(DBTN_ACT_SAVE,         false, FormatLabelWithShortcut(L"Quick save",               hkPinSave),      L"Save pinned image directly to default folder (hold Shift to quick-save all pinned images; customizable in Customize keys)");
+    addActionRow(DBTN_ACT_COPY,         true,  FormatLabelWithShortcut(L"Copy to clipboard",        hkPinCopy),          L"Copy pinned image to clipboard");
     addActionRow(DBTN_ACT_CLOSE,        false, FormatLabelWithShortcut(L"Close pinned image",       hkPinClose),         L"Close pinned image (hold Shift to close all pinned images, or double right-click, or use tray menu)");
 
     int maxKeyW = 220;
@@ -4552,7 +4585,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     BringWindowToTop(hDlg);
     SetForegroundWindow(hDlg);
     MSG msg;
-    while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+    while (IsWindow(hDlg) && PepperSnapDaemon::GetMessageKeepQuit(&msg)) {
         if (msg.message == WM_MOUSEWHEEL && (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd))) {
             SendMessageW(hDlg, WM_MOUSEWHEEL, msg.wParam, msg.lParam);
             continue;

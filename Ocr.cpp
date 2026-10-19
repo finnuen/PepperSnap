@@ -329,7 +329,7 @@ void PepperSnapDaemon::ActionOcrAndClose() {
     std::wstring savedNote;
     if (alsoSaveOcrText) {
         CreateDirectoryW(saveFolder.c_str(), nullptr);
-        std::wstring fn = FormatFilename(captureCounter++) + L".txt";
+        std::wstring fn = NextFreeCaptureStem(L".txt") + L".txt";
         SaveSettings();
         std::wstring full = saveFolder + L"\\" + fn;
         HANDLE hFile = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

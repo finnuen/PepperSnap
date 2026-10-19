@@ -22,7 +22,6 @@
 #include <wincodec.h>
 #include <uiautomation.h>
 #include <wininet.h>
-#include <tlhelp32.h>
 #include <gdiplus.h>
 
 #if defined(_MSC_VER)
@@ -213,14 +212,13 @@ enum DockBtnID {
     DBTN_ACT_REDO,
     DBTN_ACT_CLEAR,
     DBTN_ACT_RESET_NUM,
-    DBTN_ACT_OPTIONS,
-    DBTN_ACT_HELP,
     DBTN_ACT_CLOSE,
     DBTN_ACT_DRAG_HUD,
     DBTN_ACT_FRAME_PLAY_PAUSE,
     DBTN_ACT_FRAME_TOGGLE,
     DBTN_ACT_SCALE_RESET_100,
-    DBTN_ACT_PIN_SEARCH_GOOGLE
+    DBTN_ACT_PIN_SEARCH_GOOGLE,
+    DBTN_ACT_SEARCH_GOOGLE
 };
 
 enum class PinnedSnapMode {

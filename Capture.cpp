@@ -1,4 +1,5 @@
 #include "PepperSnapInternal.h"
+#include "WebPEncode.h"
 
 // Screen Capture, Clipboard & Image Saving
 // ----------------------------------------------------------------------------
@@ -314,101 +315,6 @@ static bool GetGdiPlusEncoderClsid(const WCHAR* mimeType, CLSID* pClsid) {
     return false;
 }
 
-static const GUID GUID_ContainerFormatWebp_Local = 
-    { 0xe0eeb8f9, 0xd2d6, 0x40c1, { 0xbf, 0xc4, 0x65, 0x45, 0xf6, 0x80, 0xc4, 0x63 } };
-static const CLSID CLSID_WICImagingFactory1_Local =
-    { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
-static const CLSID CLSID_WICImagingFactory2_Local =
-    { 0x317d06e8, 0x5f24, 0x433d, { 0xbd, 0xf7, 0x79, 0xce, 0x68, 0xd8, 0xab, 0xc2 } };
-static const IID IID_IWICImagingFactory_Local =
-    { 0xec5ec8a9, 0xc395, 0x4314, { 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
-static const GUID GUID_WICPixelFormat32bppBGRA_Local =
-    { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x0f } };
-
-bool PepperSnapDaemon::SaveBitmapAsWebPViaWIC(Bitmap* bmp, const std::wstring& path, int quality) {
-    if (!bmp) return false;
-    UINT w = bmp->GetWidth();
-    UINT h = bmp->GetHeight();
-    if (w == 0 || h == 0 || w > 16383 || h > 16383) return false;
-
-    HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    bool needCoUninit = SUCCEEDED(hrCo);
-
-    IWICImagingFactory* pFactory = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory2_Local, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory_Local, (void**)&pFactory)) || !pFactory) {
-        CoCreateInstance(CLSID_WICImagingFactory1_Local, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory_Local, (void**)&pFactory);
-    }
-    if (!pFactory) {
-        if (needCoUninit) CoUninitialize();
-        return false;
-    }
-
-    IWICStream* pStream = nullptr;
-    IWICBitmapEncoder* pEncoder = nullptr;
-    IWICBitmapFrameEncode* pFrame = nullptr;
-    IPropertyBag2* pPropertyBag = nullptr;
-    bool success = false;
-
-    do {
-        if (FAILED(pFactory->CreateStream(&pStream)) || !pStream) break;
-        if (FAILED(pStream->InitializeFromFilename(path.c_str(), GENERIC_WRITE))) break;
-
-        if (FAILED(pFactory->CreateEncoder(GUID_ContainerFormatWebp_Local, nullptr, &pEncoder)) || !pEncoder) break;
-        if (FAILED(pEncoder->Initialize(pStream, WICBitmapEncoderNoCache))) break;
-
-        if (FAILED(pEncoder->CreateNewFrame(&pFrame, &pPropertyBag)) || !pFrame) break;
-
-        if (pPropertyBag) {
-            PROPBAG2 option = { 0 };
-            option.pstrName = (LPOLESTR)L"ImageQuality";
-            VARIANT varValue;
-            VariantInit(&varValue);
-            varValue.vt = VT_R4;
-            float qVal = (float)std::max(1, std::min(100, quality)) / 100.0f;
-            varValue.fltVal = qVal;
-            pPropertyBag->Write(1, &option, &varValue);
-        }
-
-        if (FAILED(pFrame->Initialize(pPropertyBag))) break;
-        if (FAILED(pFrame->SetSize(w, h))) break;
-
-        WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA_Local;
-        if (FAILED(pFrame->SetPixelFormat(&pixelFormat))) break;
-
-        Rect lockRc(0, 0, (INT)w, (INT)h);
-        BitmapData bd;
-        if (bmp->LockBits(&lockRc, ImageLockModeRead, PixelFormat32bppARGB, &bd) != Ok) break;
-
-        UINT cbStride = (UINT)std::abs(bd.Stride);
-        UINT cbBufferSize = cbStride * h;
-        HRESULT hrWrite = pFrame->WritePixels(h, cbStride, cbBufferSize, (BYTE*)bd.Scan0);
-        bmp->UnlockBits(&bd);
-
-        if (FAILED(hrWrite)) break;
-
-        if (FAILED(pFrame->Commit())) break;
-        if (FAILED(pEncoder->Commit())) break;
-
-        success = true;
-    } while (false);
-
-    if (pPropertyBag) pPropertyBag->Release();
-    if (pFrame) pFrame->Release();
-    if (pEncoder) pEncoder->Release();
-    if (pStream) pStream->Release();
-    pFactory->Release();
-
-    if (needCoUninit) {
-        CoUninitialize();
-    }
-
-    if (!success) {
-        DeleteFileW(path.c_str());
-    }
-
-    return success;
-}
-
 bool PepperSnapDaemon::SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path) {
     if (!bmp) return false;
     UINT w = bmp->GetWidth();
@@ -419,121 +325,39 @@ bool PepperSnapDaemon::SaveBitmapAsWebP(Bitmap* bmp, const std::wstring& path) {
     BitmapData data;
     if (bmp->LockBits(&lockRc, ImageLockModeRead, PixelFormat32bppARGB, &data) != Ok) return false;
 
-    struct VP8LBitWriter {
-        std::vector<BYTE> bytes;
-        uint64_t acc = 0;
-        int bits = 0;
-        void Write(uint32_t val, int n) {
-            acc |= (uint64_t(val) & ((1ULL << n) - 1ULL)) << bits;
-            bits += n;
-            while (bits >= 8) {
-                bytes.push_back((BYTE)(acc & 0xFF));
-                acc >>= 8;
-                bits -= 8;
-            }
-        }
-        void Flush() {
-            if (bits > 0) {
-                bytes.push_back((BYTE)(acc & 0xFF));
-                acc = 0;
-                bits = 0;
-            }
-        }
-    } bw;
-
-    const BYTE* scan0 = (const BYTE*)data.Scan0;
+    // The stream carries an "alpha is used" flag, and only the pixels know what it
+    // should be. When nothing is transparent the encoder leaves alpha out of the
+    // stream entirely, which is worth this one scan.
+    const BYTE* base = (const BYTE*)data.Scan0;
     bool hasAlpha = false;
     for (UINT y = 0; y < h && !hasAlpha; ++y) {
-        const DWORD* row = (const DWORD*)(scan0 + y * data.Stride);
+        const BYTE* row = base + (ptrdiff_t)y * data.Stride;
         for (UINT x = 0; x < w; ++x) {
-            if ((row[x] >> 24) < 255) {
+            if (row[(size_t)x * 4 + 3] != 255) {
                 hasAlpha = true;
                 break;
             }
         }
     }
 
-    bw.bytes.reserve(w * h * (hasAlpha ? 4 : 3) + 512);
-    bw.Write(0x2F, 8);               // VP8L signature byte
-    bw.Write(w - 1, 14);             // 14-bit width - 1
-    bw.Write(h - 1, 14);             // 14-bit height - 1
-    bw.Write(hasAlpha ? 1 : 0, 1);   // alpha_is_used
-    bw.Write(0, 3);                  // version = 0
-    bw.Write(0, 1);                  // no transforms
-    bw.Write(0, 1);                  // no color cache
-    bw.Write(0, 1);                  // no meta prefix codes
-
-    auto writeIdentity8BitTree = [&](int alphabetSize) {
-        bw.Write(0, 1);      // normal code length tree
-        bw.Write(12 - 4, 4); // num_code_lengths = 12
-        const int clLens[12] = { 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
-        for (int i = 0; i < 12; ++i) bw.Write(clLens[i], 3);
-        bw.Write(0, 1);      // full alphabet
-        for (int i = 0; i < alphabetSize; ++i) bw.Write(i < 256 ? 1 : 0, 1);
-    };
-
-    writeIdentity8BitTree(280); // Green + length codes
-    writeIdentity8BitTree(256); // Red
-    writeIdentity8BitTree(256); // Blue
-    if (hasAlpha) {
-        writeIdentity8BitTree(256); // Full 8-bit Alpha channel
-    } else {
-        // Alpha: single-symbol tree for 255 (0 bits per pixel)
-        bw.Write(1, 1); bw.Write(0, 1); bw.Write(1, 1); bw.Write(255, 8);
-    }
-    // Distance: single-symbol tree for 0
-    bw.Write(1, 1); bw.Write(0, 1); bw.Write(0, 1); bw.Write(0, 1);
-
-    BYTE rev8[256];
-    for (int i = 0; i < 256; ++i) {
-        BYTE r = 0;
-        for (int b = 0; b < 8; ++b) r = (BYTE)((r << 1) | ((i >> b) & 1));
-        rev8[i] = r;
-    }
-
-    for (UINT y = 0; y < h; ++y) {
-        const DWORD* row = (const DWORD*)(scan0 + y * data.Stride);
-        for (UINT x = 0; x < w; ++x) {
-            DWORD px = row[x];
-            BYTE b = (BYTE)(px & 0xFF);
-            BYTE g = (BYTE)((px >> 8) & 0xFF);
-            BYTE r = (BYTE)((px >> 16) & 0xFF);
-            BYTE a = (BYTE)((px >> 24) & 0xFF);
-            bw.Write(rev8[g], 8);
-            bw.Write(rev8[r], 8);
-            bw.Write(rev8[b], 8);
-            if (hasAlpha) {
-                bw.Write(rev8[a], 8);
-            }
-        }
-    }
+    // Windows can read WebP but has never been able to write it - neither WIC nor
+    // the WinRT imaging API registers a WebP encoder, and the Store's "WebP Image
+    // Extensions" package is a decoder as well - so the encoder is ours. It lives
+    // in WebPEncode.cpp, apart from this file, because that made it possible to
+    // test on its own.
+    std::vector<BYTE> encoded;
+    const bool encodedOk = EncodeBGRAtoWebP(base, (int)w, (int)h, (int)data.Stride, hasAlpha, encoded);
     bmp->UnlockBits(&data);
-    bw.Flush();
-
-    uint32_t vp8lSize = (uint32_t)bw.bytes.size();
-    uint32_t padByte = (vp8lSize & 1u);
-    uint32_t riffSize = 4u + 8u + vp8lSize + padByte;
+    if (!encodedOk || encoded.empty()) return false;
 
     HANDLE hFile = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) return false;
 
-    BYTE header[20];
-    memcpy(header + 0,  "RIFF", 4);
-    memcpy(header + 4,  &riffSize, 4);
-    memcpy(header + 8,  "WEBP", 4);
-    memcpy(header + 12, "VP8L", 4);
-    memcpy(header + 16, &vp8lSize, 4);
-
     DWORD written = 0;
-    bool ok = WriteFile(hFile, header, 20, &written, nullptr) && (written == 20);
-    if (ok && vp8lSize > 0) {
-        ok = WriteFile(hFile, bw.bytes.data(), vp8lSize, &written, nullptr) && (written == vp8lSize);
-    }
-    if (ok && padByte) {
-        BYTE zero = 0;
-        WriteFile(hFile, &zero, 1, &written, nullptr);
-    }
+    const bool ok = WriteFile(hFile, encoded.data(), (DWORD)encoded.size(), &written, nullptr) &&
+                    written == (DWORD)encoded.size();
     CloseHandle(hFile);
+    if (!ok) DeleteFileW(path.c_str());
     return ok;
 }
 
@@ -705,9 +529,6 @@ bool PepperSnapDaemon::SaveBitmapToPath(Bitmap* bmp, const std::wstring& path) {
 
     // Do NOT save any metadata into the file at all (for WebP, BMP, JPEG, and PNG)
     if (ext == L".webp") {
-        if (SaveBitmapAsWebPViaWIC(bmp, path, jpegQuality)) {
-            return true;
-        }
         return SaveBitmapAsWebP(bmp, path);
     }
     if (ext == L".bmp") {
@@ -932,9 +753,9 @@ void PepperSnapDaemon::InstantFullscreenCapture() {
     }
 
     CreateDirectoryW(saveFolder.c_str(), nullptr);
-    int seq = captureCounter++;
+    std::wstring saveExt = GetFormatExtension(fullscreenFormat);
+    std::wstring fileName = NextFreeCaptureStem(saveExt) + saveExt;
     SaveSettings();
-    std::wstring fileName = FormatFilename(seq) + GetFormatExtension(fullscreenFormat);
     std::wstring fullPath = saveFolder + L"\\" + fileName;
 
     if (SaveBitmapToPath(fullBmp, fullPath)) {
@@ -1014,9 +835,9 @@ void PepperSnapDaemon::InstantPreviousRegionCapture() {
     CopyBitmapToClipboard(cropped);
 
     CreateDirectoryW(saveFolder.c_str(), nullptr);
-    int seq = captureCounter++;
+    std::wstring saveExt = GetFormatExtension(regionFormat);
+    std::wstring fileName = NextFreeCaptureStem(saveExt) + saveExt;
     SaveSettings();
-    std::wstring fileName = FormatFilename(seq) + GetFormatExtension(regionFormat);
     std::wstring fullPath = saveFolder + L"\\" + fileName;
 
     if (SaveBitmapToPath(cropped, fullPath)) {

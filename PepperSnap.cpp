@@ -216,6 +216,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int) {
     bool iniRunElevated = (GetPrivateProfileIntW(L"PepperSnap", L"RunElevated", 1, iniPreCheckPath.c_str()) != 0);
     bool shouldElevate = !cliNoElevate && (cliElevate || iniRunElevated);
     if (shouldElevate && !IsUserAnAdmin()) {
+        // A daemon is already running elevated, so hand the request over instead
+        // of re-launching and asking for admin permission again. This is not an
+        // elevation bypass - nothing is elevated that wasn't already; it just
+        // avoids requesting a new elevation that would only be wasted.
+        if (HWND hRunning = FindWindowW(L"PepperSnapTrayDaemonClass", nullptr)) {
+            forwardToRunningDaemon(hRunning);
+            releaseCliForwardMutex();
+            return 0;
+        }
+
         std::wstring selfPath = GetModuleFilePathDynamic(nullptr);
         if (!selfPath.empty()) {
             std::wstring args = lpCmdLine ? lpCmdLine : L"";
