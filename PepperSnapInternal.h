@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.1.19";
+    static constexpr const wchar_t* APP_VERSION = L"4.2.0";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -67,8 +67,8 @@ public:
     mutable bool ctxMenuSyncedRegistered = false;
     mutable bool ctxMenuSyncedWebSearch = false;
     mutable std::wstring ctxMenuSyncedExePath;
-    // Target language for "Shift + click Search on web" (Google Translate's
-    // tl= code). Lives in settings.ini as TranslateTargetLang.
+    // Target language for the Translate on web button (Google Translate's tl=
+    // code). Lives in settings.ini as TranslateTargetLang.
     std::wstring translateTargetLang = L"en";
     int optionsWindowHeight = 944;
     int customizeKeysWindowHeight = 620;
@@ -865,7 +865,7 @@ public:
     void OpenImageToPinOnTop();
     void PinClipboardImageOnTop();
     void EditClipboardImage();
-    void SearchClipboardImageOnGoogle(bool translateToTarget = false);
+    void SearchClipboardImageOnGoogle();
     void SearchImageFileOnGoogle(const std::wstring& filePath);
     static void OpenGoogleLensInBrowser();
     static void OpenGoogleTranslateInBrowser(const std::wstring& targetLang);

@@ -107,8 +107,9 @@ enum class UpdateCheckInterval {
 };
 
 // What a finished copy leaves behind: just the clipboard, or the clipboard plus a
-// browser page waiting for one Ctrl + V. Shift + click on the overlay's Search on
-// web button asks for Translate; every other entry point asks for Lens.
+// browser page waiting for one Ctrl + V. The overlay's Search on web button asks
+// for Lens and the Translate button beside it asks for Translate; every other
+// entry point asks for None.
 enum class WebOpenTarget {
     None      = 0,
     Lens      = 1,
@@ -227,7 +228,8 @@ enum DockBtnID {
     DBTN_ACT_FRAME_TOGGLE,
     DBTN_ACT_SCALE_RESET_100,
     DBTN_ACT_PIN_SEARCH_GOOGLE,
-    DBTN_ACT_SEARCH_GOOGLE
+    DBTN_ACT_SEARCH_GOOGLE,
+    DBTN_ACT_TRANSLATE
 };
 
 enum class PinnedSnapMode {

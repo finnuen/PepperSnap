@@ -176,9 +176,9 @@ a purely timestamp-based pattern would otherwise loop forever.
 
 ### The overlay leaves the screen before a heavy button does its work
 
-Copy, Pin, Quick save, Save as, Extract text and both "Search on web" entries cut
-their bitmap out of daemon state in `RenderCroppedRegionBitmap()` and then close
-the overlay. That render alone is about 100 ms on a full-screen custom-area
+Copy, Pin, Quick save, Save as, Extract text, Translate on web and Search on web
+cut their bitmap out of daemon state in `RenderCroppedRegionBitmap()` and then
+close the overlay. That render alone is about 100 ms on a full-screen custom-area
 selection (the crop clone plus the mosaic and highlighter passes), and the encode,
 the clipboard handoff, the file write and OCR add a few hundred more. With the
 window still up, all of that read as the toolbar freezing for a moment and *then*

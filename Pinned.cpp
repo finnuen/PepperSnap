@@ -1000,7 +1000,7 @@ void UpdatePinnedWindowLayout(HWND hWnd, PinnedWindowData* data, bool resizeWind
         bSearch.id = DBTN_ACT_PIN_SEARCH_GOOGLE;
         bSearch.rect = { rx, ry, rx + toolBtnW, ry + actBtnH };
         bSearch.label = L"";
-        bSearch.tooltip = FormatLabelWithShortcut(L"Search on web", g_Daemon.hkPinSearchGoogle) + L"\nShift + click to translate";
+        bSearch.tooltip = FormatLabelWithShortcut(L"Search on web", g_Daemon.hkPinSearchGoogle);
         bSearch.isPrimaryAction = false;
         data->buttons.push_back(bSearch);
 
@@ -1933,9 +1933,7 @@ static void ExecutePinnedWindowAction(HWND hWnd, PinnedWindowData* data, int btn
             SetFocus(hWnd);
             if (data->bmp) {
                 g_Daemon.CopyBitmapToClipboard(data->bmp);
-                // Shift asks for Translate instead of Lens, matching the overlay
-                // toolbar's Search on web button.
-                g_Daemon.SearchClipboardImageOnGoogle(IsPinShiftHeld());
+                g_Daemon.SearchClipboardImageOnGoogle();
             }
             return;
         case DBTN_ACT_COPY:
@@ -4445,11 +4443,12 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Delete / Backspace",            L"Delete currently selected annotation(s) (in Select mode)");
 
     addSection(L"Custom area — Row 3: toolbar actions & export shortcuts");
+    addRow(FormatLabelWithShortcut(L"Undo", hkActUndo), L"Undo the last annotation action. Keyboard only - the row has no Undo button any more, so this shortcut (Ctrl + Z by default) is the way to it");
+    addRow(FormatLabelWithShortcut(L"Redo", hkActRedo), L"Redo an undone annotation action. Keyboard only, like Undo (Ctrl + Y by default)");
     addActionRow(DBTN_ACT_DRAG_HUD, false,  L"Drag toolbar handle",                                                     L"Drag 4-way arrow button to move toolbar (resets when selection moves)");
-    addActionRow(DBTN_ACT_UNDO,     false,  FormatLabelWithShortcut(L"Undo",                      hkActUndo),           L"Undo last annotation action");
-    addActionRow(DBTN_ACT_REDO,     false,  FormatLabelWithShortcut(L"Redo",                      hkActRedo),           L"Redo undone annotation action");
     addActionRow(DBTN_ACT_CLEAR,    false,  FormatLabelWithShortcut(L"Clear all annotations",     hkActClear),          L"Remove all annotations from current custom area");
-    addActionRow(DBTN_ACT_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",          hkActSearchGoogle),   L"Copy custom area to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image. Shift + click opens https://translate.google.com/ instead, translating into the language chosen under Options (customizable in Customize keys)");
+    addActionRow(DBTN_ACT_TRANSLATE, false, L"Translate on web",                                                        L"Copy custom area to clipboard and open the default browser at https://translate.google.com/ in its image-translation view, translating into the language chosen under Options; press Ctrl + V there to paste the image");
+    addActionRow(DBTN_ACT_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",          hkActSearchGoogle),   L"Copy custom area to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image (customizable in Customize keys)");
     addActionRow(DBTN_ACT_PIN,      false,  FormatLabelWithShortcut(L"Pin on top",                hkActPin),            L"Pin custom area capture as a floating topmost desktop window (preserves rectangle, irregular quad / triangle, or circle / ellipse transparency)");
     addActionRow(DBTN_ACT_OCR,      false,  FormatLabelWithShortcut(L"Extract text with OCR",     hkActOcr),            L"Recognize text in custom area via Windows OCR & copy to clipboard");
     addActionRow(DBTN_ACT_SAVE_AS,  false,  FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP",  hkActSaveAs),         L"Open Save As dialog for custom area");
@@ -4463,7 +4462,7 @@ void PepperSnapDaemon::ShowShortcutsModal() {
     addRow(L"Animated GIF & WebP support",   L"Pinned .gif and animated .webp images play continuously; .png, .webp & .gif transparency is preserved over the desktop");
     addRow(L"Ctrl + Left-click pinned image", L"Select or deselect pinned images for multi-selection (shows a blue outline on selected pinned images; pinning multiple images at once multi-selects them by default; drag any selected pinned image to move all selected pinned images together with group screen-edge snapping; left-click without Ctrl to clear selection)");
     addRow(L"Alt + Click / Alt + Shift + Click", L"Pause or play pinned animation on current frame (only shown & active on animated .gif / multi-frame animated .webp; hold Alt + Shift + click to pause/play all pinned animations)");
-    addActionRow(DBTN_ACT_PIN_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",      hkPinSearchGoogle),  L"Leftmost button of the [W\x00D7H px | %] row: copy pinned image to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image. Shift + click opens https://translate.google.com/ instead, translating into the language chosen under Options (customizable in Customize keys)");
+    addActionRow(DBTN_ACT_PIN_SEARCH_GOOGLE, false, FormatLabelWithShortcut(L"Search on web",      hkPinSearchGoogle),  L"Leftmost button of the [W\x00D7H px | %] row: copy pinned image to clipboard and open the default browser at https://lens.google.com/; press Ctrl + V there to paste the image (customizable in Customize keys)");
     addRow(L"Click W × H px or % indicator", L"Second toolbar row shows editable [W×H px | %] — click to type W×H, width only (200 or 200x), height only (xx200 or x200), or zoom % (keeps aspect ratio; Shift + Enter applies to all pinned images)");
     addActionRow(DBTN_ACT_SCALE_RESET_100, false, L"Set to 100% (beside % indicator)", L"On the right side of the % scale indicator ([W×H px | % [reset icon]]) — click to set scale to 100% (hold Shift + click to set all pinned images to 100%)");
     addRow(L"Hover over pinned image (500ms)", L"Pop-up shows \"Double-click to hide/show toolbar\", \"Double right-click to close\", \"Scroll to resize\", \"Middle-click to reset size\", \"Ctrl + middle-click to reset position\", \"Ctrl + click to multi-select (drag together)\", \"Alt + click to pause/play\" (on animations only), and Shift multi-pin hint");

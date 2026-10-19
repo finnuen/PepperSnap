@@ -194,7 +194,7 @@ bool IsValidGithubRepoSlug(const std::wstring& s) {
 
 // --- Google Translate target languages ---------------------------------------
 //
-// "Shift + click Search on web" opens the image-translation view of Google
+// The Translate on web button opens the image-translation view of Google
 // Translate, and the "tl=" in that URL is a language code. This is Google's own
 // list of them, taken from the endpoint the translate site itself uses
 // (translate.google.com/translate_a/l?client=te&alpha=true&hl=en) and baked in,
@@ -2857,7 +2857,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE, 434, 39, 100, 28, hVp, (HMENU)IDC_OPT_FOLDER_DEFAULT, nullptr, nullptr);
             SendMessageW(hDeskDef, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            // Translate target for "Shift + click Search on web": a bold label and
+            // Translate target for the Translate on web button: a bold label and
             // its dropdown on one line, like the Shortcut keys row.
             HWND hLblTranslate = CreateWindowExW(0, L"STATIC", L"Translate to:",
                 WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 18, 78, 155, 22, hVp, nullptr, nullptr, nullptr);

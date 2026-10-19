@@ -1854,6 +1854,25 @@ Bitmap* PepperSnapDaemon::RenderCroppedRegionBitmap() {
 // Vector Tool Icons, Hover Speech-Bubble Tooltip & Docked HUD Builder
 // ----------------------------------------------------------------------------
 
+// The translate mark is two scripts side by side, and its CJK half needs a family
+// that actually carries the glyph. A Font built from a family that is not
+// installed draws nothing at all rather than falling back (see AGENTS.md), so the
+// first installed candidate wins and the choice is made once, not per repaint.
+static const wchar_t* CjkMarkFamily() {
+    static const wchar_t* const chosen = [] {
+        static const wchar_t* const candidates[] = { L"Microsoft YaHei", L"SimSun", L"MS Gothic" };
+        for (const wchar_t* family : candidates) {
+            // IsAvailable() is the GDI+ family probe: it is false when the family
+            // is not installed, which is the case a Font would silently draw
+            // nothing for.
+            FontFamily probe(family);
+            if (probe.IsAvailable()) return family;
+        }
+        return L"Segoe UI"; // last resort: its own font linking supplies the glyph
+    }();
+    return chosen;
+}
+
 void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, const RectF& rf) {
     float cx = rf.X + rf.Width * 0.5f;
     float cy = rf.Y + rf.Height * 0.5f;
@@ -2074,6 +2093,20 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
             g.DrawLine(&latPen, cx - gr * 0.85f, cy + gr * 0.53f, cx + gr * 0.85f, cy + gr * 0.53f);
             break;
         }
+        case DBTN_ACT_TRANSLATE: {
+            // "A" above-left, 文 (writing) below-right - the two-script mark
+            // Google Translate and Windows both use for translation. The offsets
+            // are the glyphs' measured ink boxes, so the pair reads as one mark
+            // centred in the button rather than as two separately placed letters.
+            FontFamily latinFamily(L"Segoe UI");
+            Font latinGlyph(&latinFamily, 12.0f, FontStyleBold, UnitPixel);
+            g.DrawString(L"A", -1, &latinGlyph, PointF(cx - 11.0f, cy - 12.0f), &whiteBrush);
+
+            FontFamily cjkFamily(CjkMarkFamily());
+            Font cjkGlyph(&cjkFamily, 11.0f, FontStyleBold, UnitPixel);
+            g.DrawString(L"\u6587", -1, &cjkGlyph, PointF(cx - 4.0f, cy - 6.0f), &whiteBrush);
+            break;
+        }
         case DBTN_ACT_ZOOM_OUT: {
             // Magnifying glass with '-' inside the glass circle
             float gcx = cx - 1.8f;
@@ -2223,12 +2256,15 @@ void PepperSnapDaemon::DrawDockButtonIcon(Graphics& g, const DockButton& b, cons
                 g.DrawRectangle(&whitePen, cx - 5.5f, cy - 6.5f, 8.0f, 10.0f);
                 g.DrawRectangle(&whitePen, cx - 2.5f, cy - 3.5f, 8.0f, 10.0f);
             } else {
-                // Copy sheets + label
-                g.DrawRectangle(&whitePen, cx - 18.0f, cy - 6.0f, 8.0f, 10.0f);
-                g.DrawRectangle(&whitePen, cx - 15.0f, cy - 3.0f, 8.0f, 10.0f);
+                // Copy sheets + label, centred as one group in the two-button-wide
+                // primary button: the offsets were measured from the drawn ink box
+                // (43 px wide, 15 px tall) rather than guessed, so the margins come
+                // out even at 12 px left and right.
+                g.DrawRectangle(&whitePen, cx - 21.0f, cy - 8.0f, 8.0f, 10.0f);
+                g.DrawRectangle(&whitePen, cx - 18.0f, cy - 5.0f, 8.0f, 10.0f);
                 FontFamily ff(L"Segoe UI");
                 Font f(&ff, 11.0f, FontStyleBold, UnitPixel);
-                g.DrawString(b.label.c_str(), -1, &f, PointF(cx - 4.0f, cy - 7.0f), &whiteBrush);
+                g.DrawString(b.label.c_str(), -1, &f, PointF(cx - 7.0f, cy - 9.0f), &whiteBrush);
             }
             break;
         }
@@ -2432,7 +2468,7 @@ void PepperSnapDaemon::BuildDockedHUD() {
     // Combined 3-Row Right-Aligned Toolbar:
     //   Row 1: Horizontal Tool Bar (keeping exact tool order)
     //   Row 2: Colors and Sizes Tool Bar (+ Custom px Input Box)
-    //   Row 3: Drag Button + Undo / Redo / Clear / Search on web / Pin / OCR / Saves / Copy / Close Tool Bar
+    //   Row 3: Drag Button + Clear / Translate on web / Search on web / Pin / OCR / Saves / Copy / Close Tool Bar
     // ------------------------------------------------------------------------
 
     struct ToolEntry { OverlayTool t; const wchar_t* lbl; std::wstring tip; };
@@ -2476,20 +2512,25 @@ void PepperSnapDaemon::BuildDockedHUD() {
     int row2W = colorsTotalW + groupGap + strokesTotalW + gap + customBoxW;
     const int row2H = toolBtnH;
 
-    // Row 3 metrics (Drag Handle + Undo/Redo/Clear/Search on web/Pin/OCR/SaveAs/Save/Copy/Close)
+    // Row 3 metrics (Drag Handle + Clear/Translate on web/Search on web/Pin/OCR/SaveAs/Save/Copy/Close)
+    //
+    // Undo and Redo used to sit here as buttons. Their slots now hold Translate and
+    // the extra width Copy needed to carry its name, which leaves the row exactly
+    // as wide as it was - so the HUD never moves - and keeps Copy, the action most
+    // sessions end in, the largest target on the row. Undo and Redo remain on their
+    // shortcuts (Ctrl + Z / Ctrl + Y by default, rebindable in Customize keys).
     std::wstring copyBtnTip = FormatLabelWithShortcut(L"Copy to clipboard", hkActCopy);
     struct ActEntry { int id; int w; const wchar_t* lbl; std::wstring tip; bool primary; };
     ActEntry acts[] = {
         { DBTN_ACT_DRAG_HUD, toolBtnW, L"", L"Drag to move toolbar (resets when selection moves)", false },
-        { DBTN_ACT_UNDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Undo",                     hkActUndo),    false },
-        { DBTN_ACT_REDO,     toolBtnW, L"", FormatLabelWithShortcut(L"Redo",                     hkActRedo),    false },
         { DBTN_ACT_CLEAR,    toolBtnW, L"", FormatLabelWithShortcut(L"Clear all annotations",    hkActClear),   false },
-        { DBTN_ACT_SEARCH_GOOGLE, toolBtnW, L"", FormatLabelWithShortcut(L"Search on web",       hkActSearchGoogle) + L"\nShift + click to translate", false },
+        { DBTN_ACT_TRANSLATE, toolBtnW, L"", L"Translate on web",                                               false },
+        { DBTN_ACT_SEARCH_GOOGLE, toolBtnW, L"", FormatLabelWithShortcut(L"Search on web",       hkActSearchGoogle), false },
         { DBTN_ACT_PIN,      toolBtnW, L"", FormatLabelWithShortcut(L"Pin on top",               hkActPin),     false },
         { DBTN_ACT_OCR,      toolBtnW, L"", FormatLabelWithShortcut(L"Extract text with OCR",    hkActOcr),     false },
         { DBTN_ACT_SAVE_AS,  toolBtnW, L"", FormatLabelWithShortcut(L"Save as JPG/PNG/WEBP/BMP", hkActSaveAs),  false },
         { DBTN_ACT_SAVE,     toolBtnW, L"", FormatLabelWithShortcut(L"Quick save",               hkActSave),    false },
-        { DBTN_ACT_COPY,     toolBtnW, L"", copyBtnTip,                                                         true },
+        { DBTN_ACT_COPY,     toolBtnW * 2 + gap, L"Copy", copyBtnTip,                                           true },
         { DBTN_ACT_CLOSE,    toolBtnW, L"", L"Close overlay (Esc)", false }
     };
     const size_t actCount = sizeof(acts) / sizeof(acts[0]);
@@ -3751,25 +3792,24 @@ static void ExecuteOverlayDockButtonAction(HWND hWnd, const DockButton& b) {
         return;
     }
     switch (b.id) {
-        case DBTN_ACT_SEARCH_GOOGLE: {
-            // Shift turns the search into a translate: same clipboard handoff,
-            // different page. See OpenGoogleTranslateInBrowser.
-            bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-            g_Daemon.ActionCopyAndClose(shiftHeld ? WebOpenTarget::Translate : WebOpenTarget::Lens);
+        case DBTN_ACT_TRANSLATE:
+            // Same clipboard handoff as Search on web, different page: Google
+            // Translate's image view, into the language picked under Options.
+            g_Daemon.ActionCopyAndClose(WebOpenTarget::Translate);
             return;
-        }
+        case DBTN_ACT_SEARCH_GOOGLE:
+            g_Daemon.ActionCopyAndClose(WebOpenTarget::Lens);
+            return;
         case DBTN_ACT_COPY:
-            // Shift does nothing here. The browser handoff belongs to the Search
-            // on web button (and its Shift + click translate) alone; the pinned
-            // toolbar's Copy is the one place Shift still changes what is copied.
+            // Shift does nothing here. The browser handoff belongs to the two web
+            // buttons beside it; the pinned toolbar's Copy is the one place Shift
+            // still changes what is copied.
             g_Daemon.ActionCopyAndClose(WebOpenTarget::None);
             return;
         case DBTN_ACT_SAVE:      g_Daemon.ActionQuickSaveAndClose(); return;
         case DBTN_ACT_SAVE_AS:   g_Daemon.ActionSaveAsAndClose(); return;
         case DBTN_ACT_PIN:       g_Daemon.ActionPinToDesktop(); return;
         case DBTN_ACT_OCR:       g_Daemon.ActionOcrAndClose(); return;
-        case DBTN_ACT_UNDO:      g_Daemon.Undo(); return;
-        case DBTN_ACT_REDO:      g_Daemon.Redo(); return;
         case DBTN_ACT_RESET_NUM:
             g_Daemon.nextStepNum = 1;
             if (IsWindow(hWnd)) InvalidateRect(hWnd, nullptr, FALSE);
@@ -8808,7 +8848,7 @@ void PepperSnapDaemon::EditClipboardImage() {
 // your own browser"), and it needs none of that: the toast says the image is on
 // the clipboard, and one Ctrl+V finishes the job.
 //
-// Shift + click on the same button opens Translate instead of Lens. Both are
+// The Translate on web button beside it opens Translate instead of Lens. Both are
 // only opened; the clipboard handoff and the Ctrl+V are the user's either way.
 
 void PepperSnapDaemon::OpenGoogleLensInBrowser() {
@@ -8906,7 +8946,7 @@ void PepperSnapDaemon::SearchImageFileOnGoogle(const std::wstring& filePath) {
     }
 }
 
-void PepperSnapDaemon::SearchClipboardImageOnGoogle(bool translateToTarget) {
+void PepperSnapDaemon::SearchClipboardImageOnGoogle() {
     if (hOverlayWnd && IsWindow(hOverlayWnd)) {
         if (!IsEditingOpenedImage()) {
             CloseRegionSnipOverlay();
@@ -8983,19 +9023,11 @@ void PepperSnapDaemon::SearchClipboardImageOnGoogle(bool translateToTarget) {
         return;
     }
 
-    if (translateToTarget) {
-        OpenGoogleTranslateInBrowser(translateTargetLang);
-        ShowTrayToast(
-            L"Directing to Google Translate",
-            L"Image copied to clipboard, Press Ctrl + V once the page loaded"
-        );
-    } else {
-        OpenGoogleLensInBrowser();
-        ShowTrayToast(
-            L"Directing to Google image search",
-            L"Image copied to clipboard, Press Ctrl + V once the page loaded"
-        );
-    }
+    OpenGoogleLensInBrowser();
+    ShowTrayToast(
+        L"Directing to Google image search",
+        L"Image copied to clipboard, Press Ctrl + V once the page loaded"
+    );
 }
 
 
