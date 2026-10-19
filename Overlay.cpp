@@ -2524,7 +2524,7 @@ void PepperSnapDaemon::BuildDockedHUD() {
     ActEntry acts[] = {
         { DBTN_ACT_DRAG_HUD, toolBtnW, L"", L"Drag to move toolbar (resets when selection moves)", false },
         { DBTN_ACT_CLEAR,    toolBtnW, L"", FormatLabelWithShortcut(L"Clear all annotations",    hkActClear),   false },
-        { DBTN_ACT_TRANSLATE, toolBtnW, L"", L"Translate on web",                                               false },
+        { DBTN_ACT_TRANSLATE, toolBtnW, L"", FormatLabelWithShortcut(L"Translate on web",     hkActTranslate),  false },
         { DBTN_ACT_SEARCH_GOOGLE, toolBtnW, L"", FormatLabelWithShortcut(L"Search on web",       hkActSearchGoogle), false },
         { DBTN_ACT_PIN,      toolBtnW, L"", FormatLabelWithShortcut(L"Pin on top",               hkActPin),     false },
         { DBTN_ACT_OCR,      toolBtnW, L"", FormatLabelWithShortcut(L"Extract text with OCR",    hkActOcr),     false },
@@ -6075,6 +6075,14 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
             }
 
+            if (MatchesOverlayShortcut(g_Daemon.hkActTranslate, vk, ctrl, shift, alt)) {
+                if (g_Daemon.hasSelection &&
+                    g_Daemon.dragMode != DragMode::CreatingSelection &&
+                    g_Daemon.dragMode != DragMode::PendingOutsideSelection) {
+                    g_Daemon.ActionCopyAndClose(WebOpenTarget::Translate);
+                }
+                return 0;
+            }
             if (MatchesOverlayShortcut(g_Daemon.hkActSearchGoogle, vk, ctrl, shift, alt)) {
                 if (g_Daemon.hasSelection &&
                     g_Daemon.dragMode != DragMode::CreatingSelection &&

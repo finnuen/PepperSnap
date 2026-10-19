@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.2.0";
+    static constexpr const wchar_t* APP_VERSION = L"4.2.1";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -116,6 +116,7 @@ public:
     HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkActTranslate{ 0, 0 };
     HotkeyBinding hkActSearchGoogle{ 0, 0 };
 
     // Multi-Frame GIF / WebP Editor Shortcut Bindings

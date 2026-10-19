@@ -144,6 +144,7 @@ void PepperSnapDaemon::SaveSettings() const {
     writeHk(L"HkActSaveAsMod",     L"HkActSaveAsVk",     hkActSaveAs);
     writeHk(L"HkActSaveMod",       L"HkActSaveVk",       hkActSave);
     writeHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy);
+    writeHk(L"HkActTranslateMod", L"HkActTranslateVk", hkActTranslate);
     writeHk(L"HkActSearchGoogleMod", L"HkActSearchGoogleVk", hkActSearchGoogle);
     writeHk(L"HkFramePlayMod",     L"HkFramePlayVk",     hkFramePlayPause);
     writeHk(L"HkFrameToggleMod",   L"HkFrameToggleVk",   hkFrameToggleStrip);
@@ -607,6 +608,7 @@ void PepperSnapDaemon::LoadSettings() {
     readHk(L"HkActSaveAsMod",     L"HkActSaveAsVk",     hkActSaveAs,        MOD_CONTROL | MOD_SHIFT, 'S');
     readHk(L"HkActSaveMod",       L"HkActSaveVk",       hkActSave,          MOD_CONTROL,             'S');
     readHk(L"HkActCopyMod",       L"HkActCopyVk",       hkActCopy,          MOD_CONTROL,             'C');
+    readHk(L"HkActTranslateMod", L"HkActTranslateVk", hkActTranslate, 0, 0);
     readHk(L"HkActSearchGoogleMod", L"HkActSearchGoogleVk", hkActSearchGoogle, 0,                     0);
     readHk(L"HkFramePlayMod",     L"HkFramePlayVk",     hkFramePlayPause,   0,                       VK_SPACE);
     readHk(L"HkFrameToggleMod",   L"HkFrameToggleVk",   hkFrameToggleStrip, 0,                       0);
@@ -803,6 +805,7 @@ struct OptionsDlgState {
     HotkeyBinding hkActSaveAs{ MOD_CONTROL | MOD_SHIFT, 'S' };
     HotkeyBinding hkActSave{ MOD_CONTROL, 'S' };
     HotkeyBinding hkActCopy{ MOD_CONTROL, 'C' };
+    HotkeyBinding hkActTranslate{ 0, 0 };
     HotkeyBinding hkActSearchGoogle{ 0, 0 };
     HotkeyBinding hkFramePlayPause{ 0, VK_SPACE };
     HotkeyBinding hkFrameToggleStrip{ 0, 0 };
@@ -1717,6 +1720,7 @@ struct CustomizeKeysDlgState {
     HotkeyBinding hkActSaveAs;
     HotkeyBinding hkActSave;
     HotkeyBinding hkActCopy;
+    HotkeyBinding hkActTranslate;
     HotkeyBinding hkActSearchGoogle;
     HotkeyBinding hkFramePlayPause;
     HotkeyBinding hkFrameToggleStrip;
@@ -2360,6 +2364,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     ck.hkActSaveAs        = optSt->hkActSaveAs;
     ck.hkActSave          = optSt->hkActSave;
     ck.hkActCopy          = optSt->hkActCopy;
+    ck.hkActTranslate     = optSt->hkActTranslate;
     ck.hkActSearchGoogle  = optSt->hkActSearchGoogle;
     ck.hkFramePlayPause   = optSt->hkFramePlayPause;
     ck.hkFrameToggleStrip = optSt->hkFrameToggleStrip;
@@ -2449,6 +2454,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
     addActRow(DBTN_ACT_SAVE_AS,          false, L"Save as JPG/PNG/WEBP/BMP",      &ck.hkActSaveAs,        { MOD_CONTROL | MOD_SHIFT, 'S' });
     addActRow(DBTN_ACT_SAVE,             false, L"Quick save",                    &ck.hkActSave,          { MOD_CONTROL, 'S' });
     addActRow(DBTN_ACT_COPY,             true,  L"Copy to clipboard",             &ck.hkActCopy,          { MOD_CONTROL, 'C' });
+    addActRow(DBTN_ACT_TRANSLATE,        false, L"Translate on web",              &ck.hkActTranslate,     { 0, 0 });
     addActRow(DBTN_ACT_SEARCH_GOOGLE,    false, L"Search on web",                 &ck.hkActSearchGoogle,  { 0, 0 });
     addActRow(DBTN_ACT_FRAME_PLAY_PAUSE, false, L"Play / Pause frames (GIF/WebP)",&ck.hkFramePlayPause,   { 0, VK_SPACE });
     addActRow(DBTN_ACT_FRAME_TOGGLE,     false, L"Hide / Show frames (GIF/WebP)", &ck.hkFrameToggleStrip, { 0, 0 });
@@ -2585,6 +2591,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         optSt->hkActSaveAs        = ck.hkActSaveAs;
         optSt->hkActSave          = ck.hkActSave;
         optSt->hkActCopy          = ck.hkActCopy;
+        optSt->hkActTranslate     = ck.hkActTranslate;
         optSt->hkActSearchGoogle  = ck.hkActSearchGoogle;
         optSt->hkFramePlayPause   = ck.hkFramePlayPause;
         optSt->hkFrameToggleStrip = ck.hkFrameToggleStrip;
@@ -2627,6 +2634,7 @@ static void ShowCustomizeKeysModal(HWND hParentOptWnd, OptionsDlgState* optSt) {
         g_Daemon.hkActSaveAs        = ck.hkActSaveAs;
         g_Daemon.hkActSave          = ck.hkActSave;
         g_Daemon.hkActCopy          = ck.hkActCopy;
+        g_Daemon.hkActTranslate     = ck.hkActTranslate;
         g_Daemon.hkActSearchGoogle  = ck.hkActSearchGoogle;
         g_Daemon.hkFramePlayPause   = ck.hkFramePlayPause;
         g_Daemon.hkFrameToggleStrip = ck.hkFrameToggleStrip;
@@ -3358,6 +3366,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->hkActSaveAs        = { MOD_CONTROL | MOD_SHIFT, 'S' };
                 st->hkActSave          = { MOD_CONTROL, 'S' };
                 st->hkActCopy          = { MOD_CONTROL, 'C' };
+                st->hkActTranslate     = { 0, 0 };
                 st->hkActSearchGoogle  = { 0, 0 };
                 st->hkFramePlayPause   = { 0, VK_SPACE };
                 st->hkFrameToggleStrip = { 0, 0 };
@@ -3648,6 +3657,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.hkActSaveAs        = hkActSaveAs;
     st.hkActSave          = hkActSave;
     st.hkActCopy          = hkActCopy;
+    st.hkActTranslate     = hkActTranslate;
     st.hkActSearchGoogle  = hkActSearchGoogle;
     st.hkFramePlayPause   = hkFramePlayPause;
     st.hkFrameToggleStrip = hkFrameToggleStrip;
@@ -3783,6 +3793,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         hkActSaveAs        = st.hkActSaveAs;
         hkActSave          = st.hkActSave;
         hkActCopy          = st.hkActCopy;
+        hkActTranslate     = st.hkActTranslate;
         hkActSearchGoogle  = st.hkActSearchGoogle;
         hkFramePlayPause   = st.hkFramePlayPause;
         hkFrameToggleStrip = st.hkFrameToggleStrip;
