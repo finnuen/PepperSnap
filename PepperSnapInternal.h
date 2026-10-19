@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.1.10";
+    static constexpr const wchar_t* APP_VERSION = L"4.1.12";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -846,7 +846,7 @@ public:
     void EditClipboardImage();
     void SearchClipboardImageOnGoogle();
     void SearchImageFileOnGoogle(const std::wstring& filePath);
-    static void LaunchGoogleImagesAndPasteClipboard();
+    static void OpenGoogleLensInBrowser();
     void OpenImageFilesToPinOnTop(const std::vector<std::wstring>& filePaths);
     HWND CreatePinnedWindow(Bitmap* bmp, int x, int y, float initialScale = 1.0f, std::vector<Bitmap*> animFrames = {}, std::vector<int> animDelaysMs = {}, bool initiallySelected = false);
 

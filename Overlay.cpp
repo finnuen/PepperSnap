@@ -2701,10 +2701,10 @@ void PepperSnapDaemon::ActionCopyAndClose(bool searchOnGoogle) {
         CloseRegionSnipOverlay();
     }
     if (searchOnGoogle) {
-        LaunchGoogleImagesAndPasteClipboard();
+        OpenGoogleLensInBrowser();
         ShowTrayToast(
-            L"Searching with Google Lens",
-            L"Image copied to clipboard. Press Ctrl + V if not automatically pasted."
+            L"Directing to Google image search",
+            L"Image copied to clipboard, Press Ctrl + V once the page loaded"
         );
     } else {
         ShowTrayToast(
@@ -8683,146 +8683,36 @@ void PepperSnapDaemon::EditClipboardImage() {
     StartRegionSnipOverlay(canvasBmp, &centeredSel);
 }
 
-struct PinnedWindowTopmostRestoreGuard {
-    std::vector<HWND> loweredPins;
-    PinnedWindowTopmostRestoreGuard() {
-        HWND hPinIter = nullptr;
-        while ((hPinIter = FindWindowExW(nullptr, hPinIter, L"PepperSnapPinWnd", nullptr)) != nullptr) {
-            if (IsWindow(hPinIter)) {
-                LONG_PTR exSt = GetWindowLongPtrW(hPinIter, GWL_EXSTYLE);
-                SetWindowLongPtrW(hPinIter, GWL_EXSTYLE, exSt | WS_EX_TRANSPARENT);
-                SetWindowPos(hPinIter, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                loweredPins.push_back(hPinIter);
-            }
-        }
-    }
-    ~PinnedWindowTopmostRestoreGuard() {
-        for (HWND hPinIter : loweredPins) {
-            if (hPinIter && IsWindow(hPinIter)) {
-                LONG_PTR exSt = GetWindowLongPtrW(hPinIter, GWL_EXSTYLE);
-                SetWindowLongPtrW(hPinIter, GWL_EXSTYLE, exSt & ~((LONG_PTR)WS_EX_TRANSPARENT));
-                SetWindowPos(hPinIter, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
-        }
-    }
-};
+// --- "Search on web" --------------------------------------------------------
+//
+// The image goes on the clipboard and the browser is opened at the Lens URL; the
+// user finishes with a single Ctrl+V once the page is up. That keystroke cannot
+// land in the wrong window, which is the whole point of not sending it for them.
+//
+// This was automated first -- find the browser, wait for the page, inject Ctrl+V
+// -- and it was measured on a real machine (Opera 137, Chromium) before being
+// pulled back out, because none of the signals it needs are dependable:
+//
+//  * https://lens.google.com/ answers 302 -> https://www.google.com?olud, so the
+//    Lens upload panel lives inside the Google home page and the title becomes
+//    "Google", never anything containing "lens". There is no title to wait for.
+//  * A URL handed to an already-running browser opens a tab: no new top-level
+//    window ever appears, and the pid ShellExecute returns belongs to a launcher
+//    that exits at once. Window titles cannot identify a browser (they are the
+//    active tab's title), and neither can the class, since "Chrome_WidgetWin_1"
+//    belongs to every Electron app too.
+//  * An injected Ctrl+V goes to whatever holds keyboard focus, in whichever
+//    window the shell happened to raise -- seconds after the click on a cold
+//    profile. UI Automation can report when focus reaches the page, but that
+//    only estimates readiness, and an estimate that is wrong types into an
+//    unrelated application.
+//
+// Opening the page is what the README promises ("simply opens Google Lens in
+// your own browser"), and it needs none of that: the toast says the image is on
+// the clipboard, and one Ctrl+V finishes the job.
 
-static DWORD WINAPI GoogleImagesPasteWorkerThread(LPVOID) {
-    PinnedWindowTopmostRestoreGuard pinGuard;
-
+void PepperSnapDaemon::OpenGoogleLensInBrowser() {
     ShellExecuteW(nullptr, L"open", L"https://lens.google.com/", nullptr, nullptr, SW_SHOWNORMAL);
-
-    auto makeKeyInput = [](WORD vk, DWORD flags) -> INPUT {
-        INPUT in = {};
-        in.type = INPUT_KEYBOARD;
-        in.ki.wVk = vk;
-        in.ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
-        in.ki.dwFlags = flags;
-        return in;
-    };
-
-    auto releaseAllModifiers = [&]() {
-        DWORD modWait = GetTickCount();
-        while (GetTickCount() - modWait < 900) {
-            bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
-                             (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
-                             (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
-            bool altDown   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0 ||
-                             (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
-                             (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
-            bool ctrlDown  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 ||
-                             (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
-                             (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
-            if (!shiftDown && !altDown && !ctrlDown) break;
-            Sleep(25);
-        }
-        INPUT releaseMods[9] = {
-            makeKeyInput(VK_LSHIFT,   KEYEVENTF_KEYUP),
-            makeKeyInput(VK_RSHIFT,   KEYEVENTF_KEYUP),
-            makeKeyInput(VK_SHIFT,    KEYEVENTF_KEYUP),
-            makeKeyInput(VK_LMENU,    KEYEVENTF_KEYUP),
-            makeKeyInput(VK_RMENU,    KEYEVENTF_KEYUP),
-            makeKeyInput(VK_MENU,     KEYEVENTF_KEYUP),
-            makeKeyInput(VK_LCONTROL, KEYEVENTF_KEYUP),
-            makeKeyInput(VK_RCONTROL, KEYEVENTF_KEYUP),
-            makeKeyInput(VK_CONTROL,  KEYEVENTF_KEYUP)
-        };
-        SendInput(9, releaseMods, sizeof(INPUT));
-    };
-
-    // Real-time detection: poll for browser window and specifically wait for Google Lens tab to activate
-    DWORD pollStart = GetTickCount();
-    HWND hBrowserWnd = nullptr;
-    bool lensTitleDetected = false;
-
-    while (GetTickCount() - pollStart < 8500) {
-        HWND hFg = GetForegroundWindow();
-        if (hFg && hFg != g_Daemon.hOverlayWnd && hFg != g_Daemon.hTrayWnd && !g_Daemon.IsPinnedWindow(hFg)) {
-            WCHAR titleBuf[512] = {0};
-            if (GetWindowTextW(hFg, titleBuf, 511) > 0) {
-                std::wstring lowTitle = titleBuf;
-                for (wchar_t& c : lowTitle) c = (wchar_t)towlower(c);
-                // "lens" in title confirms the Google Lens document has loaded its title
-                if (lowTitle.find(L"lens") != std::wstring::npos) {
-                    hBrowserWnd = hFg;
-                    lensTitleDetected = true;
-                    break;
-                }
-                // Track active browser window while waiting for Lens tab navigation
-                if (!hBrowserWnd) {
-                    if (lowTitle.find(L"chrome")  != std::wstring::npos ||
-                        lowTitle.find(L"edge")    != std::wstring::npos ||
-                        lowTitle.find(L"firefox") != std::wstring::npos ||
-                        lowTitle.find(L"brave")   != std::wstring::npos ||
-                        lowTitle.find(L"opera")   != std::wstring::npos) {
-                        hBrowserWnd = hFg;
-                    }
-                }
-            }
-        }
-        Sleep(60);
-    }
-
-    if (!hBrowserWnd) {
-        HWND hFg = GetForegroundWindow();
-        if (hFg && hFg != g_Daemon.hOverlayWnd && hFg != g_Daemon.hTrayWnd && !g_Daemon.IsPinnedWindow(hFg)) {
-            hBrowserWnd = hFg;
-        }
-    }
-
-    // Hydration delay: once the Google Lens tab is focused, allow 1200ms (or 1600ms fallback) for full DOM
-    // hydration and for Google Lens's paste event listeners to be fully active and ready
-    DWORD hydrationDelay = lensTitleDetected ? 1200 : 1600;
-    Sleep(hydrationDelay);
-
-    // Verify browser window is responsive and actively foregrounded before pasting
-    if (hBrowserWnd && IsWindow(hBrowserWnd)) {
-        SendMessageTimeoutW(hBrowserWnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 300, nullptr);
-        if (GetForegroundWindow() != hBrowserWnd) {
-            SetForegroundWindow(hBrowserWnd);
-            Sleep(150);
-        }
-    }
-
-    releaseAllModifiers();
-    Sleep(50);
-
-    INPUT pasteInputs[4] = {
-        makeKeyInput(VK_LCONTROL, 0),
-        makeKeyInput('V',         0),
-        makeKeyInput('V',         KEYEVENTF_KEYUP),
-        makeKeyInput(VK_LCONTROL, KEYEVENTF_KEYUP)
-    };
-    SendInput(4, pasteInputs, sizeof(INPUT));
-
-    return 0;
-}
-
-void PepperSnapDaemon::LaunchGoogleImagesAndPasteClipboard() {
-    HANDLE hThread = CreateThread(nullptr, 0, GoogleImagesPasteWorkerThread, nullptr, 0, nullptr);
-    if (hThread) {
-        CloseHandle(hThread);
-    }
 }
 
 bool IsValidExistingImageFilePath(const std::wstring& rawPath, std::wstring* outResolvedPath) {
@@ -8984,10 +8874,10 @@ void PepperSnapDaemon::SearchClipboardImageOnGoogle() {
         return;
     }
 
-    LaunchGoogleImagesAndPasteClipboard();
+    OpenGoogleLensInBrowser();
     ShowTrayToast(
-        L"Searching with Google Lens",
-        L"Image copied to clipboard. Press Ctrl + V if not automatically pasted."
+        L"Directing to Google image search",
+        L"Image copied to clipboard, Press Ctrl + V once the page loaded"
     );
 }
 
