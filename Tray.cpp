@@ -617,6 +617,36 @@ static void ShowTrayContextMenu(HWND hWnd) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// One action per key press
+// ----------------------------------------------------------------------------
+// Every trigger below has three independent detectors: RegisterHotKey (re-posted as
+// WM_TRIGGER_*), the low-level hook's key-down, and the 15 ms GetAsyncKeyState poller that
+// exists for games which swallow hooks. One press can therefore land here two or three
+// times, and this window is the only thing between the user and two screenshots.
+//
+// Both halves of it are needed. The start window catches a duplicate that is already queued
+// when the work begins. The finished window catches the one that is not: capturing a
+// 1920x1080 screen blocks this thread for longer than the window itself (capture, settings
+// save, JPEG encode, toast), so a duplicate arriving during that block used to be delivered
+// after the window had expired and capture a second time - one press, two files a few
+// hundred milliseconds apart.
+//
+// The finished window is tracked per trigger, so a duplicate of the action that just ran is
+// dropped while a different shortcut pressed during a long capture still fires.
+static DWORD g_LastHotkeyActionDoneTick = 0;
+static UINT  g_LastHotkeyActionTrigger = 0;
+
+static void RunHotkeyAction(UINT trigger, void (*action)()) {
+    DWORD now = GetTickCount();
+    if (now - g_LastHotkeyTriggerTick < 250) return;
+    if (trigger == g_LastHotkeyActionTrigger && now - g_LastHotkeyActionDoneTick < 250) return;
+    g_LastHotkeyTriggerTick = now;
+    action();
+    g_LastHotkeyActionTrigger = trigger;
+    g_LastHotkeyActionDoneTick = GetTickCount();
+}
+
 LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_TIMER:
@@ -761,51 +791,27 @@ LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         }
         case WM_TRIGGER_REGION_SNIP: {
-            DWORD now = GetTickCount();
-            if (now - g_LastHotkeyTriggerTick >= 250) {
-                g_LastHotkeyTriggerTick = now;
-                g_Daemon.StartRegionSnipOverlay();
-            }
+            RunHotkeyAction(msg, [] { g_Daemon.StartRegionSnipOverlay(); });
             return 0;
         }
         case WM_TRIGGER_FULL_SNAP: {
-            DWORD now = GetTickCount();
-            if (now - g_LastHotkeyTriggerTick >= 250) {
-                g_LastHotkeyTriggerTick = now;
-                g_Daemon.InstantFullscreenCapture();
-            }
+            RunHotkeyAction(msg, [] { g_Daemon.InstantFullscreenCapture(); });
             return 0;
         }
         case WM_TRIGGER_PREV_REGION: {
-            DWORD now = GetTickCount();
-            if (now - g_LastHotkeyTriggerTick >= 250) {
-                g_LastHotkeyTriggerTick = now;
-                g_Daemon.InstantPreviousRegionCapture();
-            }
+            RunHotkeyAction(msg, [] { g_Daemon.InstantPreviousRegionCapture(); });
             return 0;
         }
         case WM_TRIGGER_PIN_CLIPBOARD: {
-            DWORD now = GetTickCount();
-            if (now - g_LastHotkeyTriggerTick >= 250) {
-                g_LastHotkeyTriggerTick = now;
-                g_Daemon.PinClipboardImageOnTop();
-            }
+            RunHotkeyAction(msg, [] { g_Daemon.PinClipboardImageOnTop(); });
             return 0;
         }
         case WM_TRIGGER_EDIT_CLIPBOARD: {
-            DWORD now = GetTickCount();
-            if (now - g_LastHotkeyTriggerTick >= 250) {
-                g_LastHotkeyTriggerTick = now;
-                g_Daemon.EditClipboardImage();
-            }
+            RunHotkeyAction(msg, [] { g_Daemon.EditClipboardImage(); });
             return 0;
         }
         case WM_TRIGGER_SEARCH_GOOGLE: {
-            DWORD now = GetTickCount();
-            if (now - g_LastHotkeyTriggerTick >= 250) {
-                g_LastHotkeyTriggerTick = now;
-                g_Daemon.SearchClipboardImageOnGoogle();
-            }
+            RunHotkeyAction(msg, [] { g_Daemon.SearchClipboardImageOnGoogle(); });
             return 0;
         }
         case WM_HOTKEY:

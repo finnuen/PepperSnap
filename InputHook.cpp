@@ -7,6 +7,12 @@
 int g_RecordingHotkeySlot = 0; // 0 = None, 1 = Custom Window, 2 = Instant Fullscreen, 3 = Instant Save Previous Window
 DWORD g_LastHotkeyTriggerTick = 0;
 
+// Set when a PrintScreen key-down has already been handled by the hook proc below. The
+// key-up fallback there exists for keyboards and games that only ever deliver the release,
+// so when the down was seen there is nothing left for the up to do - and firing it anyway
+// is what saved one press of Instant fullscreen twice.
+static bool g_SnapshotHandledOnKeyDown = false;
+
 std::wstring PepperSnapDaemon::FormatHotkeyString(const HotkeyBinding& hk) {
     if (hk.vk == 0) return L"";
     std::wstring out;
@@ -177,6 +183,21 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             }
         }
 
+        // A press of PrintScreen arrives here twice: key-down, then key-up. The key-up
+        // fallback further below exists only for keyboards and games that never deliver the
+        // key-down (many swallow Shift+PrintScreen and emit the release alone), so once the
+        // down has been handled the up must not fire a second capture - the first capture is
+        // usually still running, and the tray's debounce only spans its beginning.
+        // Checked here rather than next to that fallback so the flag is cleared on every
+        // release, whichever branch above happens to consume it.
+        if (isKeyUp && vk == VK_SNAPSHOT) {
+            bool handledOnDown = g_SnapshotHandledOnKeyDown;
+            g_SnapshotHandledOnKeyDown = false;
+            if (handledOnDown) {
+                return CallNextHookEx(g_Daemon.hKeyHook, nCode, wParam, lParam);
+            }
+        }
+
         // If the Customize Keys dialog is actively recording a custom shortcut key
         HWND hRecTarget = (g_Daemon.hCustomizeKeysWnd && IsWindow(g_Daemon.hCustomizeKeysWnd))
             ? g_Daemon.hCustomizeKeysWnd
@@ -218,6 +239,14 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 return hk.vk != 0 && vk == hk.vk && curMods == hk.modifiers;
             };
 
+            // Post the trigger, and note that this press was handled on its way down so the
+            // key-up check above cannot run it a second time.
+            auto postTrigger = [&](UINT trigger) -> LRESULT {
+                if (isKeyDown && vk == VK_SNAPSHOT) g_SnapshotHandledOnKeyDown = true;
+                PostMessageW(g_Daemon.hTrayWnd, trigger, 0, 0);
+                return 1;
+            };
+
             bool overlayActive = (g_Daemon.hOverlayWnd && IsWindow(g_Daemon.hOverlayWnd));
             bool canCaptureNow = !overlayActive || g_Daemon.IsEditingOpenedImage();
             bool inlineEditActive = overlayActive &&
@@ -233,28 +262,22 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             }
 
             if (matchHk(g_Daemon.hkPrevRegion)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PREV_REGION, 0, 0);
-                return 1;
+                return postTrigger(WM_TRIGGER_PREV_REGION);
             }
             if (canCaptureNow && matchHk(g_Daemon.hkRegionSnip)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_REGION_SNIP, 0, 0);
-                return 1;
+                return postTrigger(WM_TRIGGER_REGION_SNIP);
             }
             if (matchHk(g_Daemon.hkFullSnap)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_FULL_SNAP, 0, 0);
-                return 1;
+                return postTrigger(WM_TRIGGER_FULL_SNAP);
             }
             if (canCaptureNow && !inlineEditActive && matchHk(g_Daemon.hkPinClipboard)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_PIN_CLIPBOARD, 0, 0);
-                return 1;
+                return postTrigger(WM_TRIGGER_PIN_CLIPBOARD);
             }
             if (!inlineEditActive && matchHk(g_Daemon.hkEditClipboard)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_EDIT_CLIPBOARD, 0, 0);
-                return 1;
+                return postTrigger(WM_TRIGGER_EDIT_CLIPBOARD);
             }
             if (!inlineEditActive && matchHk(g_Daemon.hkSearchGoogle)) {
-                PostMessageW(g_Daemon.hTrayWnd, WM_TRIGGER_SEARCH_GOOGLE, 0, 0);
-                return 1;
+                return postTrigger(WM_TRIGGER_SEARCH_GOOGLE);
             }
         }
 
