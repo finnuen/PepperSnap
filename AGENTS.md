@@ -59,7 +59,7 @@ One visible version, `MAJOR.MINOR.PATCH`, lives in three places, and `build.ps1`
 is the only thing that writes it: `FILEVERSION` / `PRODUCTVERSION`, their two
 strings and `OriginalFilename` in `peppersnap.rc`, and `APP_VERSION` in
 `PepperSnapInternal.h`. The exe is named after the same number
-(`build\PepperSnap_v4.1.1.exe`), so the release asset, the tag and the version
+(`build\PepperSnap_v4.2.2.exe`), so the release asset, the tag and the version
 the app reports cannot drift apart.
 
 **PATCH is the build counter and increments on every build.** That is the point:
@@ -68,7 +68,9 @@ here each build is a release. So:
 - `build.ps1` alone reads the recorded version and adds one to PATCH.
 - `-NoVersionBump` builds the recorded version unchanged — what a repeat build
   of the same source uses, so the number does not creep.
-- `-Version 4.2.0` sets it outright — how a new minor series starts.
+- `-Version 4.2.0` sets it outright — how a new minor series starts, which the
+  agent may do when a change warrants it. Only the leading digit waits for the
+  user to ask for it.
 
 The fourth field is always `0`; it used to carry `git rev-list --count HEAD + 1`.
 
@@ -397,7 +399,7 @@ number with no `v` prefix (`4.1.1`), because the update check compares the
 release tag against `APP_VERSION`. The **title** always carries the `v`, and is
 exactly `PepperSnap v<tag>` — `PepperSnap v4.2.0`, and `PepperSnap v3.2.0.6` for
 the four-field tags of the 3.0–3.3 era, whose build counter stays in the name.
-So: tag bare, title and filename with `v`. All 38 releases now read that way;
+So: tag bare, title and filename with `v`. All 40 releases now read that way;
 sixteen of them had drifted (no `v`, a lowercase `s`, a bare `4.2.0`, an empty
 title, `v4` for `4.0.0`) and were normalised in October 2026. GitHub's own
 generated source archives are the source download — there is no separate source
