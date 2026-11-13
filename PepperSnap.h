@@ -73,6 +73,7 @@ using namespace Gdiplus;
 #define TIMER_TRAY_DELAY_FULL      79
 #define TIMER_TRAY_DELAY_PREV      80
 #define TIMER_PROCESS_PIN_QUEUE    81
+#define TIMER_TRAY_RESURRECT       82
 
 #define HK_REGION_SNIP         9101
 #define HK_FULL_SNAP           9102

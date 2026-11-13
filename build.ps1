@@ -22,22 +22,26 @@
         import table afterwards to catch exactly that regression.
 
     VERSIONING
-        One visible version, MAJOR.MINOR.PATCH, kept in sync in three places:
+        One visible version, MAJOR.MINOR, kept in sync in three places:
         FILEVERSION / PRODUCTVERSION and their strings in peppersnap.rc, and
         APP_VERSION in PepperSnapInternal.h. The exe is named after it, so the
-        release asset, the git tag and the version the app reports all agree.
+        build, the git tag and the version the app reports all agree. The release
+        then attaches that file under its unversioned name, PepperSnap.exe, so
+        an update replaces the file instead of adding a second one beside it.
 
-        PATCH is the build counter and advances by one on every build, which
-        makes each build its own release. The fourth field is always 0 - it
-        used to carry the git commit count.
+        MINOR is the build counter and advances by one on every build, which
+        makes each build its own release. The third and fourth fields are always
+        0 - FILEVERSION is written as 4,23,0,0 - so the four-field form the
+        resource script requires cannot drift from the two-field version.
 
 .PARAMETER Zig
     Directory containing zig.exe, or the path to zig.exe itself.
     Defaults to $env:ZIG_HOME, then to C:\Users\kuuha\zig-0.13.0.
 
 .PARAMETER Version
-    Build this version instead of incrementing, e.g. 4.1.1. Use it for the
-    first build of a new minor or major series.
+    Build this version instead of incrementing, e.g. 4.23. Use it for the first
+    build of a new minor or major series, or to fold a three-digit version into
+    the two-digit scheme.
 
 .PARAMETER NoVersionBump
     Build the version already recorded in peppersnap.rc, unchanged. This is
@@ -130,28 +134,29 @@ function Set-Version {
 
     $major = [int]$m.Groups[1].Value
     $minor = [int]$m.Groups[2].Value
-    $patch = [int]$m.Groups[3].Value
 
     if ($Version) {
-        if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
-            throw "-Version must look like 4.1.1 (got '$Version')"
+        if ($Version -notmatch '^(\d+)\.(\d+)$') {
+            throw "-Version must look like 4.23 - two fields, MAJOR.MINOR (got '$Version')"
         }
-        $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
-        Write-Step "version set explicitly to $major.$minor.$patch"
+        $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+        Write-Step "version set explicitly to $major.$minor"
     } elseif ($NoVersionBump) {
-        Write-Warn2 "version left at $major.$minor.$patch (-NoVersionBump)"
+        Write-Warn2 "version left at $major.$minor (-NoVersionBump)"
     } else {
-        $patch++
-        Write-Step "version bumped to $major.$minor.$patch"
+        $minor++
+        Write-Step "version bumped to $major.$minor"
     }
 
-    $dotted  = "$major.$minor.$patch"
-    $full    = "$dotted.0"
+    $dotted  = "$major.$minor"
+    $full    = "$dotted.0.0"
     $exeName = "PepperSnap_v$dotted.exe"
 
-    $rc = $rc -replace 'FILEVERSION\s+\d+,\d+,\d+,\d+',       "FILEVERSION $major,$minor,$patch,0"
-    $rc = $rc -replace 'PRODUCTVERSION\s+\d+,\d+,\d+,\d+',    "PRODUCTVERSION $major,$minor,$patch,0"
-    # The resource script writes these with a trailing escape ("4.1.1.0\0"), so the
+    # The resource script wants four fields; the version has two. The trailing pair is
+    # always 0, which is why reading the recorded version back only takes the first two.
+    $rc = $rc -replace 'FILEVERSION\s+\d+,\d+,\d+,\d+',       "FILEVERSION $major,$minor,0,0"
+    $rc = $rc -replace 'PRODUCTVERSION\s+\d+,\d+,\d+,\d+',    "PRODUCTVERSION $major,$minor,0,0"
+    # The resource script writes these with a trailing escape ("4.23.0.0\0"), so the
     # match stops at the dotted version rather than requiring a closing quote after it.
     $rc = $rc -replace '("FileVersion",\s*")\d+(\.\d+){3}',    "`${1}$full"
     $rc = $rc -replace '("ProductVersion",\s*")\d+(\.\d+){3}', "`${1}$full"
@@ -161,8 +166,8 @@ function Set-Version {
 
     # Never let a half-applied rewrite through again: every field is checked by name.
     $checks = @(
-        @{ Needle = "FILEVERSION $major,$minor,$patch,0";    What = 'FILEVERSION' },
-        @{ Needle = "PRODUCTVERSION $major,$minor,$patch,0"; What = 'PRODUCTVERSION' },
+        @{ Needle = "FILEVERSION $major,$minor,0,0";          What = 'FILEVERSION' },
+        @{ Needle = "PRODUCTVERSION $major,$minor,0,0";       What = 'PRODUCTVERSION' },
         @{ Needle = '"FileVersion", "'    + $full;           What = 'FileVersion string' },
         @{ Needle = '"ProductVersion", "' + $full;           What = 'ProductVersion string' },
         @{ Needle = '"OriginalFilename", "' + $exeName;      What = 'OriginalFilename' }
@@ -176,13 +181,13 @@ function Set-Version {
 
     # APP_VERSION is what the tray, the About box and the update check report.
     $hdr = [System.IO.File]::ReadAllText($HeaderFile)
-    $hdr = $hdr -replace '(APP_VERSION\s*=\s*L")\d+(\.\d+){2}"', "`${1}$dotted`""
+    $hdr = $hdr -replace '(APP_VERSION\s*=\s*L")\d+(\.\d+)*"', "`${1}$dotted`""
     if ($hdr -notmatch ('APP_VERSION\s*=\s*L"' + [regex]::Escape($dotted) + '"')) {
         throw "version rewrite failed: APP_VERSION does not read $dotted in PepperSnapInternal.h"
     }
     [System.IO.File]::WriteAllText($HeaderFile, $hdr, (New-Object System.Text.UTF8Encoding($false)))
 
-    Write-Ok "version $dotted  ->  FILEVERSION $major,$minor,$patch,0, APP_VERSION, $exeName"
+    Write-Ok "version $dotted  ->  FILEVERSION $major,$minor,0,0, APP_VERSION, $exeName"
     return $dotted
 }
 

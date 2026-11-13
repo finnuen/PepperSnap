@@ -9,7 +9,7 @@ One small portable `.exe`. No installer. No account. Nothing to configure before
 
 ## 🚀 Get started
 
-1. Grab the latest `PepperSnap_v4.x.x.exe` from the [Releases](https://github.com/finnuen/PepperSnap/releases) page — the file name carries its version.
+1. Grab the latest `PepperSnap.exe` from the [Releases](https://github.com/finnuen/PepperSnap/releases) page. The file name stays the same so an update replaces it in place; the version is shown in the window titles inside the app.
 2. Run it. PepperSnap appears in your system tray.
 3. Press **Ctrl + Print Screen** (or left-click the tray icon) and start capturing.
 

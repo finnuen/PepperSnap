@@ -35,7 +35,33 @@ void PepperSnapDaemon::UpdateTrayTooltip() {
     }
 }
 
+// Explorer owns the notification area: restarting it throws away every icon in it and then
+// broadcasts this message to every top-level window, so each app has to put its icon back.
+// We are elevated, and UIPI drops that message on the way in unless the window allows it,
+// which is why registration and the filter have to travel together - with only one of the
+// two the icon never comes back. Registered once; RegisterWindowMessageW returns the same
+// id for the same string, but the filter only needs installing once as well.
+static UINT g_TaskbarCreatedMsg = 0;
+static int  g_TrayResurrectTries = 0;
+
+static void EnsureTaskbarCreatedMessage(HWND hTrayWnd) {
+    if (g_TaskbarCreatedMsg) return;
+    g_TaskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    if (g_TaskbarCreatedMsg && hTrayWnd) {
+        ChangeWindowMessageFilterEx(hTrayWnd, g_TaskbarCreatedMsg, MSGFLT_ALLOW, nullptr);
+    }
+}
+
 void PepperSnapDaemon::InitTrayIcon() {
+    EnsureTaskbarCreatedMessage(hTrayWnd);
+    ReaddTrayIcon();
+}
+
+// Puts the icon into whatever notification area is current, and reports whether the shell
+// took it. That answer is what the post-restart retry hangs on: TaskbarCreated can arrive
+// while the rebuilt tray is not yet ready to accept icons, and a NIM_ADD lost that way is
+// silent - the icon simply never appears.
+bool PepperSnapDaemon::ReaddTrayIcon() {
     if (hTrayIcon) {
         DestroyIcon(hTrayIcon);
         hTrayIcon = nullptr;
@@ -49,7 +75,7 @@ void PepperSnapDaemon::InitTrayIcon() {
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hTrayIcon;
     wcsncpy_s(nid.szTip, L"PepperSnap", _TRUNCATE);
-    Shell_NotifyIconW(NIM_ADD, &nid);
+    return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
 }
 
 // GetMessageW for the windows that run their own message loop while they are
@@ -648,10 +674,27 @@ static void RunHotkeyAction(UINT trigger, void (*action)()) {
 }
 
 LRESULT CALLBACK TrayDaemonWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Explorer restarted: its notification area is a new window tree and the icon we had in
+    // the old one went with it. Put ours back, and keep trying while the rebuilt tray is not
+    // yet ready to accept it - ten tries over five seconds, well past how long Explorer takes
+    // to come back even with the whole desktop rebuilding.
+    if (g_TaskbarCreatedMsg && msg == g_TaskbarCreatedMsg) {
+        g_TrayResurrectTries = 0;
+        if (!g_Daemon.ReaddTrayIcon()) {
+            SetTimer(hWnd, TIMER_TRAY_RESURRECT, 500, nullptr);
+        }
+        return 0;
+    }
+
     switch (msg) {
         case WM_TIMER:
             if (wParam == TIMER_AUTO_UPDATE_CHECK) {
                 g_Daemon.MaybeRunScheduledUpdateCheck();
+            } else if (wParam == TIMER_TRAY_RESURRECT) {
+                KillTimer(hWnd, TIMER_TRAY_RESURRECT);
+                if (!g_Daemon.ReaddTrayIcon() && ++g_TrayResurrectTries < 10) {
+                    SetTimer(hWnd, TIMER_TRAY_RESURRECT, 500, nullptr);
+                }
             } else if (wParam == TIMER_TRAY_DELAY_REGION) {
                 KillTimer(hWnd, TIMER_TRAY_DELAY_REGION);
                 DwmFlush();

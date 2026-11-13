@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.2.2";
+    static constexpr const wchar_t* APP_VERSION = L"4.23";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -812,6 +812,7 @@ public:
     void DestroyCustomCursors();
     void UpdateOverlayCursor(int mx, int my);
     void InitTrayIcon();
+    bool ReaddTrayIcon();
     void UpdateTrayTooltip();
     void ShowTrayToast(const std::wstring& title, const std::wstring& message, const std::wstring& clickFolder = L"");
     void RemoveTrayIcon();

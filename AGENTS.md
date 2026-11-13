@@ -55,24 +55,34 @@ It compiles `peppersnap.rc` with `zig rc`, then the ten translation units with
 
 ### Versioning
 
-One visible version, `MAJOR.MINOR.PATCH`, lives in three places, and `build.ps1`
-is the only thing that writes it: `FILEVERSION` / `PRODUCTVERSION`, their two
+One visible version, `MAJOR.MINOR`, lives in three places, and `build.ps1` is
+the only thing that writes it: `FILEVERSION` / `PRODUCTVERSION`, their two
 strings and `OriginalFilename` in `peppersnap.rc`, and `APP_VERSION` in
-`PepperSnapInternal.h`. The exe is named after the same number
-(`build\PepperSnap_v4.2.2.exe`), so the release asset, the tag and the version
-the app reports cannot drift apart.
+`PepperSnapInternal.h`. The build is named after the same number
+(`build\PepperSnap_v4.23.exe`), so the build, the git tag and the version the
+app reports cannot drift apart.
 
-**PATCH is the build counter and increments on every build.** That is the point:
+`FILEVERSION` needs four numbers, so it carries the version as `4,23,0,0`: the
+visible `4.23` is always the first two fields and the trailing pair is always
+`0`. The fourth field used to hold `git rev-list --count HEAD + 1`.
+
+**MINOR is the build counter and increments on every build.** That is the point:
 here each build is a release. So:
 
-- `build.ps1` alone reads the recorded version and adds one to PATCH.
+- `build.ps1` alone reads the recorded version and adds one to MINOR.
 - `-NoVersionBump` builds the recorded version unchanged — what a repeat build
   of the same source uses, so the number does not creep.
-- `-Version 4.2.0` sets it outright — how a new minor series starts, which the
-  agent may do when a change warrants it. Only the leading digit waits for the
-  user to ask for it.
+- `-Version 4.23` sets it outright. It is how the three-digit scheme was folded
+  into two, and how a new major series would start. Only the leading digit waits
+  for the user to ask for it by name.
 
-The fourth field is always `0`; it used to carry `git rev-list --count HEAD + 1`.
+The scheme was folded at `4.2.2`: the next build is `4.23`, and `4.24` after
+that. **The old tags stay exactly as published** — `4.2.1` and `4.2.2` are not
+renamed to `4.21` and `4.22`, because renaming them would break existing release
+links and the update check inside every build already out there. Nothing else
+has to change for those builds to notice the update: `CompareVersionStrings`
+pads both sides to four fields and compares numerically, so `4.23` reads as
+`4.23.0.0` and sorts above `4.2.2`'s `4.2.2.0`.
 
 The script rewrites both files in place and hard-fails if any field did not
 land. The strings are easy to miss — the resource script writes them with a
@@ -394,16 +404,26 @@ megabyte of media is a megabyte on every future clone.
 ## Release
 
 Releases are built from `main` with `build.ps1` and published with the exe it
-produced, `build\PepperSnap_v<version>.exe`, attached. The tag is that same
-number with no `v` prefix (`4.1.1`), because the update check compares the
-release tag against `APP_VERSION`. The **title** always carries the `v`, and is
-exactly `PepperSnap v<tag>` — `PepperSnap v4.2.0`, and `PepperSnap v3.2.0.6` for
-the four-field tags of the 3.0–3.3 era, whose build counter stays in the name.
-So: tag bare, title and filename with `v`. All 40 releases now read that way;
-sixteen of them had drifted (no `v`, a lowercase `s`, a bare `4.2.0`, an empty
-title, `v4` for `4.0.0`) and were normalised in October 2026. GitHub's own
-generated source archives are the source download — there is no separate source
-zip any more.
+produced, `build\PepperSnap_v<version>.exe`, attached **under its unversioned
+name**, `PepperSnap.exe`. A standalone program is updated by replacing the file,
+and a versioned name is a different program as far as Windows is concerned: the
+"Open with" entry, the default-app choice, shortcuts and the pinned icon are all
+tied to the file's name and path, so they would have to be set again after every
+release. The version still has to be somewhere, and it is: the tag, the file
+properties, and the app's own window titles (Options, Customize keys, naming
+syntax, Keyboard shortcuts and info) all carry it.
+
+The tag is the same number with no `v` prefix (`4.23`), because the update check
+compares the release tag against `APP_VERSION`. The **title** always carries the
+`v` and is exactly `PepperSnap v<tag>` — `PepperSnap v4.23`, and
+`PepperSnap v3.2.0.6` for the four-field tags of the 3.0–3.3 era, whose build
+counter stays in the name. So: tag bare, title with `v`, attached file plain. All
+40 releases to date read that way in their titles; sixteen had drifted (no `v`, a
+lowercase `s`, a bare `4.2.0`, an empty title, `v4` for `4.0.0`) and were
+normalised in October 2026. Their attached files still carry the version in the
+name — the unversioned asset starts with the first release after `4.2.2`, which
+is `4.23`. GitHub's own generated source archives are the source download —
+there is no separate source zip any more.
 
 The build is **not byte-reproducible**: the PE header carries the link time, so
 two builds of identical source differ in that field and therefore in SHA-256.
@@ -412,14 +432,15 @@ attached, and rebuilding — even to fix a comment — invalidates it. Take the
 hash from the finished asset and do not build again between writing it down and
 publishing; if a rebuild does happen, re-take the hash.
 
-The version number is part of the same decision. Patch is the default and needs no
-thought; a minor bump (`build.ps1 -Version 4.2.0`) is right when the build adds a
-user-visible capability or changes a behaviour users will notice. That call belongs
-to whoever prepares the release — here the assistant, acting for the maintainer —
-rather than being a question to ask each time: the number only means something
-because someone weighed it, and the reasoning goes into the message that
-accompanies the release, where a veto is still cheap. Two mechanics constrain it.
-PATCH doubles as the build counter, so starting a minor resets it — the next plain
-build after 4.2.0 is 4.2.1, not 4.1.15. And the number is fixed by the build that
+The version number is part of the same decision. A plain build bumps the second
+digit, which is the ordinary case and needs no thought: every build here carries
+a change, so every build is a release. The leading digit moves only when the user
+asks for it by name, never by inference. `-Version` sets the number outright —
+that is how the scheme was folded to `4.23` — and is otherwise only for starting
+a new major. That call belongs to whoever prepares the release — here the
+assistant, acting for the maintainer — rather than being a question to ask each
+time: the number only means something because someone weighed it, and the
+reasoning goes into the message that accompanies the release, where a veto is
+still cheap. One mechanic constrains it: the number is fixed by the build that
 gets published, since the exe embeds it and a rebuild changes the hash, so a wrong
 call is corrected by a later release, never by renumbering.
