@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.23";
+    static constexpr const wchar_t* APP_VERSION = L"4.41";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -160,6 +160,12 @@ public:
     POINT selQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
     POINT dragOrigQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
     bool isDraggingSingleCorner = false;
+    // Which corner of the selected rectangle / mosaic square is being pulled, and whether
+    // Ctrl made it a free-form pull rather than a rectangle resize.
+    int draggingAnnCorner = -1;
+    bool draggingAnnCornerFree = false;
+    // When the last arrow-key nudge happened, so a burst of auto-repeat is one undo step.
+    ULONGLONG lastAnnNudgeTick = 0;
     std::vector<RECT> desktopWindowRects;
     std::vector<HWND> suppressedAboveOverlayWindows;
     bool hasCtrlHoverWindow = false;
@@ -676,8 +682,12 @@ public:
     size_t textSelAnchor = 0;
 
     std::vector<Annotation> annotations;
-    std::vector<std::vector<Annotation>> undoStack;
-    std::vector<std::vector<Annotation>> redoStack;
+    std::vector<OverlayUndoSnapshot> undoStack;
+    std::vector<OverlayUndoSnapshot> redoStack;
+    // Set while a selection gesture (new area, move, resize) is in flight, so the whole drag
+    // lands as one step - and only if the area actually ended up somewhere else.
+    bool hasPendingSelectionUndo = false;
+    OverlayUndoSnapshot pendingSelectionUndo;
     Annotation draftAnn;
 
     std::vector<Color> palette = {
@@ -783,8 +793,8 @@ public:
         bool hasEllipseSelection = false;
         POINT selQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
         std::vector<Annotation> annotations;
-        std::vector<std::vector<Annotation>> undoStack;
-        std::vector<std::vector<Annotation>> redoStack;
+        std::vector<OverlayUndoSnapshot> undoStack;
+        std::vector<OverlayUndoSnapshot> redoStack;
         int nextStepNum = 1;
         int nextAnnotationId = 1;
         int selectedAnnotationId = -1;
@@ -898,6 +908,12 @@ public:
     void PushUndo();
     void Undo();
     void Redo();
+    void NudgeSelectedAnnotations(int dx, int dy);
+    OverlayUndoSnapshot CaptureUndoSnapshot() const;
+    void RestoreUndoSnapshot(const OverlayUndoSnapshot& snap);
+    void BeginSelectionUndoGesture();
+    void CommitSelectionUndoGesture();
+    bool BeginAnnotationClick(int hitId, DragMode annDragMode, POINT startPt, int mouseX, int mouseY, bool multiMod);
 
     void ShowOptionsModal();
     void ShowShortcutsModal();
@@ -919,7 +935,7 @@ public:
     RECT GetEditingTextBoxRect() const;
     size_t HitTestTextBoxIndex(int mouseX, int mouseY) const;
     void ApplyTextBoxKeyDown(WPARAM wParam, bool ctrl, bool shift, HWND hWnd);
-    static void ApplyPixelateFilter(Bitmap* bmp, int rx, int ry, int rw, int rh, int blockSize, bool elliptical = false);
+    static void ApplyPixelateFilter(Bitmap* bmp, int rx, int ry, int rw, int rh, int blockSize, bool elliptical = false, const POINT* poly = nullptr, int polyCount = 0);
     static void DrawVectorAnnotation(Graphics& g, const Annotation& ann, int offsetX, int offsetY, bool isSelected, bool isEditingCaret, bool forceOpaqueHighlighter = false);
     static void RenderHighlighterLayer(Graphics& destG, int regionX, int regionY, int regionW, int regionH, const std::vector<Annotation>& anns, const Annotation* draft, bool nonStacking);
     static void DrawDockButtonIcon(Graphics& g, const DockButton& b, const RectF& rf);
@@ -928,7 +944,7 @@ public:
     void BuildDockedHUD();
     DragMode HitTestSelectionHandles(int mx, int my) const;
     static bool AnnotationIntersectsRect(const Annotation& a, const RECT& rc);
-    int HitTestAnnotation(float x, float y, DragMode* outHandleMode) const;
+    int HitTestAnnotation(float x, float y, DragMode* outHandleMode, int* outCornerIdx = nullptr) const;
     void CheckAndPromptClipboardHistory();
 };
 

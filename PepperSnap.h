@@ -164,6 +164,7 @@ enum class DragMode {
     MovingAnnotation,
     DraggingAnnotationStart,
     DraggingAnnotationEnd,
+    DraggingAnnotationCorner,
     MarqueeSelectingAnnotations,
     DraggingHUD,
     ResizingFrameStrip,
@@ -186,6 +187,24 @@ struct Annotation {
     PointF2D endPt{0.0f, 0.0f};
     std::wstring text;
     int stepNumber = 1;
+};
+
+// The part of a snapshot that says which piece of the screen the annotations belong to.
+struct OverlaySelectionState {
+    bool hasSelection = false;
+    RECT selRect{0, 0, 0, 0};
+    bool hasCustomQuad = false;
+    bool hasEllipseSelection = false;
+    POINT selQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
+};
+
+// What one undo step has to put back. The area travels with the annotations because the
+// area is itself undoable now: stepping back to the vectors drawn over the previous area
+// while the current one is still selected would show them against the wrong crop. The two
+// are always restored together, so an undo can never land them on mismatched geometry.
+struct OverlayUndoSnapshot {
+    std::vector<Annotation> annotations;
+    OverlaySelectionState selection;
 };
 
 struct DockButton {

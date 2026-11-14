@@ -175,6 +175,167 @@ Outline width is at least 2 px and at most 5% of the type size; the floor wins
 below 40 px type, where the two cannot both hold, because a thinner border reads
 as anti-aliasing rather than as an outline.
 
+### The annotation layer draws unclipped; the crop decides what is kept
+
+`RenderOverlayWindow` used to put a `SetClip` on the selection rect before drawing
+the highlighter and every vector annotation, and it is gone on purpose. With it,
+anything reaching past the selection edge was cut exactly at the border — worst
+of all a text box, which is typed blind: its letters simply stopped mid-glyph with
+nothing to say they existed, and the box could be much wider than it looked.
+
+So the editor now draws every annotation where it was put, over the dimmed
+desktop outside the selection. What the capture keeps is decided downstream by
+`RenderCroppedRegionBitmap`, which crops to the selection rectangle and masks an
+ellipse or a quad via `ApplyEllipseMaskToBitmap` / `ApplyQuadPolygonMaskToBitmap`
+after the annotations are drawn. That means removing the clip changed no saved
+pixel at all: it is a display change only, and the same in every mode — region,
+full-screen, window select, and an image opened for editing.
+
+Two consequences worth knowing before "fixing" it back:
+
+- **The selection frame, handles, HUD and toolbar are drawn after** the annotation
+  pass, so they still sit on top of a stroke that runs under them.
+- **Mosaic is the one tool that does not overflow.** Its pixelation is applied to
+  the captured pixels inside the selection only (`applyMosaicClipped`), because
+  there are no captured pixels outside it to pixelate; its dashed guide rectangle
+  does overflow, so a mosaic box straddling the edge shows its outline beyond the
+  border while the effect stops there.
+
+Because the layer is unclipped, a click can land on an annotation *outside* the
+selection, and `WM_LBUTTONDOWN` handles that before it falls through to the
+"outside the box" branch — otherwise that click would start a whole new area.
+Two modifiers need care:
+
+- **Ctrl is two things** — the temporary select tool, and window-pick while no
+  area exists. Only the second wins over an annotation click, and it can only
+  happen with no selection at all, which is also the only time there are no
+  annotations to hit. Testing "Ctrl is down" alone made Ctrl + click on an
+  overflowing annotation start a new area while the toolbar already showed the
+  select tool.
+- **Alt stays excluded** — it is the ellipse-drag modifier, and an Alt drag that
+  begins on an annotation has to stay a drag.
+
+A new area does not start on top of an annotation, then: the drag has to begin a
+pixel away. That is the trade for being able to grab a box that overflows.
+
+### A new area keeps the annotations
+
+Creating a new area — by dragging, by Ctrl + click window pick, or by the arrow
+keys — replaces the *crop*, not the document. `annotations`, `undoStack`,
+`redoStack` and `nextStepNum` are deliberately left alone in those four paths, so
+the work drawn so far survives and the step numbers keep counting. The Clear
+button (`DBTN_ACT_CLEAR`) and its shortcut are the one explicit way to throw the
+annotations away, and that path does `PushUndo()` first, so even clearing is
+undoable.
+
+Anything left outside the new area is simply cropped out of the save — the
+unclipped editor already shows it, which is what makes the arrangement legible.
+Mosaic is safe to leave outside: `ApplyPixelateFilterRawBuffer` clamps its rect to
+the bitmap and no-ops when the intersection is empty.
+
+### Only the select tool starts a new custom area
+
+`WM_LBUTTONDOWN` used to send any press outside the selected area into the
+"start a new area" branch, whatever tool was active. That made it impossible to
+draw outside the area without destroying it. The branch is now entered when the
+point is inside the area **or** the effective tool is not `SelectMove`:
+
+```cpp
+OverlayTool toolAtDown = GetEffectiveTool();
+if (IsPointInSelection(pt) || toolAtDown != OverlayTool::SelectMove) { ... }
+```
+
+So a drawing tool draws where it lands, inside or outside, and only the select
+tool turns an outside drag into a new area. Ctrl still means the temporary select
+tool, so Ctrl + drag outside still makes a new area — that is the documented way
+to start one without leaving the current tool.
+
+Rectangle and square-mosaic corners do **not** snap while being drawn — with a
+drawing tool free to draw anywhere, a latch onto the window's corners only got in
+the way. The free-form corner pull does consider the window's corners, alongside
+the shape's own and the other annotations', which is enough to align a shape
+after the fact.
+
+### A deformed rectangle lives in `points`, and mosaic pixelates by polygon
+
+The custom area has always allowed Ctrl + corner to pull one corner free, turning
+it into an uneven quad or a triangle. Rectangle and Mosaic-square annotations do
+the same, but on **Alt**, not Ctrl — Ctrl stays the temporary select tool, so a
+Ctrl + corner drag has to keep resizing. The shape is stored in the annotation's
+`points` — four entries in TL, TR, BR, BL order, the same order the custom area's
+`selQuad` uses.
+`startPt` / `endPt` stay the bounding box (`SetAnnotationQuad` refreshes them), so
+everything that only understands two points — marquee bounds, the export crop
+arithmetic, the move code that shifts both ends — keeps working untouched.
+
+`AnnotationIsQuad` is the single test for "this shape is deformed". It is
+deliberately narrow: only `Rectangle` and `MosaicSquare` are ever treated this way,
+because `points` already means a stroke path for Pen and Highlighter.
+
+Two consequences worth knowing:
+
+- **Mosaic pixelates through a polygon mask.** `ApplyPixelateFilterRawBuffer` grew
+  an optional `poly`; with it, both the averaging and the writing are limited to
+  pixels inside the shape. Both callers — the live overlay pass and
+  `RenderRegionBitmap` — pass the corners relative to the annotation's own
+  top-left, which is the space the filter works in after its `(rx, ry)` offset.
+  A mosaic quad therefore has to be a real polygon fill test, not a bounding box.
+- **Alt starts the deformation; after that, corners stay corners.** Ctrl is left
+  alone: it is the temporary select tool, so Ctrl + corner stays an ordinary
+  resize. A plain rectangle resizes axis-aligned when a corner is dragged
+  (opposite corner fixed). Once the shape is a quad, dragging any corner keeps it
+  a quad — no modifier is needed, and nothing flattens it back into a rectangle.
+  The corner snaps to the shape's own corners, to other annotations' corners and
+  to the custom area's corners, all within 12 px, which is also how a quad
+  collapses into a triangle.
+
+`HitTestAnnotation` returns the corner index through an out parameter and the new
+`DraggingAnnotationCorner` mode; `draggingAnnCorner` and
+`draggingAnnCornerFree` carry it into `WM_MOUSEMOVE`. Rectangle and Mosaic-square
+are excluded from the old two-endpoint handle path, so their four corners are the
+only handles they offer.
+
+The pulled corner snaps to its own other three corners **and to every other
+annotation's corners** within the same 12 px, so two rectangles can be lined up
+exactly. Rect-like tools contribute their four quad corners; lines and arrows
+contribute their two ends.
+
+**A caution learned the hard way:** `MovingAnnotation`, `DraggingAnnotationStart`
+and `DraggingAnnotationEnd` share one `case` block. Inserting a new `case` label
+between them silently steals the move gesture — the new block runs, finds no
+corner index, and breaks, so nothing moves at all. New drag modes go *before*
+`case DragMode::MovingAnnotation:`, never inside that group.
+
+Arrow keys nudge the selected annotations by 1 px, or 10 px with Shift
+(`NudgeSelectedAnnotations`). A burst of key auto-repeat is coalesced into one
+undo step by a 600 ms window, so Ctrl + Z returns the annotation to where the
+burst started rather than walking back one pixel at a time. Text-box editing
+consumes the arrow keys before this point, so caret movement is unaffected.
+
+### An undo step carries the selection, not only the annotations
+
+`undoStack` / `redoStack` hold `OverlayUndoSnapshot`, not `std::vector<Annotation>`.
+The area is undoable now, so a step has to restore it alongside the vectors —
+otherwise stepping back would show the previous annotations against the current
+crop.
+
+Three rules keep it honest:
+
+- **`PushUndo()` is still the only way an annotation change records a step**, and
+  it captures the area too.
+- **A selection gesture is one step, taken on mouse-down and committed on
+  mouse-up** (`BeginSelectionUndoGesture` / `CommitSelectionUndoGesture`). A press
+  that moved nothing compares equal and is dropped, so clicking an annotation or
+  tapping a handle cannot fill the stack with no-ops.
+- **The first area is deliberately not undoable.** With no previous selection the
+  step is discarded, because stepping back to "no selection at all" would leave
+  the overlay with no area to draw on. The step exists to put a *replaced* area
+  back.
+
+`CommitSelectionUndoGesture` runs at the end of the mouse-up block, after
+`CanonicalizeSnappedQuad` / `SyncSelRectFromQuad`, so it records the area the drag
+actually produced rather than an intermediate one.
+
 ### Capture filenames go through NextFreeCaptureStem, not FormatFilename
 
 The default naming pattern is `PepperSnap_{N}`, and the counter is restored from

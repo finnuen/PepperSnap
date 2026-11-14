@@ -27,8 +27,15 @@ HICON PepperSnapDaemon::CreateCustomTrayIcon() {
     return hIcon ? hIcon : LoadIconW(nullptr, IDI_APPLICATION);
 }
 
+// The tip carries the version for the same reason the menu header does: the released file is
+// named PepperSnap.exe, so hovering the icon is the quickest way to tell two builds apart.
+static void SetTrayTipText(NOTIFYICONDATAW& nid) {
+    std::wstring tip = L"PepperSnap v" + std::wstring(PepperSnapDaemon::APP_VERSION);
+    wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
+}
+
 void PepperSnapDaemon::UpdateTrayTooltip() {
-    wcsncpy_s(nid.szTip, L"PepperSnap", _TRUNCATE);
+    SetTrayTipText(nid);
     if (nid.hWnd) {
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -74,7 +81,7 @@ bool PepperSnapDaemon::ReaddTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hTrayIcon;
-    wcsncpy_s(nid.szTip, L"PepperSnap", _TRUNCATE);
+    SetTrayTipText(nid);
     return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
 }
 
@@ -576,6 +583,13 @@ static void ShowTrayContextMenu(HWND hWnd) {
 
     for (;;) {
         HMENU hMenu = CreatePopupMenu();
+
+        // The released file is named PepperSnap.exe, with no version in it, so the menu is the
+        // one place a user can read which build is running without opening a window. Greyed and
+        // disabled: it is a label, not a command, exactly like the header in TrafficGate's menu.
+        std::wstring versionLine = L"PepperSnap v" + std::wstring(PepperSnapDaemon::APP_VERSION);
+        AppendMenuW(hMenu, MF_STRING | MF_GRAYED | MF_DISABLED, 0, versionLine.c_str());
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
         std::wstring regMenu  = L"Custom area\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkRegionSnip);
         std::wstring fullMenu = L"Instant fullscreen\t" + PepperSnapDaemon::FormatHotkeyString(g_Daemon.hkFullSnap);

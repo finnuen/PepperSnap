@@ -9,7 +9,7 @@ One small portable `.exe`. No installer. No account. Nothing to configure before
 
 ## 🚀 Get started
 
-1. Grab the latest `PepperSnap.exe` from the [Releases](https://github.com/finnuen/PepperSnap/releases) page. The file name stays the same so an update replaces it in place; the version is shown in the window titles inside the app.
+1. Grab the latest `PepperSnap.exe` from the [Releases](https://github.com/finnuen/PepperSnap/releases) page. The file name stays the same so an update replaces it in place; the version is shown in the tray tooltip, at the top of the tray menu, and in the app's window titles.
 2. Run it. PepperSnap appears in your system tray.
 3. Press **Ctrl + Print Screen** (or left-click the tray icon) and start capturing.
 
@@ -46,20 +46,24 @@ Every shortcut can be changed in **Options → Customize keys**.
 - **Window detection.** Hold **Ctrl** and click to snap to any window, notification pop-up or sidebar.
 - **Instant fullscreen** across all your monitors, saved straight to your folder.
 - **Repeat your last capture** with one hotkey. It remembers the exact shape, too.
-- **Non-rectangular captures.** Draw circles and ellipses (hold **Alt**), or drag corners to reshape the area into a quadrilateral or triangle.
+- **Non-rectangular captures.** Draw circles and ellipses (hold **Alt**), or hold **Ctrl** and drag a corner to reshape the area into a quadrilateral or triangle. Corner points snap together within 12 px.
 - **Aspect ratio shortcuts.** Lock to 1:1, 16:9, 9:16, 1:2 or 2:1 while dragging, or type any width, height or ratio you like.
 - **Color picker.** Hold **Shift** and click to copy the hex code of any pixel on screen.
+- **Draw without losing the area.** With a drawing tool selected, a drag outside the area draws there instead of replacing the area — only **Select** starts a new one.
 - **Optional cursor capture** if you want the mouse pointer in your screenshots.
 
 ### ✏️ Annotate right on the screen
 - **Pen** and **Stabilo highlighter**, with optional smoothing so your strokes look clean.
 - **Lines, arrows, rectangles and ellipses.** Hold **Shift** for straight 15° angles and perfect squares or circles.
+- **Free-form shapes.** Hold **Alt** and drag a rectangle's or square-mosaic's corner to pull it into an irregular quad or triangle — only the shape is affected, and the mosaic pixelates exactly inside it. Corners snap to other annotations and to the capture's corners.
 - **Numbered step arrows** for tutorials and bug reports, with a one-click counter reset.
 - **Text boxes** you type directly onto the image, in Calibri Light with an automatic glyph outline so the words read over any background.
 - **Mosaic / pixelate** (square or circle) to hide sensitive information.
-- **Select mode.** Move, resize, recolor or delete any annotation, individually or several at once.
+- **Select mode.** Move, resize, recolor or delete any annotation, individually or several at once. Click a shape that runs past the capture edge to select it, even though it sits outside the area.
+- **Pixel-accurate nudging.** Arrow keys move the selected annotation 1 px, or 10 px with **Shift**.
 - A one-click red swatch, S / M / L / XL sizes and an exact pixel size box.
-- Full **undo / redo**.
+- Full **undo / redo**, including the capture area itself — **Ctrl + Z** after an accidental new area puts the previous one back.
+- **Nothing is lost when the area changes.** Annotations stay put; anything outside the new area is cropped from the save while still visible in the editor.
 
 ![The annotation editor: selection handles, live pixel dimensions, and the drawing toolbar](assets/editor.png)
 

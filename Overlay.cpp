@@ -4,13 +4,29 @@
 // Pixelation & Vector Annotation Renderers
 // ----------------------------------------------------------------------------
 
-static void ApplyPixelateFilterRawBuffer(DWORD* bufPixels, int bw, int bh, int strideBytes, int rx, int ry, int rw, int rh, int blockSize, bool elliptical) {
+// `poly` (when given) is a closed polygon in coordinates relative to (rx, ry), the same space
+// the block loop works in; it masks the pixelation to a free-form quad instead of the
+// rectangle or the ellipse. Only pixels inside it are averaged and written.
+static void ApplyPixelateFilterRawBuffer(DWORD* bufPixels, int bw, int bh, int strideBytes, int rx, int ry, int rw, int rh, int blockSize, bool elliptical, const POINT* poly = nullptr, int polyCount = 0) {
     if (!bufPixels || rw <= 2 || rh <= 2) return;
     int x0 = std::max(0, std::min(bw - 1, rx));
     int y0 = std::max(0, std::min(bh - 1, ry));
     int x1 = std::max(0, std::min(bw, rx + rw));
     int y1 = std::max(0, std::min(bh, ry + rh));
     if (x1 <= x0 || y1 <= y0) return;
+
+    const bool usePoly = (poly != nullptr && polyCount >= 3);
+    auto insidePoly = [&](float lx, float ly) {
+        bool in = false;
+        for (int i = 0, j = polyCount - 1; i < polyCount; j = i++) {
+            float yi = (float)poly[i].y, yj = (float)poly[j].y;
+            if (((yi > ly) != (yj > ly)) &&
+                (lx < (float)(poly[j].x - poly[i].x) * (ly - yi) / (yj - yi) + (float)poly[i].x)) {
+                in = !in;
+            }
+        }
+        return in;
+    };
 
     blockSize = std::max(2, blockSize);
     int subW = x1 - x0;
@@ -33,6 +49,7 @@ static void ApplyPixelateFilterRawBuffer(DWORD* bufPixels, int bw, int bh, int s
             for (int py = by; py < maxY; ++py) {
                 DWORD* row = (DWORD*)(scan0 + (size_t)py * strideBytes);
                 for (int px = bx; px < maxX; ++px) {
+                    if (usePoly && !insidePoly(baseLocalX + (float)px, baseLocalY + (float)py)) continue;
                     DWORD argb = row[px];
                     sumB += (argb & 0xFF);
                     sumG += ((argb >> 8) & 0xFF);
@@ -42,11 +59,18 @@ static void ApplyPixelateFilterRawBuffer(DWORD* bufPixels, int bw, int bh, int s
             }
             if (count > 0) {
                 DWORD outPx = (0xFFu << 24) | ((DWORD)(sumR / count) << 16) | ((DWORD)(sumG / count) << 8) | (DWORD)(sumB / count);
-                if (!elliptical) {
+                if (!elliptical && !usePoly) {
                     for (int py = by; py < maxY; ++py) {
                         DWORD* row = (DWORD*)(scan0 + (size_t)py * strideBytes);
                         for (int px = bx; px < maxX; ++px) {
                             row[px] = outPx;
+                        }
+                    }
+                } else if (!elliptical && usePoly) {
+                    for (int py = by; py < maxY; ++py) {
+                        DWORD* row = (DWORD*)(scan0 + (size_t)py * strideBytes);
+                        for (int px = bx; px < maxX; ++px) {
+                            if (insidePoly(baseLocalX + (float)px, baseLocalY + (float)py)) row[px] = outPx;
                         }
                     }
                 } else {
@@ -68,14 +92,14 @@ static void ApplyPixelateFilterRawBuffer(DWORD* bufPixels, int bw, int bh, int s
     }
 }
 
-void PepperSnapDaemon::ApplyPixelateFilter(Bitmap* bmp, int rx, int ry, int rw, int rh, int blockSize, bool elliptical) {
+void PepperSnapDaemon::ApplyPixelateFilter(Bitmap* bmp, int rx, int ry, int rw, int rh, int blockSize, bool elliptical, const POINT* poly, int polyCount) {
     if (!bmp || rw <= 2 || rh <= 2) return;
     int bw = (int)bmp->GetWidth();
     int bh = (int)bmp->GetHeight();
     Rect lockRect(0, 0, bw, bh);
     BitmapData data;
     if (bmp->LockBits(&lockRect, ImageLockModeRead | ImageLockModeWrite, PixelFormat32bppARGB, &data) != Ok) return;
-    ApplyPixelateFilterRawBuffer((DWORD*)data.Scan0, bw, bh, data.Stride, rx, ry, rw, rh, blockSize, elliptical);
+    ApplyPixelateFilterRawBuffer((DWORD*)data.Scan0, bw, bh, data.Stride, rx, ry, rw, rh, blockSize, elliptical, poly, polyCount);
     bmp->UnlockBits(&data);
 }
 
@@ -132,6 +156,42 @@ static Color AnnotationOutlineColor(const Color& fill) {
 // type sizes - 13.6 / 21.2 / 36.4 / 59.2 px - this gives 2 / 2 / 2 / 3 px.
 static float AnnotationOutlineWidth(float fontSize) {
     return std::max(2.0f, fontSize * 0.05f);
+}
+
+// A rectangle or square-mosaic annotation can be deformed into a free quad by dragging one
+// of its corners with Alt held. The four corners then live in `points`, in TL, TR, BR, BL
+// order - the same order the custom area uses - and `startPt` / `endPt` stay the bounding
+// box, so everything that only knows about two points (marquee bounds, export crop maths)
+// keeps working. A plain rectangle stores nothing in `points`.
+static bool AnnotationIsQuad(const Annotation& a) {
+    return (a.tool == OverlayTool::Rectangle || a.tool == OverlayTool::MosaicSquare) &&
+           a.points.size() == 4;
+}
+
+static void AnnotationQuadPoints(const Annotation& a, PointF2D out[4]) {
+    if (AnnotationIsQuad(a)) {
+        for (int i = 0; i < 4; ++i) out[i] = a.points[i];
+        return;
+    }
+    float x1 = std::min(a.startPt.x, a.endPt.x);
+    float y1 = std::min(a.startPt.y, a.endPt.y);
+    float x2 = std::max(a.startPt.x, a.endPt.x);
+    float y2 = std::max(a.startPt.y, a.endPt.y);
+    out[0] = { x1, y1 };
+    out[1] = { x2, y1 };
+    out[2] = { x2, y2 };
+    out[3] = { x1, y2 };
+}
+
+// Stores a deformed quad and refreshes the two-point form from it.
+static void SetAnnotationQuad(Annotation& a, const PointF2D q[4]) {
+    a.points.assign(q, q + 4);
+    float minX = std::min(std::min(q[0].x, q[1].x), std::min(q[2].x, q[3].x));
+    float minY = std::min(std::min(q[0].y, q[1].y), std::min(q[2].y, q[3].y));
+    float maxX = std::max(std::max(q[0].x, q[1].x), std::max(q[2].x, q[3].x));
+    float maxY = std::max(std::max(q[0].y, q[1].y), std::max(q[2].y, q[3].y));
+    a.startPt = { minX, minY };
+    a.endPt = { maxX, maxY };
 }
 
 void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, int offsetX, int offsetY, bool isSelected, bool isEditingCaret, bool forceOpaqueHighlighter) {
@@ -338,11 +398,19 @@ void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, 
         }
 
         case OverlayTool::Rectangle: {
-            float x = std::min(sx, ex), y = std::min(sy, ey);
-            float w = std::abs(ex - sx), h = std::abs(ey - sy);
             Pen pen(ann.color, ann.strokeWidth);
             pen.SetLineJoin(LineJoinRound);
-            g.DrawRectangle(&pen, x, y, w, h);
+            if (AnnotationIsQuad(ann)) {
+                PointF pts[4];
+                for (int i = 0; i < 4; ++i) {
+                    pts[i] = PointF((REAL)(ann.points[i].x - offsetX), (REAL)(ann.points[i].y - offsetY));
+                }
+                g.DrawPolygon(&pen, pts, 4);
+            } else {
+                float x = std::min(sx, ex), y = std::min(sy, ey);
+                float w = std::abs(ex - sx), h = std::abs(ey - sy);
+                g.DrawRectangle(&pen, x, y, w, h);
+            }
             break;
         }
 
@@ -479,19 +547,36 @@ void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, 
     if (isSelected && ann.tool != OverlayTool::TextBox) {
         Pen selPen(Color(255, 56, 189, 248), 1.5f);
         selPen.SetDashStyle(DashStyleDash);
-        float x = std::min(sx, ex) - 6.0f;
-        float y = std::min(sy, ey) - 6.0f;
-        float w = std::max(16.0f, std::abs(ex - sx) + 12.0f);
-        float h = std::max(16.0f, std::abs(ey - sy) + 12.0f);
-        g.DrawRectangle(&selPen, x, y, w, h);
-
-        // Endpoint handles for lines, arrows, and number-arrows
         SolidBrush handleFill(Color(255, 255, 255, 255));
         Pen handleBorder(Color(255, 56, 189, 248), 1.5f);
-        g.FillEllipse(&handleFill, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
-        g.DrawEllipse(&handleBorder, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
-        g.FillEllipse(&handleFill, ex - 5.0f, ey - 5.0f, 10.0f, 10.0f);
-        g.DrawEllipse(&handleBorder, ex - 5.0f, ey - 5.0f, 10.0f, 10.0f);
+
+        // A rectangle or square mosaic offers all four corners, because any of them can be
+        // pulled free-form with Alt; the other tools keep their two end handles.
+        if (ann.tool == OverlayTool::Rectangle || ann.tool == OverlayTool::MosaicSquare) {
+            PointF2D q[4];
+            AnnotationQuadPoints(ann, q);
+            PointF pts[4];
+            for (int i = 0; i < 4; ++i) {
+                pts[i] = PointF((REAL)(q[i].x - offsetX), (REAL)(q[i].y - offsetY));
+            }
+            g.DrawPolygon(&selPen, pts, 4);
+            for (int i = 0; i < 4; ++i) {
+                g.FillRectangle(&handleFill, pts[i].X - 4.0f, pts[i].Y - 4.0f, 8.0f, 8.0f);
+                g.DrawRectangle(&handleBorder, pts[i].X - 4.0f, pts[i].Y - 4.0f, 8.0f, 8.0f);
+            }
+        } else {
+            float x = std::min(sx, ex) - 6.0f;
+            float y = std::min(sy, ey) - 6.0f;
+            float w = std::max(16.0f, std::abs(ex - sx) + 12.0f);
+            float h = std::max(16.0f, std::abs(ey - sy) + 12.0f);
+            g.DrawRectangle(&selPen, x, y, w, h);
+
+            // Endpoint handles for lines, arrows, and number-arrows
+            g.FillEllipse(&handleFill, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
+            g.DrawEllipse(&handleBorder, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
+            g.FillEllipse(&handleFill, ex - 5.0f, ey - 5.0f, 10.0f, 10.0f);
+            g.DrawEllipse(&handleBorder, ex - 5.0f, ey - 5.0f, 10.0f, 10.0f);
+        }
     }
 }
 
@@ -1494,8 +1579,59 @@ bool PepperSnapDaemon::AnnotationIntersectsRect(const Annotation& a, const RECT&
     return !(maxX < rL || minX > rR || maxY < rT || minY > rB);
 }
 
-int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMode) const {
+// Arms a drag on the annotation just hit: selects it, remembers how far the cursor sits from
+// its start point, and adopts its colour and stroke so the toolbar matches what is selected.
+// Shared by a click inside the selection and one on an annotation that reaches outside it -
+// the annotation layer draws unclipped, so the second kind of click is normal.
+bool PepperSnapDaemon::BeginAnnotationClick(int hitId, DragMode annDragMode, POINT startPt,
+                                            int mouseX, int mouseY, bool multiMod) {
+    moveAnnUndoPushed = false;
+    clickedAlreadySelectedAnn = false;
+    clickedAlreadySelectedAnnId = -1;
+    if (multiMod) {
+        ToggleAnnotationSelection(hitId);
+        if (!IsAnnotationSelected(hitId)) {
+            dragMode = DragMode::None;
+            return false;
+        }
+        dragMode = DragMode::MovingAnnotation;
+        dragStartPt = startPt;
+        for (const auto& a : annotations) {
+            if (a.id == hitId) {
+                activeStroke = a.strokeWidth;
+                activeColor = a.color;
+                moveAnnOffset = { (float)mouseX - a.startPt.x, (float)mouseY - a.startPt.y };
+                break;
+            }
+        }
+        return true;
+    }
+    if (IsAnnotationSelected(hitId) && selectedAnnotationIds.size() > 1) {
+        // Keep the multi-selection intact so dragging moves all selected annotations together;
+        // if the user releases without dragging, select only this clicked annotation.
+        selectedAnnotationId = hitId;
+        clickedAlreadySelectedAnn = true;
+        clickedAlreadySelectedAnnId = hitId;
+        dragMode = DragMode::MovingAnnotation;
+    } else {
+        SelectSingleAnnotation(hitId);
+        dragMode = annDragMode;
+    }
+    dragStartPt = startPt;
+    for (const auto& a : annotations) {
+        if (a.id == hitId) {
+            activeStroke = a.strokeWidth;
+            activeColor = a.color;
+            moveAnnOffset = { (float)mouseX - a.startPt.x, (float)mouseY - a.startPt.y };
+            break;
+        }
+    }
+    return true;
+}
+
+int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMode, int* outCornerIdx) const {
     if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+    if (outCornerIdx) *outCornerIdx = -1;
 
     auto distToSeg = [](float px, float py, float x1, float y1, float x2, float y2) -> float {
         float dx = x2 - x1, dy = y2 - y1;
@@ -1520,11 +1656,29 @@ int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMod
     for (int i = (int)annotations.size() - 1; i >= 0; --i) {
         const auto& a = annotations[i];
 
+        // Four corners for a selected rectangle / square mosaic: any of them can be pulled
+        // free-form with Alt, so all four have to be grabbable.
+        if (IsAnnotationSelected(a.id) &&
+            (a.tool == OverlayTool::Rectangle || a.tool == OverlayTool::MosaicSquare)) {
+            PointF2D q[4];
+            AnnotationQuadPoints(a, q);
+            for (int c = 0; c < 4; ++c) {
+                float dxc = x - q[c].x, dyc = y - q[c].y;
+                if (dxc * dxc + dyc * dyc <= 49.0f) {
+                    if (outHandleMode) *outHandleMode = DragMode::DraggingAnnotationCorner;
+                    if (outCornerIdx) *outCornerIdx = c;
+                    return a.id;
+                }
+            }
+        }
+
         // Endpoint resize handles only when the annotation is already selected
         if (IsAnnotationSelected(a.id) &&
             a.tool != OverlayTool::Pen &&
             a.tool != OverlayTool::Highlighter &&
-            a.tool != OverlayTool::TextBox) {
+            a.tool != OverlayTool::TextBox &&
+            a.tool != OverlayTool::Rectangle &&
+            a.tool != OverlayTool::MosaicSquare) {
             float dxs = x - a.startPt.x, dys = y - a.startPt.y;
             if (dxs * dxs + dys * dys <= 49.0f) {
                 if (outHandleMode) *outHandleMode = DragMode::DraggingAnnotationStart;
@@ -1621,11 +1775,24 @@ int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMod
                 break;
             }
             case OverlayTool::Rectangle: {
+                float halfW = std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
+                if (AnnotationIsQuad(a)) {
+                    PointF2D q[4];
+                    AnnotationQuadPoints(a, q);
+                    for (int e = 0; e < 4; ++e) {
+                        const PointF2D& p0 = q[e];
+                        const PointF2D& p1 = q[(e + 1) & 3];
+                        if (distToSeg(x, y, p0.x, p0.y, p1.x, p1.y) <= halfW) {
+                            if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                            return a.id;
+                        }
+                    }
+                    break;
+                }
                 float x0 = std::min(a.startPt.x, a.endPt.x);
                 float x1 = std::max(a.startPt.x, a.endPt.x);
                 float y0 = std::min(a.startPt.y, a.endPt.y);
                 float y1 = std::max(a.startPt.y, a.endPt.y);
-                float halfW = std::max(4.5f, a.strokeWidth * 0.5f + 3.5f);
                 if (distToSeg(x, y, x0, y0, x1, y0) <= halfW ||
                     distToSeg(x, y, x1, y0, x1, y1) <= halfW ||
                     distToSeg(x, y, x1, y1, x0, y1) <= halfW ||
@@ -1821,12 +1988,26 @@ Bitmap* PepperSnapDaemon::RenderCroppedRegionBitmap() {
     // Pass 1: Real-time pixelation filters (Mosaic Square & Mosaic Circle) applied directly to cropped bitmap
     for (const auto& ann : annotations) {
         if (ann.tool == OverlayTool::MosaicSquare || ann.tool == OverlayTool::MosaicCircle) {
-            int px = (int)std::min(ann.startPt.x, ann.endPt.x) - rx;
-            int py = (int)std::min(ann.startPt.y, ann.endPt.y) - ry;
+            float annLeft = std::min(ann.startPt.x, ann.endPt.x);
+            float annTop  = std::min(ann.startPt.y, ann.endPt.y);
+            int px = (int)annLeft - rx;
+            int py = (int)annTop - ry;
             int pw = (int)std::abs(ann.endPt.x - ann.startPt.x);
             int ph = (int)std::abs(ann.endPt.y - ann.startPt.y);
             int block = GetMosaicBlockSize(ann.strokeWidth);
-            ApplyPixelateFilter(out, px, py, pw, ph, block, ann.tool == OverlayTool::MosaicCircle);
+            // A deformed mosaic square pixelates only inside its quad; the points are passed
+            // relative to the annotation's own top-left, which is the space the filter works
+            // in after its own (rx, ry) offset.
+            POINT poly[4];
+            int polyCount = 0;
+            if (AnnotationIsQuad(ann)) {
+                for (int i = 0; i < 4; ++i) {
+                    poly[i] = { (LONG)std::lround(ann.points[i].x - annLeft),
+                                (LONG)std::lround(ann.points[i].y - annTop) };
+                }
+                polyCount = 4;
+            }
+            ApplyPixelateFilter(out, px, py, pw, ph, block, ann.tool == OverlayTool::MosaicCircle, poly, polyCount);
         }
     }
 
@@ -2688,30 +2869,116 @@ DragMode PepperSnapDaemon::HitTestSelectionHandles(int mx, int my) const {
 // ----------------------------------------------------------------------------
 
 void PepperSnapDaemon::PushUndo() {
-    undoStack.push_back(annotations);
+    undoStack.push_back(CaptureUndoSnapshot());
     if (undoStack.size() > 40) undoStack.erase(undoStack.begin());
     redoStack.clear();
 }
 
-void PepperSnapDaemon::Undo() {
-    CommitActiveTextBox();
-    if (undoStack.empty()) return;
-    redoStack.push_back(annotations);
-    annotations = undoStack.back();
-    undoStack.pop_back();
+OverlayUndoSnapshot PepperSnapDaemon::CaptureUndoSnapshot() const {
+    OverlayUndoSnapshot snap;
+    snap.annotations = annotations;
+    snap.selection.hasSelection = hasSelection;
+    snap.selection.selRect = selRect;
+    snap.selection.hasCustomQuad = hasCustomQuad;
+    snap.selection.hasEllipseSelection = hasEllipseSelection;
+    for (int i = 0; i < 4; ++i) snap.selection.selQuad[i] = selQuad[i];
+    return snap;
+}
+
+void PepperSnapDaemon::RestoreUndoSnapshot(const OverlayUndoSnapshot& snap) {
+    annotations = snap.annotations;
+    hasSelection = snap.selection.hasSelection;
+    selRect = snap.selection.selRect;
+    hasCustomQuad = snap.selection.hasCustomQuad;
+    hasEllipseSelection = snap.selection.hasEllipseSelection;
+    for (int i = 0; i < 4; ++i) selQuad[i] = snap.selection.selQuad[i];
     RecalcNextStepNum();
     ClearAnnotationSelection();
+}
+
+// The quad corners are compared as well as the bounding box: a snapped selection can be
+// re-shaped without its rectangle moving, and that is still a change worth undoing.
+static bool SameSelectionArea(const OverlaySelectionState& a, const OverlaySelectionState& b) {
+    if (a.hasSelection != b.hasSelection) return false;
+    if (!a.hasSelection) return true;
+    if (a.hasCustomQuad != b.hasCustomQuad) return false;
+    if (a.hasEllipseSelection != b.hasEllipseSelection) return false;
+    if (a.selRect.left   != b.selRect.left   || a.selRect.top    != b.selRect.top ||
+        a.selRect.right  != b.selRect.right  || a.selRect.bottom != b.selRect.bottom) {
+        return false;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (a.selQuad[i].x != b.selQuad[i].x || a.selQuad[i].y != b.selQuad[i].y) return false;
+    }
+    return true;
+}
+
+// Taken on mouse-down over a handle, inside the area, or outside it, where a drag starts a
+// new area. Nothing is pushed yet: a press that resizes nothing must not leave a step behind
+// that undoes to the state it is already in.
+void PepperSnapDaemon::BeginSelectionUndoGesture() {
+    pendingSelectionUndo = CaptureUndoSnapshot();
+    hasPendingSelectionUndo = true;
+}
+
+void PepperSnapDaemon::CommitSelectionUndoGesture() {
+    if (!hasPendingSelectionUndo) return;
+    hasPendingSelectionUndo = false;
+    // A first area is not undoable: there was nothing to go back to, and stepping to "no
+    // selection at all" would leave the overlay with no area and nothing to draw on. The
+    // step is for replacing an area that already existed.
+    if (!pendingSelectionUndo.selection.hasSelection) {
+        pendingSelectionUndo = OverlayUndoSnapshot();
+        return;
+    }
+    if (SameSelectionArea(CaptureUndoSnapshot().selection, pendingSelectionUndo.selection)) {
+        pendingSelectionUndo = OverlayUndoSnapshot();
+        return;
+    }
+    undoStack.push_back(std::move(pendingSelectionUndo));
+    pendingSelectionUndo = OverlayUndoSnapshot();
+    if (undoStack.size() > 40) undoStack.erase(undoStack.begin());
+    redoStack.clear();
+}
+
+void PepperSnapDaemon::NudgeSelectedAnnotations(int dx, int dy) {
+    if (dx == 0 && dy == 0) return;
+    if (!HasSelectedAnnotations()) return;
+    // Auto-repeat fires many times a second; one undo step per burst keeps Ctrl + Z meaning
+    // "put the annotation back" rather than "undo one pixel", forty times.
+    ULONGLONG now = GetTickCount64();
+    if (now - lastAnnNudgeTick > 600) PushUndo();
+    lastAnnNudgeTick = now;
+    for (auto& a : annotations) {
+        if (!IsAnnotationSelected(a.id)) continue;
+        a.startPt.x += (float)dx;
+        a.startPt.y += (float)dy;
+        a.endPt.x   += (float)dx;
+        a.endPt.y   += (float)dy;
+        for (auto& p : a.points) {
+            p.x += (float)dx;
+            p.y += (float)dy;
+        }
+    }
+}
+
+void PepperSnapDaemon::Undo() {
+    CommitActiveTextBox();
+    hasPendingSelectionUndo = false;
+    if (undoStack.empty()) return;
+    redoStack.push_back(CaptureUndoSnapshot());
+    RestoreUndoSnapshot(undoStack.back());
+    undoStack.pop_back();
     if (hOverlayWnd) InvalidateRect(hOverlayWnd, nullptr, FALSE);
 }
 
 void PepperSnapDaemon::Redo() {
     CommitActiveTextBox();
+    hasPendingSelectionUndo = false;
     if (redoStack.empty()) return;
-    undoStack.push_back(annotations);
-    annotations = redoStack.back();
+    undoStack.push_back(CaptureUndoSnapshot());
+    RestoreUndoSnapshot(redoStack.back());
     redoStack.pop_back();
-    RecalcNextStepNum();
-    ClearAnnotationSelection();
     if (hOverlayWnd) InvalidateRect(hOverlayWnd, nullptr, FALSE);
 }
 
@@ -2975,17 +3242,29 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 GdiFlush();
                 bool appliedAnyMosaic = false;
                 auto applyMosaicClipped = [&](const Annotation& ma) {
-                    int px = (int)std::min(ma.startPt.x, ma.endPt.x);
-                    int py = (int)std::min(ma.startPt.y, ma.endPt.y);
+                    float annLeft = std::min(ma.startPt.x, ma.endPt.x);
+                    float annTop  = std::min(ma.startPt.y, ma.endPt.y);
+                    int px = (int)annLeft;
+                    int py = (int)annTop;
                     int pw = (int)std::abs(ma.endPt.x - ma.startPt.x);
                     int ph = (int)std::abs(ma.endPt.y - ma.startPt.y);
                     if (px + pw <= sx0 || px >= sx0 + sw0 || py + ph <= sy0 || py >= sy0 + sh0) return;
                     DWORD* subBase = g_Daemon.backBufferPixels + (size_t)sy0 * W + sx0;
+                    POINT poly[4];
+                    int polyCount = 0;
+                    if (AnnotationIsQuad(ma)) {
+                        for (int i = 0; i < 4; ++i) {
+                            poly[i] = { (LONG)std::lround(ma.points[i].x - annLeft),
+                                        (LONG)std::lround(ma.points[i].y - annTop) };
+                        }
+                        polyCount = 4;
+                    }
                     ApplyPixelateFilterRawBuffer(
                         subBase, sw0, sh0, W * 4,
                         px - sx0, py - sy0, pw, ph,
                         PepperSnapDaemon::GetMosaicBlockSize(ma.strokeWidth),
-                        ma.tool == OverlayTool::MosaicCircle
+                        ma.tool == OverlayTool::MosaicCircle,
+                        poly, polyCount
                     );
                     appliedAnyMosaic = true;
                 };
@@ -3042,28 +3321,14 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             int sh = std::min(H - sy, (int)std::abs(g_Daemon.selRect.bottom - g_Daemon.selRect.top));
 
             if (sw >= 1 && sh >= 1 && g_Daemon.frozenDesktopBmp) {
-                // Clip Highlighter & vector annotations to selection region (ellipse, polygon/triangle, or rectangle)
-                if (g_Daemon.hasEllipseSelection) {
-                    GraphicsPath ellipseClipPath(FillModeWinding);
-                    ellipseClipPath.AddEllipse((REAL)sx, (REAL)sy, (REAL)sw, (REAL)sh);
-                    g.SetClip(&ellipseClipPath, CombineModeReplace);
-                } else if (g_Daemon.hasCustomQuad) {
-                    POINT polyPtsClip[4];
-                    int polyCountClip = g_Daemon.GetSelectionPolygonPoints(polyPtsClip);
-                    if (polyCountClip >= 3) {
-                        PointF quadPtsF[4];
-                        for (int i = 0; i < polyCountClip; ++i) {
-                            quadPtsF[i] = PointF((REAL)polyPtsClip[i].x, (REAL)polyPtsClip[i].y);
-                        }
-                        GraphicsPath polyClipPath(FillModeWinding);
-                        polyClipPath.AddPolygon(quadPtsF, polyCountClip);
-                        g.SetClip(&polyClipPath, CombineModeReplace);
-                    } else {
-                        g.SetClip(Rect(sx, sy, sw, sh), CombineModeReplace);
-                    }
-                } else {
-                    g.SetClip(Rect(sx, sy, sw, sh), CombineModeReplace);
-                }
+                // Deliberately unclipped. Every tool draws where it was put, even past the
+                // selection edge: a text box that runs over the border used to be sliced
+                // mid-glyph, so the letters past the edge simply vanished and there was no
+                // hint that they existed or that the box was wider than it looked. Shadow
+                // and highlight edges had the same problem. What the capture keeps is decided
+                // later by RenderCroppedRegionBitmap, which crops to the selection rectangle
+                // and masks an ellipse or a quad at the end, so the saved image is identical
+                // either way - the overflow is an editing aid, not part of the output.
                 const Annotation* draftHi = (g_Daemon.dragMode == DragMode::DrawingAnnotation && g_Daemon.draftAnn.tool == OverlayTool::Highlighter)
                     ? &g_Daemon.draftAnn
                     : nullptr;
@@ -3098,6 +3363,13 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                     if (ann.tool == OverlayTool::MosaicCircle) {
                         g.DrawEllipse(&whiteGuide, mx0, my0, mw, mh);
                         g.DrawEllipse(&dashGuide, mx0, my0, mw, mh);
+                    } else if (AnnotationIsQuad(ann)) {
+                        PointF quadPts[4];
+                        for (int k = 0; k < 4; ++k) {
+                            quadPts[k] = PointF((REAL)ann.points[k].x, (REAL)ann.points[k].y);
+                        }
+                        g.DrawPolygon(&whiteGuide, quadPts, 4);
+                        g.DrawPolygon(&dashGuide, quadPts, 4);
                     } else {
                         g.DrawRectangle(&whiteGuide, mx0, my0, mw, mh);
                         g.DrawRectangle(&dashGuide, mx0, my0, mw, mh);
@@ -3105,10 +3377,17 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                     if (isSel) {
                         SolidBrush hFill(Color(255, 255, 255, 255));
                         Pen hBorder(Color(255, 56, 189, 248), 1.5f);
-                        g.FillRectangle(&hFill, ann.startPt.x - 4.0f, ann.startPt.y - 4.0f, 8.0f, 8.0f);
-                        g.DrawRectangle(&hBorder, ann.startPt.x - 4.0f, ann.startPt.y - 4.0f, 8.0f, 8.0f);
-                        g.FillRectangle(&hFill, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
-                        g.DrawRectangle(&hBorder, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
+                        if (AnnotationIsQuad(ann)) {
+                            for (int k = 0; k < 4; ++k) {
+                                g.FillRectangle(&hFill, ann.points[k].x - 4.0f, ann.points[k].y - 4.0f, 8.0f, 8.0f);
+                                g.DrawRectangle(&hBorder, ann.points[k].x - 4.0f, ann.points[k].y - 4.0f, 8.0f, 8.0f);
+                            }
+                        } else {
+                            g.FillRectangle(&hFill, ann.startPt.x - 4.0f, ann.startPt.y - 4.0f, 8.0f, 8.0f);
+                            g.DrawRectangle(&hBorder, ann.startPt.x - 4.0f, ann.startPt.y - 4.0f, 8.0f, 8.0f);
+                            g.FillRectangle(&hFill, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
+                            g.DrawRectangle(&hBorder, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
+                        }
                     }
                 }
             }
@@ -3152,7 +3431,6 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             if (g_Daemon.isEditingText) {
                 PepperSnapDaemon::DrawVectorAnnotation(g, g_Daemon.editingTextAnn, 0, 0, true, true);
             }
-            g.ResetClip();
 
             // Selection Frame + 8 Resize Handles (Supports circles/ellipses, rectangles, irregular quadrilaterals, and snapped triangles)
             Pen selBorder(Color(255, 239, 68, 68), 1.8f);
@@ -4250,6 +4528,10 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             int my = GET_Y_LPARAM(lParam);
             POINT pt{ mx, my };
             g_Daemon.mousePt = pt;
+            // Every press starts with a clean slate: a gesture whose mouse-up never arrived
+            // (capture lost, mode changed underneath it) must not be committed by a later
+            // release somewhere else.
+            g_Daemon.hasPendingSelectionUndo = false;
             bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
             // -1. Multi-Frame GIF / WebP Selector Strip (on top of custom area and its toolbar)
@@ -4502,6 +4784,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                                        handleHit == DragMode::ResizeBR ||
                                        handleHit == DragMode::ResizeBL);
                 g_Daemon.isDraggingSingleCorner = (isCornerHandle && ctrlHeldOnHandle && !g_Daemon.hasEllipseSelection);
+                g_Daemon.BeginSelectionUndoGesture();
                 g_Daemon.dragMode = handleHit;
                 g_Daemon.dragStartPt = pt;
                 g_Daemon.GetSelectionQuadPoints(g_Daemon.dragOrigQuad);
@@ -4526,63 +4809,41 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     std::max(g_Daemon.selRect.left, g_Daemon.selRect.right),
                     std::max(g_Daemon.selRect.top, g_Daemon.selRect.bottom)
                 };
-                if (g_Daemon.IsPointInSelection(pt)) {
+                // Only the select tool turns an outside drag into a new custom window. With any
+                // drawing tool the drag draws, wherever it lands - including outside the
+                // selected area, which is why the unclipped editor shows it there. Replacing
+                // the area mid-annotation is never what someone holding the rectangle tool
+                // meant to do.
+                OverlayTool toolAtDown = g_Daemon.GetEffectiveTool();
+                if (g_Daemon.IsPointInSelection(pt) || toolAtDown != OverlayTool::SelectMove) {
                     autoHideFrameStripOnFocus();
-                    OverlayTool effectiveTool = g_Daemon.GetEffectiveTool();
+                    OverlayTool effectiveTool = toolAtDown;
                     if (effectiveTool == OverlayTool::SelectMove) {
                         bool multiMod = shiftHeld;
                         DragMode annDragMode = DragMode::MovingAnnotation;
-                        int hitId = g_Daemon.HitTestAnnotation((float)mx, (float)my, &annDragMode);
+                        int annCornerIdx = -1;
+                        int hitId = g_Daemon.HitTestAnnotation((float)mx, (float)my, &annDragMode, &annCornerIdx);
                         g_Daemon.moveAnnUndoPushed = false;
                         g_Daemon.clickedAlreadySelectedAnn = false;
                         g_Daemon.clickedAlreadySelectedAnnId = -1;
                         if (hitId != -1) {
-                            if (multiMod) {
-                                g_Daemon.ToggleAnnotationSelection(hitId);
-                                if (g_Daemon.IsAnnotationSelected(hitId)) {
-                                    g_Daemon.dragMode = DragMode::MovingAnnotation;
-                                    g_Daemon.dragStartPt = pt;
-                                    for (const auto& a : g_Daemon.annotations) {
-                                        if (a.id == hitId) {
-                                            g_Daemon.activeStroke = a.strokeWidth;
-                                            g_Daemon.activeColor = a.color;
-                                            g_Daemon.moveAnnOffset = { (float)mx - a.startPt.x, (float)my - a.startPt.y };
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    g_Daemon.dragMode = DragMode::None;
-                                }
-                            } else {
-                                if (g_Daemon.IsAnnotationSelected(hitId) && g_Daemon.selectedAnnotationIds.size() > 1) {
-                                    // Keep the multi-selection intact so dragging moves all selected annotations together;
-                                    // if the user releases without dragging, select only this clicked annotation.
-                                    g_Daemon.selectedAnnotationId = hitId;
-                                    g_Daemon.clickedAlreadySelectedAnn = true;
-                                    g_Daemon.clickedAlreadySelectedAnnId = hitId;
-                                    g_Daemon.dragMode = DragMode::MovingAnnotation;
-                                } else {
-                                    g_Daemon.SelectSingleAnnotation(hitId);
-                                    g_Daemon.dragMode = annDragMode;
-                                }
-                                g_Daemon.dragStartPt = pt;
-                                for (const auto& a : g_Daemon.annotations) {
-                                    if (a.id == hitId) {
-                                        g_Daemon.activeStroke = a.strokeWidth;
-                                        g_Daemon.activeColor = a.color;
-                                        g_Daemon.moveAnnOffset = { (float)mx - a.startPt.x, (float)my - a.startPt.y };
-                                        break;
-                                    }
-                                }
-                            }
+                            // Alt turns a corner handle into a free-form pull. Ctrl deliberately
+                            // does not: it is the temporary select tool, so Ctrl + corner has to
+                            // stay an ordinary resize.
+                            g_Daemon.draggingAnnCorner = annCornerIdx;
+                            g_Daemon.draggingAnnCornerFree = (annCornerIdx >= 0) && PepperSnapDaemon::IsAltModifierHeld();
+                            g_Daemon.BeginAnnotationClick(hitId, annDragMode, pt, mx, my, multiMod);
                         } else if (multiMod) {
-                            // Shift + drag (or Ctrl + drag) on empty space inside custom area starts marquee multi-selection!
+                            // Shift + drag on empty space inside the custom area starts marquee
+                            // multi-selection. Ctrl is not part of this: it is the temporary
+                            // select tool, so it never toggles a selection.
                             g_Daemon.dragMode = DragMode::MarqueeSelectingAnnotations;
                             g_Daemon.marqueeStartPt = pt;
                             g_Daemon.marqueeRect = { pt.x, pt.y, pt.x, pt.y };
                             g_Daemon.hasMarqueeBox = true;
                         } else {
                             g_Daemon.ClearAnnotationSelection();
+                            g_Daemon.BeginSelectionUndoGesture();
                             g_Daemon.dragMode = DragMode::MovingSelection;
                             g_Daemon.dragStartPt = pt;
                             g_Daemon.dragOrigRect = normSel;
@@ -4656,10 +4917,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             // Outside Selection Box -> Enter PendingOutsideSelection
             // (Shift + click picks pixel RGB color; Ctrl + click selects window on WM_LBUTTONUP release if not dragged;
             //  manual region creation starts in WM_MOUSEMOVE only if dragged >= 5px)
-            g_Daemon.ClearAnnotationSelection();
-            g_Daemon.isRightMouseHeld = ((wParam & MK_RBUTTON) != 0) || ((GetKeyState(VK_RBUTTON) & 0x8000) != 0);
-            g_Daemon.dragMode = DragMode::PendingOutsideSelection;
-            g_Daemon.dragStartPt = pt;
             bool ctrlHeldOnDown = ((GetKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                   ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) ||
                                   ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0) ||
@@ -4669,6 +4926,44 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                                    ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
                                    ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
             bool altHeldOnDown = PepperSnapDaemon::IsAltModifierHeld();
+
+            // The annotation layer is drawn unclipped, so an annotation can reach past the
+            // selection edge and a click on that overflow arrives here, outside the box.
+            // Take it as a click on the annotation: otherwise the click starts a whole new
+            // area and there is no way to grab a text box that runs over the border without
+            // first dragging the selection across it.
+            // Ctrl is two different things: the temporary select tool, and window-pick while
+            // no area exists yet. Only the second must win over an annotation click, and it
+            // can only happen with no selection at all - which is also the only time there
+            // are no annotations to hit. Testing "Ctrl is down" alone made Ctrl + click on an
+            // overflowing annotation fall through and start a new area, even though the
+            // toolbar was already showing the select tool.
+            // Alt is the free-form corner pull, so an Alt press that lands on a corner must
+            // reach the annotation. Alt anywhere else keeps its old meaning - an Alt drag on
+            // empty desktop still starts an ellipse selection.
+            bool ctrlIsWindowPick = ctrlHeldOnDown && !g_Daemon.hasSelection;
+            if (g_Daemon.GetEffectiveTool() == OverlayTool::SelectMove && !ctrlIsWindowPick) {
+                DragMode annDragMode = DragMode::MovingAnnotation;
+                int annCornerIdx = -1;
+                int hitId = g_Daemon.HitTestAnnotation((float)mx, (float)my, &annDragMode, &annCornerIdx);
+                bool altWantsCornerOnly = altHeldOnDown && !(hitId != -1 && annCornerIdx >= 0);
+                if (hitId != -1 && !altWantsCornerOnly) {
+                    autoHideFrameStripOnFocus();
+                    g_Daemon.draggingAnnCorner = annCornerIdx;
+                    g_Daemon.draggingAnnCornerFree = (annCornerIdx >= 0) && altHeldOnDown;
+                    g_Daemon.BeginAnnotationClick(hitId, annDragMode, pt, mx, my, shiftHeld);
+                    if (g_Daemon.dragMode != DragMode::None) SetCapture(hWnd);
+                    g_Daemon.UpdateOverlayCursor(mx, my);
+                    InvalidateRect(hWnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            g_Daemon.ClearAnnotationSelection();
+            g_Daemon.isRightMouseHeld = ((wParam & MK_RBUTTON) != 0) || ((GetKeyState(VK_RBUTTON) & 0x8000) != 0);
+            g_Daemon.BeginSelectionUndoGesture();
+            g_Daemon.dragMode = DragMode::PendingOutsideSelection;
+            g_Daemon.dragStartPt = pt;
             g_Daemon.altHeldOnSelectionStart = altHeldOnDown;
             if (!g_Daemon.hasSelection && shiftHeldOnDown && !ctrlHeldOnDown && !altHeldOnDown) {
                 g_Daemon.pendingShiftColorPick = true;
@@ -4987,10 +5282,11 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         g_Daemon.hasEllipseSelection = g_Daemon.altHeldOnSelectionStart || altHeldMove;
                         g_Daemon.hasCustomHudPos = false;
                         g_Daemon.activeTool = OverlayTool::SelectMove;
-                        g_Daemon.annotations.clear();
-                        g_Daemon.undoStack.clear();
-                        g_Daemon.redoStack.clear();
-                        g_Daemon.nextStepNum = 1;
+                        // Annotations are deliberately kept. A new area is a new crop of the
+                        // same screen, not a new document: the work drawn so far stays, and
+                        // the Clear button or shortcut is the one explicit way to throw it
+                        // away. Anything that falls outside the new area is simply cropped
+                        // out of the save, which the unclipped editor already shows.
                         g_Daemon.ClearAnnotationSelection();
                         g_Daemon.dragMode = DragMode::CreatingSelection;
                         int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
@@ -5388,6 +5684,110 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
                     break;
                 }
+                case DragMode::DraggingAnnotationCorner: {
+                    bool shiftHeld = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (!g_Daemon.moveAnnUndoPushed) {
+                        if (std::abs(mx - g_Daemon.dragStartPt.x) >= 1 || std::abs(my - g_Daemon.dragStartPt.y) >= 1) {
+                            g_Daemon.PushUndo();
+                            g_Daemon.moveAnnUndoPushed = true;
+                            g_Daemon.clickedAlreadySelectedAnn = false;
+                        } else {
+                            break;
+                        }
+                    }
+                    for (auto& a : g_Daemon.annotations) {
+                        if (a.id != g_Daemon.selectedAnnotationId) continue;
+                        int idx = g_Daemon.draggingAnnCorner;
+                        if (idx < 0 || idx > 3) break;
+                        PointF2D q[4];
+                        AnnotationQuadPoints(a, q);
+                        if (g_Daemon.draggingAnnCornerFree || AnnotationIsQuad(a)) {
+                            float tx = (float)mx, ty = (float)my;
+                            // Same snapping rule the custom area uses: the pulled corner
+                            // lands exactly on another corner within 12 px, which is also how
+                            // a quad collapses into a triangle.
+                            const float kCornerSnapDist = 12.0f;
+                            float bestDist = kCornerSnapDist + 0.001f;
+                            for (int i = 0; i < 4; ++i) {
+                                if (i == idx) continue;
+                                float d = std::hypot((float)mx - q[i].x, (float)my - q[i].y);
+                                if (d <= bestDist) {
+                                    bestDist = d;
+                                    tx = q[i].x;
+                                    ty = q[i].y;
+                                }
+                            }
+                            // Then the corners of every other annotation, so one shape's corner
+                            // can land exactly on another's - which is what makes a row of
+                            // rectangles line up without eyeballing it.
+                            for (const auto& other : g_Daemon.annotations) {
+                                if (other.id == a.id) continue;
+                                if (other.tool == OverlayTool::Rectangle || other.tool == OverlayTool::Ellipse ||
+                                    other.tool == OverlayTool::MosaicSquare || other.tool == OverlayTool::MosaicCircle ||
+                                    other.tool == OverlayTool::TextBox) {
+                                    PointF2D oq[4];
+                                    AnnotationQuadPoints(other, oq);
+                                    for (int k = 0; k < 4; ++k) {
+                                        float d = std::hypot((float)mx - oq[k].x, (float)my - oq[k].y);
+                                        if (d <= bestDist) {
+                                            bestDist = d;
+                                            tx = oq[k].x;
+                                            ty = oq[k].y;
+                                        }
+                                    }
+                                } else {
+                                    float d0 = std::hypot((float)mx - other.startPt.x, (float)my - other.startPt.y);
+                                    if (d0 <= bestDist) {
+                                        bestDist = d0;
+                                        tx = other.startPt.x;
+                                        ty = other.startPt.y;
+                                    }
+                                    float d1 = std::hypot((float)mx - other.endPt.x, (float)my - other.endPt.y);
+                                    if (d1 <= bestDist) {
+                                        bestDist = d1;
+                                        tx = other.endPt.x;
+                                        ty = other.endPt.y;
+                                    }
+                                }
+                            }
+                            // And the window's own corners, so a shape can be aligned to the
+                            // area it is drawn in as well as to another annotation.
+                            if (g_Daemon.hasSelection) {
+                                POINT sq[4];
+                                int sn = g_Daemon.GetSelectionPolygonPoints(sq);
+                                for (int k = 0; k < sn; ++k) {
+                                    float d = std::hypot((float)mx - (float)sq[k].x, (float)my - (float)sq[k].y);
+                                    if (d <= bestDist) {
+                                        bestDist = d;
+                                        tx = (float)sq[k].x;
+                                        ty = (float)sq[k].y;
+                                    }
+                                }
+                            }
+                            q[idx] = { tx, ty };
+                            SetAnnotationQuad(a, q);
+                        } else {
+                            // A plain rectangle resizes axis-aligned: the opposite corner stays
+                            // put. Only reached while the shape is still a rectangle - a shape
+                            // that is already a quad takes the branch above, so dragging one of
+                            // its corners keeps it uneven instead of flattening it back into a
+                            // rectangle.
+                            PointF2D anchor = q[(idx + 2) & 3];
+                            float tx = (float)mx, ty = (float)my;
+                            if (shiftHeld) {
+                                float sdx = tx - anchor.x, sdy = ty - anchor.y;
+                                float side = std::max(std::abs(sdx), std::abs(sdy));
+                                tx = anchor.x + (sdx >= 0.0f ? side : -side);
+                                ty = anchor.y + (sdy >= 0.0f ? side : -side);
+                            }
+                            a.points.clear();
+                            a.startPt = anchor;
+                            a.endPt = { tx, ty };
+                        }
+                        break;
+                    }
+                    break;
+                }
                 case DragMode::MovingAnnotation:
                 case DragMode::DraggingAnnotationStart:
                 case DragMode::DraggingAnnotationEnd: {
@@ -5621,10 +6021,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             g_Daemon.hasCtrlHoverWindow = false;
                             g_Daemon.hasCustomHudPos = false;
                             g_Daemon.activeTool = OverlayTool::SelectMove;
-                            g_Daemon.annotations.clear();
-                            g_Daemon.undoStack.clear();
-                            g_Daemon.redoStack.clear();
-                            g_Daemon.nextStepNum = 1;
+                            // Kept, for the same reason as a dragged area: a window pick is a
+                            // new crop, not a new document.
                             g_Daemon.ClearAnnotationSelection();
                         }
                     }
@@ -5645,6 +6043,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.CanonicalizeSnappedQuad();
                     g_Daemon.SyncSelRectFromQuad();
                 }
+                // After every branch has settled the area, so the step records what the drag
+                // actually produced. A press that moved nothing compares equal and is dropped.
+                g_Daemon.CommitSelectionUndoGesture();
                 g_Daemon.moveAnnUndoPushed = false;
                 g_Daemon.clickedAlreadySelectedAnn = false;
                 g_Daemon.activeSelectionRatioW = 0;
@@ -5896,10 +6297,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.hasCtrlHoverWindow = false;
                     g_Daemon.hasCustomHudPos = false;
                     g_Daemon.activeTool = OverlayTool::SelectMove;
-                    g_Daemon.annotations.clear();
-                    g_Daemon.undoStack.clear();
-                    g_Daemon.redoStack.clear();
-                    g_Daemon.nextStepNum = 1;
+                    // Kept: a window pick is a new crop, not a new document.
                     g_Daemon.ClearAnnotationSelection();
                     g_Daemon.UpdateOverlayCursor(g_Daemon.mousePt.x, g_Daemon.mousePt.y);
                     InvalidateRect(hWnd, nullptr, FALSE);
@@ -5936,6 +6334,18 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                  g_Daemon.dragMode == DragMode::ResizeB  ||
                  g_Daemon.dragMode == DragMode::ResizeBL ||
                  g_Daemon.dragMode == DragMode::ResizeL);
+            // Arrow keys nudge whatever is selected. With an annotation selected that is the
+            // annotation; Shift steps 10 px instead of 1. Checked before the selection-area
+            // branch below, which only runs with no area or during a selection drag.
+            if (!isSelectionDragActive && !ctrl && g_Daemon.HasSelectedAnnotations() &&
+                (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT)) {
+                int nudge = shift ? 10 : 1;
+                int ndx = (wParam == VK_LEFT) ? -nudge : ((wParam == VK_RIGHT) ? nudge : 0);
+                int ndy = (wParam == VK_UP)   ? -nudge : ((wParam == VK_DOWN)  ? nudge : 0);
+                g_Daemon.NudgeSelectedAnnotations(ndx, ndy);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
             if ((!g_Daemon.hasSelection || isSelectionDragActive) && (!ctrl || g_Daemon.isDraggingSingleCorner) &&
                 (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT)) {
                 int stepX = (wParam == VK_LEFT) ? -1 : ((wParam == VK_RIGHT) ? 1 : 0);
@@ -5954,10 +6364,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.hasEllipseSelection = g_Daemon.altHeldOnSelectionStart || alt;
                     g_Daemon.hasCustomHudPos = false;
                     g_Daemon.activeTool = OverlayTool::SelectMove;
-                    g_Daemon.annotations.clear();
-                    g_Daemon.undoStack.clear();
-                    g_Daemon.redoStack.clear();
-                    g_Daemon.nextStepNum = 1;
+                    // Kept, like the dragged and picked areas above.
                     g_Daemon.ClearAnnotationSelection();
                     g_Daemon.dragMode = DragMode::CreatingSelection;
                     int startX = std::max(0, std::min(g_Daemon.vScreenW, (int)g_Daemon.dragStartPt.x));
