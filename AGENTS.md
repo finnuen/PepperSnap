@@ -233,6 +233,54 @@ unclipped editor already shows it, which is what makes the arrangement legible.
 Mosaic is safe to leave outside: `ApplyPixelateFilterRawBuffer` clamps its rect to
 the bitmap and no-ops when the intersection is empty.
 
+### The selection frame is a dashed guide drawn outside the capture
+
+The selected area is outlined with the same 1 px dashed pen the aiming crosshair
+uses — `Color(150, 239, 68, 68)`, `DashStyleDash`, which GDI+ measures as 3 px of
+dash and a 1 px gap. Both pens come from `ConfigureGuidePen`, so the aim line and
+the frame cannot drift apart; they are the same guide at two stages of one
+gesture.
+
+The outline is drawn **one pixel outside** the capture, not on its edge. A capture
+is the pixels *inside* the area, so an outline drawn on the border hides part of
+what is being saved: `DrawRectangle(x, y, w, h)` paints along `x .. x + w`, and
+the old code passed the capture width, which put the left and top edges on the
+first captured row and column. The frame now starts at `sx - 1` / `sy - 1` with
+the width one larger, so every edge lands beyond the last captured pixel. An
+ellipse grows the same way, and a deformed quad pushes each corner 1 px away from
+its centre. The crop arithmetic, the W×H pill and the masks are untouched by
+this — only where the line is painted.
+
+Two consequences worth knowing:
+
+- The outline now sits on the dimmed backdrop just outside the brightened area,
+  not over the bright pixels, which is the point.
+- At the very edge of the screen there is no pixel outside the capture, so
+  `frameL` / `frameT` clamp to 0 and that one edge still covers the first
+  captured row or column. Nothing else can be drawn there.
+
+### Resize points: ellipse only, and a whole side resizes
+
+The eight white squares are **not** drawn on a rectangle or a deformed quad. The
+frame itself is the affordance: `HitTestSelectionHandles` returns the resize mode
+for a press within 7 px of an edge, anywhere along it — not merely around the
+invisible midpoint — and `UpdateOverlayCursor` uses the same function to show a
+resize arrow. Corners are tested first, so a press in the overlap at a corner
+still pulls that corner. The test is distance to the real segment, so a deformed
+quad's slanted sides work the same as an axis-aligned rectangle's. That band only
+exists while the effective tool is `SelectMove`, so a drawing tool can still draw
+up to the frame; Ctrl, being the temporary select tool, brings the band back with
+it.
+
+An ellipse **does** draw all eight points. Its handles live on the bounding box,
+away from the curve, so a hidden point there is not an invisible affordance but a
+detached one. Do not "restore" the squares on rectangles without asking, and do
+not remove them from ellipses.
+
+One thing went with the rectangle points: the pale-yellow fill that used to mark a
+corner snapped onto another corner during a Ctrl + corner pull. The snap still
+happens; only that highlight is gone.
+
 ### Only the select tool starts a new custom area
 
 `WM_LBUTTONDOWN` used to send any press outside the selected area into the

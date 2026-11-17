@@ -2851,15 +2851,35 @@ DragMode PepperSnapDaemon::HitTestSelectionHandles(int mx, int my) const {
         return std::abs(mx - p.x) <= r && std::abs(my - p.y) <= r;
     };
 
-    // Prioritize corner handles first, then edge midpoint handles
+    // Corners first, so a press in the overlap band at a corner still pulls that corner.
     if (nearPt(handles[0])) return DragMode::ResizeTL;
     if (nearPt(handles[2])) return DragMode::ResizeTR;
     if (nearPt(handles[4])) return DragMode::ResizeBR;
     if (nearPt(handles[6])) return DragMode::ResizeBL;
-    if (nearPt(handles[1])) return DragMode::ResizeT;
-    if (nearPt(handles[3])) return DragMode::ResizeR;
-    if (nearPt(handles[5])) return DragMode::ResizeB;
-    if (nearPt(handles[7])) return DragMode::ResizeL;
+
+    // The band belongs to the select tool. A drawing tool keeps the whole area drawable right
+    // up to the frame, and Ctrl - the temporary select tool - brings the band back with it.
+    if (GetEffectiveTool() != OverlayTool::SelectMove) return DragMode::None;
+
+    // A side is grabbable along its whole length, not only around its midpoint. The points
+    // are not drawn (except on an ellipse), so which pixel was "the middle" was a guess; the
+    // distance to the edge itself is not. Deformed quads are covered too, because this is the
+    // distance to the real segment rather than to an axis-aligned band.
+    POINT q[4];
+    GetSelectionQuadPoints(q);
+    auto nearEdge = [&](POINT a, POINT b) {
+        double abx = (double)(b.x - a.x), aby = (double)(b.y - a.y);
+        double apx = (double)(mx - a.x), apy = (double)(my - a.y);
+        double len2 = abx * abx + aby * aby;
+        double t = (len2 > 0.0) ? ((apx * abx + apy * aby) / len2) : 0.0;
+        t = std::max(0.0, std::min(1.0, t));
+        double dx = apx - t * abx, dy = apy - t * aby;
+        return std::sqrt(dx * dx + dy * dy) <= (double)r;
+    };
+    if (nearEdge(q[0], q[1])) return DragMode::ResizeT;
+    if (nearEdge(q[1], q[2])) return DragMode::ResizeR;
+    if (nearEdge(q[2], q[3])) return DragMode::ResizeB;
+    if (nearEdge(q[3], q[0])) return DragMode::ResizeL;
     return DragMode::None;
 }
 
@@ -3186,6 +3206,16 @@ void PepperSnapDaemon::ActionSaveAsAndClose() {
 // Overlay Window Rendering & Procedure (With Live Pixelation & Live Text Box)
 // ----------------------------------------------------------------------------
 
+// The aim crosshair and the selected-area frame are the same guide at two stages of one
+// gesture: a 1 px pen, 3 px of dash and a 1 px gap, the same red at 150 alpha (GDI+ measures
+// DashStyleDash as 3-1 on a width-1 pen). Both take that look from here, so they cannot drift
+// apart and a change to one is a change to the other.
+static void ConfigureGuidePen(Pen& pen) {
+    pen.SetWidth(1.0f);
+    pen.SetColor(Color(150, 239, 68, 68));
+    pen.SetDashStyle(DashStyleDash);
+}
+
 static void RenderOverlayWindow(HWND, HDC hdc) {
     int W = g_Daemon.vScreenW;
     int H = g_Daemon.vScreenH;
@@ -3432,66 +3462,74 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 PepperSnapDaemon::DrawVectorAnnotation(g, g_Daemon.editingTextAnn, 0, 0, true, true);
             }
 
-            // Selection Frame + 8 Resize Handles (Supports circles/ellipses, rectangles, irregular quadrilaterals, and snapped triangles)
-            Pen selBorder(Color(255, 239, 68, 68), 1.8f);
+            // Selection frame. The whole outline is drawn one pixel outside the capture, because
+            // a capture is the pixels inside the area: GDI+ paints a DrawRectangle(x, y, w, h)
+            // border along x .. x + w, so starting one pixel up and left and keeping the width
+            // one pixel larger puts every edge beyond the last captured row and column. Before
+            // this, the left and top edges sat on the first captured row and column, so the
+            // outermost pixels of the save were the ones hidden under the dashes.
+            Pen selBorder(Color(150, 239, 68, 68), 1.0f);
+            ConfigureGuidePen(selBorder);
+            int frameL = std::max(0, sx - 1);
+            int frameT = std::max(0, sy - 1);
+            int frameW = std::max(1, (sx + sw) - frameL);
+            int frameH = std::max(1, (sy + sh) - frameT);
             if (g_Daemon.hasEllipseSelection) {
-                int drawX = std::max(0, sx);
-                int drawY = std::max(0, sy);
-                int drawR = std::min(W - 1, sx + sw);
-                int drawB = std::min(H - 1, sy + sh);
-                g.DrawEllipse(&selBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
+                g.DrawEllipse(&selBorder, frameL, frameT, frameW, frameH);
             } else if (g_Daemon.hasCustomQuad) {
                 selBorder.SetLineJoin(LineJoinRound);
                 POINT polyPtsDraw[4];
                 int polyCountDraw = g_Daemon.GetSelectionPolygonPoints(polyPtsDraw);
                 if (polyCountDraw >= 3) {
+                    // A deformed area has no axis-aligned edges to step outwards along, so each
+                    // corner is pushed 1 px away from the shape's centre instead. That leaves a
+                    // 1 px stroke sitting outside the quad rather than across its border.
+                    double cx = 0.0, cy = 0.0;
+                    for (int i = 0; i < polyCountDraw; ++i) {
+                        cx += polyPtsDraw[i].x;
+                        cy += polyPtsDraw[i].y;
+                    }
+                    cx /= polyCountDraw;
+                    cy /= polyCountDraw;
                     PointF borderPts[4];
                     for (int i = 0; i < polyCountDraw; ++i) {
+                        double vx = (double)polyPtsDraw[i].x - cx;
+                        double vy = (double)polyPtsDraw[i].y - cy;
+                        double len = std::sqrt(vx * vx + vy * vy);
+                        double grow = (len > 0.5) ? (1.0 + 1.0 / len) : 1.0;
                         borderPts[i] = PointF(
-                            (REAL)std::max(0, std::min(W - 1, (int)polyPtsDraw[i].x)),
-                            (REAL)std::max(0, std::min(H - 1, (int)polyPtsDraw[i].y))
+                            (REAL)std::max(0.0, std::min((double)(W - 1), cx + vx * grow)),
+                            (REAL)std::max(0.0, std::min((double)(H - 1), cy + vy * grow))
                         );
                     }
                     g.DrawPolygon(&selBorder, borderPts, polyCountDraw);
                 }
             } else {
-                selBorder.SetAlignment(PenAlignmentInset);
-                int drawX = std::max(0, sx);
-                int drawY = std::max(0, sy);
-                int drawR = std::min(W - 1, sx + sw);
-                int drawB = std::min(H - 1, sy + sh);
-                g.DrawRectangle(&selBorder, drawX, drawY, std::max(1, drawR - drawX), std::max(1, drawB - drawY));
+                g.DrawRectangle(&selBorder, frameL, frameT, frameW, frameH);
             }
 
-            POINT handles[8];
-            g_Daemon.GetSelectionHandlePoints(handles);
-            SolidBrush handleFill(Color(255, 255, 255, 255));
-            SolidBrush snappedCornerFill(Color(255, 254, 240, 138));
-            Pen handleOutline(Color(255, 239, 68, 68), 1.5f);
-            for (int hi = 0; hi < 8; ++hi) {
-                const auto& pt = handles[hi];
-                bool alreadyDrawn = false;
-                for (int prev = 0; prev < hi; ++prev) {
-                    if (handles[prev].x == pt.x && handles[prev].y == pt.y) {
-                        alreadyDrawn = true;
-                        break;
-                    }
-                }
-                if (alreadyDrawn) continue;
-                bool isStackedCorner = false;
-                if ((hi % 2) == 0 && g_Daemon.hasCustomQuad) {
-                    int cIdx = hi / 2;
-                    for (int other = 0; other < 4; ++other) {
-                        if (other != cIdx &&
-                            g_Daemon.selQuad[other].x == pt.x &&
-                            g_Daemon.selQuad[other].y == pt.y) {
-                            isStackedCorner = true;
+            // Resize points are drawn for an ellipse only. On a rectangle or a quad the frame is
+            // itself under the cursor: a press anywhere along an edge resizes, and the arrow
+            // cursor says so. On an ellipse the handles sit on the bounding box, away from the
+            // shape, so without the squares their positions are not visible at all.
+            if (g_Daemon.hasEllipseSelection) {
+                POINT ellHandles[8];
+                g_Daemon.GetSelectionHandlePoints(ellHandles);
+                SolidBrush handleFill(Color(255, 255, 255, 255));
+                Pen handleOutline(Color(255, 239, 68, 68), 1.5f);
+                for (int hi = 0; hi < 8; ++hi) {
+                    const POINT& hpt = ellHandles[hi];
+                    bool alreadyDrawn = false;
+                    for (int prev = 0; prev < hi; ++prev) {
+                        if (ellHandles[prev].x == hpt.x && ellHandles[prev].y == hpt.y) {
+                            alreadyDrawn = true;
                             break;
                         }
                     }
+                    if (alreadyDrawn) continue;
+                    g.FillRectangle(&handleFill, hpt.x - 4, hpt.y - 4, 8, 8);
+                    g.DrawRectangle(&handleOutline, hpt.x - 4, hpt.y - 4, 8, 8);
                 }
-                g.FillRectangle((isStackedCorner && g_Daemon.isDraggingSingleCorner) ? &snappedCornerFill : &handleFill, pt.x - 4, pt.y - 4, 8, 8);
-                g.DrawRectangle(&handleOutline, pt.x - 4, pt.y - 4, 8, 8);
             }
 
             // Dynamic Typeable Dimension & Permanent Ratio Pill [ W×H px | ratio | trash icon ] — anchored to the stationary corner when resizing!
@@ -3762,7 +3800,7 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             }
         } else {
             Pen crossPen(Color(150, 239, 68, 68), 1.0f);
-            crossPen.SetDashStyle(DashStyleDash);
+            ConfigureGuidePen(crossPen);
             bool shiftHeldCross = (g_Daemon.dragMode == DragMode::None || g_Daemon.pendingShiftColorPick) &&
                                   !PepperSnapDaemon::IsAltModifierHeld() &&
                                   (((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||

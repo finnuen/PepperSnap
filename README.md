@@ -65,7 +65,7 @@ Every shortcut can be changed in **Options → Customize keys**.
 - Full **undo / redo**, including the capture area itself — **Ctrl + Z** after an accidental new area puts the previous one back.
 - **Nothing is lost when the area changes.** Annotations stay put; anything outside the new area is cropped from the save while still visible in the editor.
 
-![The annotation editor: selection handles, live pixel dimensions, and the drawing toolbar](assets/editor.png)
+![The annotation editor: a dashed selection frame, live pixel dimensions, and the drawing toolbar](assets/editor.png)
 
 ### 📌 Pin screenshots on top
 - Pin any capture as a floating, always-on-top window. Handy for references, designs, notes or chat snippets.
