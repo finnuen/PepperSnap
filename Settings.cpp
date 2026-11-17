@@ -80,6 +80,7 @@ void PepperSnapDaemon::SaveSettings() const {
     WritePrivateProfileStringW(L"PepperSnap", L"CopyFormat", std::to_wstring((int)copyFormat).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"JpegQuality", std::to_wstring(jpegQuality).c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"NonStackingHighlighter", nonStackingHighlighter ? L"1" : L"0", iniPath.c_str());
+    WritePrivateProfileStringW(L"PepperSnap", L"SnapAnnotationsToEachOther", snapAnnotationsToEachOther ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AutoSaveOnCopy", autoSaveOnCopy ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoCopyFullscreen", alsoCopyFullscreen ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(L"PepperSnap", L"AlsoSavePinned", alsoSavePinned ? L"1" : L"0", iniPath.c_str());
@@ -512,6 +513,7 @@ void PepperSnapDaemon::LoadSettings() {
     jpegQuality = std::max(10, std::min(100, q));
 
     nonStackingHighlighter = (GetPrivateProfileIntW(L"PepperSnap", L"NonStackingHighlighter", 1, iniPath.c_str()) != 0);
+    snapAnnotationsToEachOther = (GetPrivateProfileIntW(L"PepperSnap", L"SnapAnnotationsToEachOther", 1, iniPath.c_str()) != 0);
     autoSaveOnCopy = (GetPrivateProfileIntW(L"PepperSnap", L"AutoSaveOnCopy", 1, iniPath.c_str()) != 0);
     alsoCopyFullscreen = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoCopyFullscreen", 1, iniPath.c_str()) != 0);
     alsoSavePinned = (GetPrivateProfileIntW(L"PepperSnap", L"AlsoSavePinned", 1, iniPath.c_str()) != 0);
@@ -775,6 +777,7 @@ struct OptionsDlgState {
     bool disableRightClickIntegration = false;
     bool disableMagnifierWindow = false;
     bool nonStackingHi = true;
+    bool snapAnnotations = true;
     bool penSmoothEnabled = true;
     int penSmoothStrength = 15;
     bool autoUpdateEnabled = false;
@@ -825,11 +828,11 @@ struct OptionsDlgState {
     bool openedAppData = false;
     bool restoredAllDefaults = false;
     int scrollY = 0;
-    int scrollContentHeight = 820;
+    int scrollContentHeight = 920;
     int footerHeight = 56;
     int fixedWinWidth = 580;
-    int fullWinHeight = 936;
-    int savedWinHeight = 936;
+    int fullWinHeight = 976;
+    int savedWinHeight = 976;
     int lastFooterTop = -1;
 
     HWND hViewport = nullptr;
@@ -860,6 +863,7 @@ struct OptionsDlgState {
     HWND hDisableMagnifierChk = nullptr;
     HWND hRunElevatedNoteLbl = nullptr;
     HWND hNonStackingChk = nullptr;
+    HWND hSnapAnnChk = nullptr;
     HWND hPenSmoothChk = nullptr;
     HWND hPenSmoothSlider = nullptr;
     HWND hPenSmoothValLbl = nullptr;
@@ -929,6 +933,7 @@ struct OptionsDlgState {
 #define IDC_OPT_DISABLE_RIGHT_CLICK_CHK 1033
 #define IDC_OPT_DISABLE_MAGNIFIER_CHK   1034
 #define IDC_OPT_TRANSLATE_LANG          1035
+#define IDC_OPT_SNAP_ANN_CHK            1036
 
 #define IDC_CK_BTN_BASE          2100
 #define IDC_CK_RESTORE_DEFAULTS  2201
@@ -3097,9 +3102,17 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             SendMessageW(st->hPenSmoothSlider, TBM_SETPOS, TRUE, st->penSmoothStrength);
             EnableWindow(st->hPenSmoothSlider, st->penSmoothEnabled ? TRUE : FALSE);
 
+            // Snap annotations to each other: their corners, sides, strokes and circle outlines all
+            // become targets for whatever is being drawn, pulled, resized or moved.
+            st->hSnapAnnChk = CreateWindowExW(0, L"BUTTON",
+                L"Snap annotation to each other",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 18, 844, 516, 24, hVp, (HMENU)IDC_OPT_SNAP_ANN_CHK, nullptr, nullptr);
+            SendMessageW(st->hSnapAnnChk, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(st->hSnapAnnChk, BM_SETCHECK, st->snapAnnotations ? BST_CHECKED : BST_UNCHECKED, 0);
+
             // Restore everything to default button (below smoothing strength, NOT in row with Save options)
             st->hRestoreAllBtn = CreateWindowExW(0, L"BUTTON", L"Restore everything to default",
-                WS_CHILD | WS_VISIBLE, 18, 844, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
+                WS_CHILD | WS_VISIBLE, 18, 876, 218, 30, hVp, (HMENU)IDC_OPT_RESTORE_ALL_DEF, nullptr, nullptr);
             SendMessageW(st->hRestoreAllBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             st->scrollControls.clear();
@@ -3132,7 +3145,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 434, 839, 100, 34, hWnd, (HMENU)IDCANCEL, nullptr, nullptr);
             SendMessageW(st->hCancelBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            st->scrollContentHeight = 888;
+            st->scrollContentHeight = 920;
             st->footerHeight = 56;
             st->lastFooterTop = -1;
             UpdateOptionsPreviewLabel(st);
@@ -3390,6 +3403,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 EnableWindow(st->hComboUpdateInterval, TRUE);
 
                 st->nonStackingHi = true;
+                st->snapAnnotations = true;
                 st->autoSaveCopy  = true;
                 st->alsoCopyFull  = true;
                 st->alsoSavePin   = true;
@@ -3402,6 +3416,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->disableRightClickIntegration = false;
                 st->disableMagnifierWindow = false;
                 SendMessageW(st->hNonStackingChk,    BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(st->hSnapAnnChk,        BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hAutoSaveChk,       BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hCopyFullChk,       BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(st->hSavePinChk,        BM_SETCHECK, BST_CHECKED, 0);
@@ -3535,6 +3550,7 @@ static LRESULT CALLBACK OptionsDlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 st->penSmoothEnabled  = (SendMessageW(st->hPenSmoothChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
                 st->nonStackingHi = (SendMessageW(st->hNonStackingChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->snapAnnotations = (SendMessageW(st->hSnapAnnChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->autoSaveCopy  = (SendMessageW(st->hAutoSaveChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->alsoCopyFull  = (SendMessageW(st->hCopyFullChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 st->alsoSavePin   = (SendMessageW(st->hSavePinChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -3627,6 +3643,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     st.disableRightClickIntegration = disableRightClickIntegration;
     st.disableMagnifierWindow = disableMagnifierWindow;
     st.nonStackingHi  = nonStackingHighlighter;
+    st.snapAnnotations = snapAnnotationsToEachOther;
     st.penSmoothEnabled = penSmoothingEnabled;
     st.penSmoothStrength = penSmoothingStrength;
     st.autoUpdateEnabled = autoCheckUpdates;
@@ -3677,7 +3694,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     DWORD dwOptStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL | WS_VISIBLE | WS_CLIPCHILDREN;
     DWORD dwOptExStyle = 0;
-    const int totalOptClientH = 888 + 56;
+    const int totalOptClientH = 920 + 56;
     RECT rcOptFull = { 0, 0, 552, totalOptClientH };
     AdjustWindowRectEx(&rcOptFull, dwOptStyle, FALSE, dwOptExStyle);
     int fixedW = (rcOptFull.right - rcOptFull.left) + GetSystemMetrics(SM_CXVSCROLL);
@@ -3763,6 +3780,7 @@ void PepperSnapDaemon::ShowOptionsModal() {
         disableRightClickIntegration = st.disableRightClickIntegration;
         disableMagnifierWindow = st.disableMagnifierWindow;
         nonStackingHighlighter = st.nonStackingHi;
+        snapAnnotationsToEachOther = st.snapAnnotations;
         penSmoothingEnabled = st.penSmoothEnabled;
         penSmoothingStrength = st.penSmoothStrength;
         autoCheckUpdates = st.autoUpdateEnabled;

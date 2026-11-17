@@ -173,6 +173,17 @@ enum class DragMode {
     SelectingFrameCards
 };
 
+// What the snap guide draws while a drag is latched on: the 15 degree ray a corner pull rides, the
+// exact point it landed on, the outline it landed on (a side, a stroke or a circle's curve), or the
+// edges a whole annotation lined up with.
+enum class SnapHintKind {
+    None = 0,
+    Ray,
+    Point,
+    Outline,
+    Align
+};
+
 struct PointF2D {
     float x = 0.0f;
     float y = 0.0f;

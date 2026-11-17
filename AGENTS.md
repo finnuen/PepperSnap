@@ -284,6 +284,166 @@ One thing went with the rectangle points: the pale-yellow fill that used to mark
 corner snapped onto another corner during a Ctrl + corner pull. The snap still
 happens; only that highlight is gone.
 
+### Ctrl + corner deforms the area, and Shift snaps the pull to 15°
+
+Ctrl + left-drag on a corner of the area pulls that corner free, turning the
+rectangle into an irregular quad — or into a triangle, when the corner lands on
+another corner. `isDraggingSingleCorner` marks the gesture, and it is also why
+`hasRatioConstrain` is false there: Ctrl + corner is one corner, not a box resize,
+so the aspect-ratio constraints have nothing to hold.
+
+Holding Shift as well snaps the edge from the **next corner round** to the pulled
+one to 15° steps, the same step the line tool uses. The pivot is therefore
+`dragOrigQuad[(cornerIdx + 1) & 3]`: pull the top-right corner and the right edge
+turns around the bottom-right corner, pull the bottom-right one and the bottom edge
+turns around the bottom-left one. The angle is measured from that pivot and the
+distance follows the cursor, so the corner rides a ray out of a neighbour it cannot
+cross — which is the line that is actually being drawn. An earlier version pivoted
+on where the corner itself started, and that is what made the snap feel unrelated to
+the edge it was supposed to straighten. The 4 px corner-on-corner snap wins over
+the angle, because landing exactly on a corner is what makes a triangle.
+
+Shift is read live through `IsShiftModifierHeld`, the way the line tool reads it, so
+it can be pressed and released mid-drag.
+
+### A snap says what it latched onto
+
+A snap that is only a few pixels of movement is invisible: the corner jumps and
+nothing says which point or which line it took. `snapHintKind` therefore records
+what the current drag snapped to — `None`, `Ray`, `Point`, `Outline` or `Align` —
+and `DrawSnapHint` draws it over the annotations and the frame, from state that is
+set during the move that snaps, cleared at the start of every drag branch and again
+on `WM_LBUTTONUP`.
+
+- **Ray** — the 15° guide: a thin dashed ray from `snapHintAnchor` (the pivot)
+  through `snapHintTarget` and 28 px past it, a white dot at the pivot and a white
+  ring on the corner. The dot is the point the edge turns around and the ring is
+  where the corner sits now, so the two ends of one guide cannot be confused.
+- **Point** — a white square with a cyan border on the point it landed on. A square
+  because this is an exact landing, not a direction, and it is the shape a resize
+  handle used to have.
+- **Outline** — the matched side, stroke or circle curve drawn as a soft 3 px cyan
+  line under the landing, so "on this line" is visible rather than inferred, plus
+  the same square at the exact landing.
+- **Align** — the one or two dashed lines a move or an edge resize lined up,
+  spanning both shapes so the two can be seen to be flush. Both axes at once is
+  what a corner-to-corner landing looks like.
+
+The segments ride in `snapHintSegs[2]` (x1, y1, x2, y2 each) with
+`snapHintSegCount`, which is why the guide has no per-kind drawing state to keep in
+step.
+
+Cyan is the annotation-selection colour, which is the one colour already meaning
+"this is about the thing you are holding".
+
+### A point snap pulls the pointer onto it
+
+A snap moves the shape, not the pointer, so the two end up a few pixels apart and the
+shape reads as having drifted off the cursor. `SetSnapHint` therefore warps the
+pointer with `SetCursorPos` when the landing is a `Point` — the client coordinate plus
+`vScreenX` / `vScreenY`, because the overlay covers the virtual screen, so client and
+screen differ only by that origin.
+
+Two things make it safe:
+
+- **Only a *new* point is warped to.** `snapWarped` / `snapWarpX` / `snapWarpY` record
+  the last one, and warping on every move would pin the pointer to the point so the
+  drag could never be pulled off it. Once warped, the next move reports the same point
+  at distance 0, so it stops there by itself.
+- **Only `Point` is warped to.** An `Outline` landing tracks the cursor along a whole
+  side or curve, so warping would drag the pointer along it; an `Align` landing is a
+  coordinate, not a place the pointer belongs. Both just clear `snapWarped`.
+
+`ClearSnapHint` resets the flag, so the next drag warps again on its first point.
+
+### Annotations snap to each other
+
+`FindSnapTarget` is the one search for "a place this can land", and it returns more
+than points: a corner or an end (`Point`), a side, a stroke or a circle's curve
+(`Outline`, with the geometry kept for the guide). That is what makes corner to
+corner, corner to side, line to line and line to side one feature instead of four.
+
+- **A corner pull** — area corners and edges, this shape's own other corners, and
+  every other annotation. It passes its own id and corner index so the corner
+  cannot snap to itself; the landing is what turns a quad into a triangle.
+- **A plain corner resize** skips its own annotation entirely, because the opposite
+  corner is where the drag began.
+- **A line family end** — Line, Arrow and Numbering arrow — at mouse-down for the
+  start and on every move for the end, and the same for dragging an existing end.
+  That is what lets several strokes be joined into one irregular shape with no gap.
+  The end refuses its own annotation (`skipOwnAnnotation`): its own stroke lies
+  under the cursor at every position and would hold the line at zero length. A
+  point within reach wins over Shift's 15° angle, because landing on a point is
+  exact and is the reason to hold the two together.
+- **A shape being drawn** — Rectangle, Ellipse, Mosaic square and Mosaic circle —
+  at mouse-down for the first corner and on every move for the one under the
+  cursor. Without it a new box could only be made flush by resizing it afterwards,
+  which is the bug that put this in: the *resize* path had snapping and the
+  *create* path did not. A point within reach wins over Shift's 1:1 constraint for
+  the same reason it wins over the 15° angle. A landing that would leave the shape
+  under 2 px on either axis is refused, and so is one on the draft's own start
+  (which the draft snapped to, so the corner would otherwise be dragged straight
+  back onto it). Pen and Highlighter are deliberately left out: a freehand stroke
+  has no corner, and every sample being pulled onto a neighbour would deform the
+  line being drawn.
+- **A corner being dragged out also lines up by axis.** When nothing exact is
+  within reach, `AlignCornerToEdges` runs `FindEdgeLine` on each coordinate and
+  draws the same dashed guide an edge resize and a whole move use, so a new box can
+  be made flush with an old one *while it is drawn* rather than only afterwards. The
+  corner-resize path calls it too, after its own point/outline attempt. Two
+  exclusions: **Shift is exempt**, because its 1:1 constraint is the shape of the box
+  and moving one axis alone would break it, and a result that would flatten the box
+  to under 2 px on either axis is dropped back to the raw cursor. This is the *axis*
+  snap, not the nearest-point one — `FindSnapTarget` lands a corner on a side it is
+  within 4 px of, while this catches a corner that is merely level with one.
+- **An edge resize** snaps its whole coordinate, through `FindEdgeLine`, onto
+  another shape's side or the area's edge — "side to side". It is only applied when
+  the side stays outside its opposite, so a snap can never turn a shape inside out.
+- **A whole move** lines up both of the primary annotation's axes with other
+  shapes' sides (`FindEdgeLine` on each axis, applied to the group's delta). Both
+  axes caught at once is corner to corner.
+
+Four rules keep the set honest:
+
+- **A point beats an outline** unless the outline is at least `kSnapPointBias`
+  closer (1.5 px). Every corner lies on two of its own sides, so an unbiased
+  comparison would make a corner almost unreachable near an edge; the bias is
+  deliberately a fraction of the tolerance, or a tight net would make the tie-break
+  wider than the net itself.
+- **Only the line family lands on a curve.** `skipCircleTargets` takes every curve
+  out of the search for a *shape* drag — a circle annotation's curve and a circle
+  area's alike. A shape's corner landing on a curve leaves the drawn shape visibly
+  off the curve it "snapped" to, which reads as the shape fighting the cursor; a line
+  end landing on one is exact and looks like the two meeting, so lines keep it.
+  Shapes still take corners, ends, sides, strokes and the area's straight edges.
+- **A circle does not snap while it is created or resized.** Only its *move* is
+  snapped. A corner drag controls the bounding box corner, which is nowhere near the
+  curve, so every landing was either a size the drag did not ask for or a circle
+  sitting visibly off the thing it latched onto — trying to fix that by scaling the
+  box until the curve met the target (`FitEllipseThrough`, now removed) only turned a
+  few pixels of snap into a size jump. The create path, the mouse-down first corner,
+  the corner resize and the edge resize all skip `FindSnapTarget` / `FindEdgeLine`
+  for `Ellipse` and `MosaicCircle`; `DragMode::MovingAnnotation` still aligns one
+  through `FindEdgeLine` like any other annotation.
+- **A circle custom area follows the same rule.** `SelectionEllipse` returns the
+  area's centre and radii when it is an ellipse selection, and both searches take
+  the curve and nothing else from it: `FindSnapTarget` offers `considerCurve` instead
+  of the quad's corners and sides, and `FindEdgeLine` skips it entirely because a
+  curve has no straight edge to line up against. Before that, the area's *bounding
+  quad* was offered whatever its shape, so a circle area snapped as a square — its
+  corners were reachable, its curve was not.
+- **The custom area is always a target**, even with the setting off. Its corners are
+  what a triangle is made from, and the crop has to be something annotations can be
+  laid out against. A circle area is the one exception on *shape*: it contributes its
+  curve, never its box.
+
+`snapAnnotationsToEachOther` (Options → *Snap annotation to each other*, on by
+default, `SnapAnnotationsToEachOther` in `settings.ini`) gates the *annotation*
+targets only; the area's own corners keep working either way. Tolerance is
+`kSnapTolerance` — 4 px — everywhere, including the area's own corner-on-corner
+snap. It was 12 px, which took the corner away while it was still visibly clear of
+the line and read as the shape fighting the cursor.
+
 ### A selected annotation is framed the way the area is
 
 There are three selection visuals, and which one a tool gets follows its shape:
@@ -335,11 +495,16 @@ tool turns an outside drag into a new area. Ctrl still means the temporary selec
 tool, so Ctrl + drag outside still makes a new area — that is the documented way
 to start one without leaving the current tool.
 
-Rectangle and square-mosaic corners do **not** snap while being drawn — with a
-drawing tool free to draw anywhere, a latch onto the window's corners only got in
-the way. The free-form corner pull does consider the window's corners, alongside
-the shape's own and the other annotations', which is enough to align a shape
-after the fact.
+Rectangle, ellipse and both mosaic corners **do** snap while being drawn, at both
+ends of the drag: the first corner at mouse-down and the moving one on every move,
+through the same `FindSnapTarget` everything else uses. It used to be left out — with
+a drawing tool free to draw anywhere, a latch onto the window's corners was thought
+to be in the way — and the result was worse: a new box could be made flush with an
+old one only by resizing it afterwards, which is a bug the eye reads as snapping
+being broken. The net is tight enough (`kSnapTolerance`, 4 px) that drawing clear of
+a neighbour is not a fight, and a landing that would leave the shape under 2 px on
+either axis is refused. The free-form corner pull still considers the window's
+corners, alongside the shape's own and the other annotations'.
 
 ### A deformed rectangle lives in `points`, and mosaic pixelates by polygon
 
@@ -370,9 +535,17 @@ Two consequences worth knowing:
   resize. A plain rectangle resizes axis-aligned when a corner is dragged
   (opposite corner fixed). Once the shape is a quad, dragging any corner keeps it
   a quad — no modifier is needed, and nothing flattens it back into a rectangle.
-  The corner snaps to the shape's own corners, to other annotations' corners and
-  to the custom area's corners, all within 12 px, which is also how a quad
-  collapses into a triangle.
+  The corner snaps to the shape's own corners, to every other annotation's corners,
+  ends, sides, strokes and curves, and to the custom area's corners and edges, all
+  within 4 px — `FindSnapTarget`, the same search everything else uses — which is
+  also how a quad collapses into a triangle.
+- **Alt + Shift snaps the edge to 15°.** The same snap the area's Ctrl + Shift
+  corner pull uses: the pivot is the corner next round from the pulled one
+  (`q[(idx + 1) & 3]`), so pulling the top-right corner turns the right edge around
+  the bottom-right one. Shift on its own is already the 1:1-square constraint of the
+  axis-aligned resize, and only Alt makes this a pull at all. A corner that has
+  landed on another point keeps that exact place, because that landing is what makes
+  a triangle.
 
 `HitTestAnnotation` returns the corner index through an out parameter and the
 `DraggingAnnotationCorner` mode; `draggingAnnCorner` and `draggingAnnCornerFree`
@@ -389,10 +562,36 @@ modes, and an edge index rides in the same out parameter as a corner index
 carries it; both are reset from `annDragMode` on mouse-down so a stale index can
 never be read from the other mode.
 
-The pulled corner snaps to its own other three corners **and to every other
-annotation's corners** within the same 12 px, so two rectangles can be lined up
-exactly. Rect-like tools contribute their four quad corners; lines and arrows
-contribute their two ends.
+### A resize keeps its fixed corner from the box the drag started with
+
+Both resizes hold one side still and move the other: a corner drag keeps the
+*opposite corner*, an edge drag keeps the *opposite side*. Reading that fixed part
+back from the shape on every move is wrong, and it is what made a drag unable to
+cross the opposite line: as soon as the dragged corner or side passes it, the
+shape's own box flips (`AnnotationQuadPoints` normalises to min/max), so the
+"opposite" corner or side is now the one under the cursor — the fixed point follows
+the drag, and the resize collapses into a move that stops dead at the far edge.
+
+`CaptureAnnotationResizeOrig` therefore records the shape's four corners at
+mouse-down, and both branches read the fixed part from `annResizeOrig`. The edge
+drag also normalises its new box instead of clamping it (`std::swap` when the sides
+cross), which is what lets a side pass through its opposite and keep growing.
+
+Two details that follow from it:
+
+- **The quad rescale maps from the *current* box, not the captured one.** A deformed
+  quad is rescaled by the ratio between the box it is in now and the new one, so the
+  mapping composes over the drag; using the captured box as the source would apply
+  the whole scale again on every move.
+- **A crossed edge is not snapped.** `FindEdgeLine`'s "roomy" test compares against
+  the side that stays put, so on the far side of the crossing it would yank the
+  side back across; `crossed` skips the search instead.
+
+The pulled corner snaps through `FindSnapTarget`, so it can land on its own other
+corners, on **every other annotation's** corners, ends, sides, strokes and curves,
+and on the area's corners and edges, all within the same 4 px — two rectangles can
+be lined up exactly, and a line can be met end-on. A circle contributes only its
+curve, never its bounding box.
 
 **A caution learned the hard way:** `MovingAnnotation`, `DraggingAnnotationStart`
 and `DraggingAnnotationEnd` share one `case` block. Inserting a new `case` label

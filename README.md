@@ -46,7 +46,7 @@ Every shortcut can be changed in **Options → Customize keys**.
 - **Window detection.** Hold **Ctrl** and click to snap to any window, notification pop-up or sidebar.
 - **Instant fullscreen** across all your monitors, saved straight to your folder.
 - **Repeat your last capture** with one hotkey. It remembers the exact shape, too.
-- **Non-rectangular captures.** Draw circles and ellipses (hold **Alt**), or hold **Ctrl** and drag a corner to reshape the area into a quadrilateral or triangle. Corner points snap together within 12 px.
+- **Non-rectangular captures.** Draw circles and ellipses (hold **Alt**), or hold **Ctrl** and drag a corner to reshape the area into a quadrilateral or triangle. Corner points snap together within 4 px, and holding **Shift** as well snaps the pull to 15° directions.
 - **Aspect ratio shortcuts.** Lock to 1:1, 16:9, 9:16, 1:2 or 2:1 while dragging, or type any width, height or ratio you like.
 - **Color picker.** Hold **Shift** and click to copy the hex code of any pixel on screen.
 - **Draw without losing the area.** With a drawing tool selected, a drag outside the area draws there instead of replacing the area — only **Select** starts a new one.
@@ -55,17 +55,18 @@ Every shortcut can be changed in **Options → Customize keys**.
 ### ✏️ Annotate right on the screen
 - **Pen** and **Stabilo highlighter**, with optional smoothing so your strokes look clean.
 - **Lines, arrows, rectangles and ellipses.** Hold **Shift** for straight 15° angles and perfect squares or circles.
-- **Free-form shapes.** Hold **Alt** and drag a rectangle's or square-mosaic's corner to pull it into an irregular quad or triangle — only the shape is affected, and the mosaic pixelates exactly inside it. Corners snap to other annotations and to the capture's corners.
+- **Annotations snap to each other.** Corners, sides, line ends and strokes all attract within 4 px, both while a shape is being drawn and when it is pulled, resized or moved, and a box being drawn lines up with a neighbour's sides as it goes, with the same dashed guide a resize shows. Lines, arrows and numbering arrows also land on a circle's visible outline; a circle itself only snaps while it is being moved, never while it is drawn or resized, because its box corner is nowhere near its curve. A point you snap to also pulls the pointer onto it, so the cursor and the shape never drift apart. The overlay draws what a drag latched onto, and the Options window has a **Snap annotation to each other** switch.
+- **Free-form shapes.** Hold **Alt** and drag a rectangle's or square-mosaic's corner to pull it into an irregular quad or triangle - only the shape is affected, and the mosaic pixelates exactly inside it. **Alt + Shift** turns the edge from the next corner round to the pulled one in 15° steps: pull the top-right corner and the right edge pivots on the bottom-right one.
 - **Numbered step arrows** for tutorials and bug reports, with a one-click counter reset.
 - **Text boxes** you type directly onto the image, in Calibri Light with an automatic glyph outline so the words read over any background.
 - **Mosaic / pixelate** (square or circle) to hide sensitive information.
-- **Select mode.** Move, resize, recolor or delete any annotation, individually or several at once. Click a shape that runs past the capture edge to select it, even though it sits outside the area.
+- **Select mode.** Move, resize, recolor or delete any annotation, individually or several at once. Drag a corner or a side to resize - past the opposite one and the shape flips and keeps growing, so nothing stops dead at the far edge. Click a shape that runs past the capture edge to select it, even though it sits outside the area.
 - **Pixel-accurate nudging.** Arrow keys move the selected annotation 1 px, or 10 px with **Shift**.
 - A one-click red swatch, S / M / L / XL sizes and an exact pixel size box.
 - Full **undo / redo**, including the capture area itself — **Ctrl + Z** after an accidental new area puts the previous one back.
 - **Nothing is lost when the area changes.** Annotations stay put; anything outside the new area is cropped from the save while still visible in the editor.
 
-![The annotation editor: a dashed selection frame, live pixel dimensions, and the drawing toolbar](assets/editor.png)
+![Capture shapes - triangle, circle and square - beside the drawing toolbar, a pinned image and the colour picker](assets/editor.png)
 
 ### 📌 Pin screenshots on top
 - Pin any capture as a floating, always-on-top window. Handy for references, designs, notes or chat snippets.

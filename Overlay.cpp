@@ -203,6 +203,477 @@ static void SetAnnotationQuad(Annotation& a, const PointF2D q[4]) {
     a.endPt = { maxX, maxY };
 }
 
+// Remembers the four corners of the shape whose corner or side is about to be dragged. A corner
+// resize keeps the opposite corner fixed and a side resize keeps the opposite side fixed, and both
+// have to survive the drag passing *through* that opposite edge: at that moment the shape's own
+// box flips, and a fixed point read back from the flipped box would sit under the cursor, so the
+// resize would collapse into a move that cannot cross. Captured once, at mouse-down.
+void PepperSnapDaemon::CaptureAnnotationResizeOrig(int annId) {
+    annResizeOrigValid = false;
+    for (const auto& a : annotations) {
+        if (a.id != annId) continue;
+        AnnotationQuadPoints(a, annResizeOrig);
+        annResizeOrigValid = true;
+        break;
+    }
+}
+
+// How close a dragged point has to come before it latches onto something. Four pixels is
+// deliberately tight: a wider net takes the corner away while it is still visibly clear of the
+// line, which reads as the shape fighting the cursor.
+static constexpr float kSnapTolerance = 4.0f;
+
+// A point has to win over an outline by this much, otherwise outlines would be almost unreachable:
+// every corner lies on two of its own sides, so an unbiased comparison puts the outline under the
+// cursor at the moment the corner is the thing being aimed at. It scales with the tolerance, or a
+// tight net would make the tie-break wider than the net itself.
+static constexpr float kSnapPointBias = kSnapTolerance * 0.375f; // 1.5 px at 4 px
+
+// A place a dragged annotation can land. `Point` is a corner or an end, `Outline` is a side, a
+// stroke or a circle's curve - anything the eye can see and follow. `x`/`y` is where the dragged
+// thing ends up; the four `seg` numbers are the geometry under it, so the guide can draw the line
+// it latched onto instead of only reporting where it landed.
+struct SnapTarget {
+    SnapHintKind kind = SnapHintKind::Point;
+    float x = 0.0f;
+    float y = 0.0f;
+    float segX1 = 0.0f;
+    float segY1 = 0.0f;
+    float segX2 = 0.0f;
+    float segY2 = 0.0f;
+};
+
+struct SnapTargetResult {
+    bool found = false;
+    SnapTarget target;
+};
+
+// The point of segment a-b closest to p, written back through ox/oy; returns the distance.
+static float ClosestPointOnSegment(float px, float py, float ax, float ay, float bx, float by,
+                                   float& ox, float& oy) {
+    float dx = bx - ax, dy = by - ay;
+    float l2 = dx * dx + dy * dy;
+    if (l2 < 1e-4f) {
+        ox = ax;
+        oy = ay;
+        return std::hypot(px - ax, py - ay);
+    }
+    float t = std::max(0.0f, std::min(1.0f, ((px - ax) * dx + (py - ay) * dy) / l2));
+    ox = ax + t * dx;
+    oy = ay + t * dy;
+    return std::hypot(px - ox, py - oy);
+}
+
+// The point on an ellipse closest to p, with the angle it sits at. There is no closed form worth
+// the trouble here, so the curve is sampled and then refined inside the winning wedge: 96 samples
+// alone leave a couple of pixels of error on a big circle, which is a wide margin against a
+// tolerance this tight.
+static float ClosestPointOnEllipse(float px, float py, float cx, float cy, float rx, float ry,
+                                   float& ox, float& oy, float& outAngle) {
+    const float kTau = 6.28318530717958647692f;
+    const int kSamples = 96;
+    float bestAngle = 0.0f;
+    float bestDist = 1e30f;
+    for (int i = 0; i < kSamples; ++i) {
+        float a = kTau * (float)i / (float)kSamples;
+        float qx = cx + rx * std::cos(a);
+        float qy = cy + ry * std::sin(a);
+        float dd = std::hypot(px - qx, py - qy);
+        if (dd < bestDist) {
+            bestDist = dd;
+            bestAngle = a;
+        }
+    }
+    float step = kTau / (float)kSamples;
+    for (int round = 0; round < 2; ++round) {
+        step *= 0.25f;
+        for (int i = -2; i <= 2; ++i) {
+            float a = bestAngle + step * (float)i;
+            float qx = cx + rx * std::cos(a);
+            float qy = cy + ry * std::sin(a);
+            float dd = std::hypot(px - qx, py - qy);
+            if (dd < bestDist) {
+                bestDist = dd;
+                bestAngle = a;
+            }
+        }
+    }
+    ox = cx + rx * std::cos(bestAngle);
+    oy = cy + ry * std::sin(bestAngle);
+    outAngle = bestAngle;
+    return bestDist;
+}
+
+// The custom area as an ellipse, when it is one. A circle area is cropped and masked by its curve,
+// so its bounding quad is a selection visual and nothing more - the same rule the circle
+// annotations follow. Returning false means the area is a rectangle or a deformed quad, whose
+// corners and sides really are the shape.
+static bool SelectionEllipse(const PepperSnapDaemon& d, float& cx, float& cy, float& rx, float& ry) {
+    if (!d.hasSelection || !d.hasEllipseSelection) return false;
+    float x1 = (float)std::min(d.selRect.left, d.selRect.right);
+    float y1 = (float)std::min(d.selRect.top, d.selRect.bottom);
+    float x2 = (float)std::max(d.selRect.left, d.selRect.right);
+    float y2 = (float)std::max(d.selRect.top, d.selRect.bottom);
+    rx = (x2 - x1) * 0.5f;
+    ry = (y2 - y1) * 0.5f;
+    cx = x1 + rx;
+    cy = y1 + ry;
+    return rx >= 1.0f && ry >= 1.0f;
+}
+
+// Every place a dragged annotation can land: another annotation's corner, end, side, stroke or
+// curve, and the custom area's corners and edges. One search for all of them is what makes "line to
+// side" and "corner to corner" the same feature rather than two.
+//
+// A point wins over an outline unless the outline is clearly closer: a corner is an exact landing,
+// and it sits on two of its own sides, so an unbiased comparison would almost never reach a corner.
+//
+// `ownAnnId` / `ownCornerIdx` name the corner being dragged, which must not be its own target.
+// `skipOwnAnnotation` ignores that annotation entirely, which a line's end needs: its own stroke
+// lies under the cursor at all times and would hold the line at zero length.
+// `skipCircleTargets` leaves every curve out of the search - a circle annotation's and a circle
+// area's alike. Only the line family lands on a curve: a line end on a curve is exact and reads as
+// the two meeting, while a shape's corner landing on one leaves the drawn shape visibly off the
+// curve it "snapped" to, which felt like fighting the cursor.
+static SnapTargetResult FindSnapTarget(const PepperSnapDaemon& d, float x, float y, float maxDist,
+                                       int ownAnnId = -1, int ownCornerIdx = -1,
+                                       bool skipOwnAnnotation = false,
+                                       bool skipCircleTargets = false) {
+    SnapTargetResult best;
+    float bestDist = maxDist + 0.001f;
+    bool bestIsPoint = false;
+
+    auto considerPoint = [&](float px, float py) {
+        float dist = std::hypot(x - px, y - py);
+        if (dist > maxDist) return;
+        if (best.found && dist >= bestDist) return;
+        best.found = true;
+        bestDist = dist;
+        bestIsPoint = true;
+        best.target = { SnapHintKind::Point, px, py, px, py, px, py };
+    };
+    auto considerOutline = [&](float ox, float oy, float dist,
+                               float ax, float ay, float bx, float by) {
+        if (dist > maxDist) return;
+        if (best.found && !(dist + (bestIsPoint ? kSnapPointBias : 0.0f) < bestDist)) return;
+        best.found = true;
+        bestDist = dist;
+        bestIsPoint = false;
+        best.target = { SnapHintKind::Outline, ox, oy, ax, ay, bx, by };
+    };
+    auto considerSegment = [&](float ax, float ay, float bx, float by) {
+        float ox = 0.0f, oy = 0.0f;
+        float dist = ClosestPointOnSegment(x, y, ax, ay, bx, by, ox, oy);
+        considerOutline(ox, oy, dist, ax, ay, bx, by);
+    };
+    auto considerCurve = [&](float cx, float cy, float rx, float ry) {
+        float ox = 0.0f, oy = 0.0f, ang = 0.0f;
+        float dist = ClosestPointOnEllipse(x, y, cx, cy, rx, ry, ox, oy, ang);
+        float span = std::min(1.2f, 14.0f / std::max(1.0f, std::max(rx, ry)));
+        float ax = cx + rx * std::cos(ang - span);
+        float ay = cy + ry * std::sin(ang - span);
+        float bx = cx + rx * std::cos(ang + span);
+        float by = cy + ry * std::sin(ang + span);
+        considerOutline(ox, oy, dist, ax, ay, bx, by);
+    };
+    auto addBox = [&](const PointF2D q[4], bool withSides, bool skipOwnCorner) {
+        for (int k = 0; k < 4; ++k) {
+            if (skipOwnCorner && k == ownCornerIdx) continue;
+            considerPoint(q[k].x, q[k].y);
+        }
+        if (!withSides) return;
+        for (int e = 0; e < 4; ++e) {
+            const PointF2D& p0 = q[e];
+            const PointF2D& p1 = q[(e + 1) & 3];
+            considerSegment(p0.x, p0.y, p1.x, p1.y);
+        }
+    };
+
+    const bool annTargetsOn = d.snapAnnotationsToEachOther;
+    for (const auto& a : d.annotations) {
+        bool own = (a.id == ownAnnId);
+        if (own && skipOwnAnnotation) continue;
+        if (!own && !annTargetsOn) continue;
+
+        if (a.tool == OverlayTool::Rectangle || a.tool == OverlayTool::MosaicSquare ||
+            a.tool == OverlayTool::TextBox) {
+            PointF2D q[4];
+            AnnotationQuadPoints(a, q);
+            // A pulled corner never lands on its own shape's sides: the two sides meeting at it sit
+            // exactly under the pull, so including them would hold the corner on its old edge line
+            // and the pull would not move at all. Its other corners stay, which is what turns a
+            // quad into a triangle.
+            addBox(q, !own, own);
+        } else if (a.tool == OverlayTool::Ellipse || a.tool == OverlayTool::MosaicCircle) {
+            // Neither circle draws its bounding box as the shape, so only the curve is a target -
+            // the outline you can actually see, exactly as a rectangle's sides are. A shape being
+            // dragged leaves curves out entirely (see `skipCircleTargets`).
+            if (skipCircleTargets) continue;
+            PointF2D q[4];
+            AnnotationQuadPoints(a, q);
+            float cx = (q[0].x + q[2].x) * 0.5f;
+            float cy = (q[0].y + q[2].y) * 0.5f;
+            float rx = std::abs(q[2].x - q[0].x) * 0.5f;
+            float ry = std::abs(q[2].y - q[0].y) * 0.5f;
+            if (rx >= 1.0f && ry >= 1.0f) considerCurve(cx, cy, rx, ry);
+        } else if (a.tool == OverlayTool::Pen || a.tool == OverlayTool::Highlighter) {
+            considerPoint(a.startPt.x, a.startPt.y);
+            considerPoint(a.endPt.x, a.endPt.y);
+            if (a.points.size() < 2) {
+                considerSegment(a.startPt.x, a.startPt.y, a.endPt.x, a.endPt.y);
+            } else {
+                for (size_t i = 1; i < a.points.size(); ++i) {
+                    considerSegment(a.points[i - 1].x, a.points[i - 1].y,
+                                    a.points[i].x, a.points[i].y);
+                }
+            }
+        } else {
+            // The line family: both ends and the stroke between them.
+            considerPoint(a.startPt.x, a.startPt.y);
+            considerPoint(a.endPt.x, a.endPt.y);
+            considerSegment(a.startPt.x, a.startPt.y, a.endPt.x, a.endPt.y);
+        }
+    }
+
+    if (d.hasSelection) {
+        float ecx = 0.0f, ecy = 0.0f, erx = 0.0f, ery = 0.0f;
+        if (SelectionEllipse(d, ecx, ecy, erx, ery)) {
+            // A circle area is the curve it is cropped and masked by; its bounding quad is only the
+            // selection frame. Offering that quad here is what made a circle area snap as a square.
+            // A shape being dragged skips the curve for the same reason it skips a circle
+            // annotation's.
+            if (!skipCircleTargets) considerCurve(ecx, ecy, erx, ery);
+        } else {
+            POINT sq[4];
+            int n = d.GetSelectionPolygonPoints(sq);
+            for (int k = 0; k < n; ++k) considerPoint((float)sq[k].x, (float)sq[k].y);
+            for (int k = 0; k < n; ++k) {
+                const POINT& p0 = sq[k];
+                const POINT& p1 = sq[(k + 1) % n];
+                considerSegment((float)p0.x, (float)p0.y, (float)p1.x, (float)p1.y);
+            }
+        }
+    }
+    return best;
+}
+
+// The nearest edge line to a moving side: another annotation's side, or the custom area's edge.
+// `vertical` picks the axis; movingA/movingB are the two edges of the moving shape along it, so
+// either of its sides can line up. The matched extent across the line comes back too, so the guide
+// can draw a line that spans both shapes instead of only marking a coordinate.
+struct SnapEdgeLine {
+    bool found = false;
+    float coord = 0.0f;
+    float other1 = 0.0f;
+    float other2 = 0.0f;
+};
+
+static SnapEdgeLine FindEdgeLine(const PepperSnapDaemon& d, bool vertical,
+                                 float movingA, float movingB, float maxDist) {
+    SnapEdgeLine best;
+    float bestDist = maxDist + 0.001f;
+    const float mine[2] = { movingA, movingB };
+
+    auto consider = [&](float coord, float lo, float hi) {
+        for (int m = 0; m < 2; ++m) {
+            float delta = std::abs(coord - mine[m]);
+            if (delta <= maxDist && delta < bestDist) {
+                bestDist = delta;
+                best.found = true;
+                best.coord = coord;
+                best.other1 = lo;
+                best.other2 = hi;
+            }
+        }
+    };
+
+    if (d.snapAnnotationsToEachOther) {
+        for (const auto& a : d.annotations) {
+            if (d.IsAnnotationSelected(a.id)) continue;
+            // A circle's bounding box is not a drawn edge, and a freehand stroke's box is not a
+            // line it was drawn along; neither is an edge anyone can line up against. Their curves
+            // and strokes are still targets for the point search - just not edge lines.
+            if (a.tool == OverlayTool::Ellipse || a.tool == OverlayTool::MosaicCircle ||
+                a.tool == OverlayTool::Pen || a.tool == OverlayTool::Highlighter) continue;
+            float x1 = std::min(a.startPt.x, a.endPt.x);
+            float x2 = std::max(a.startPt.x, a.endPt.x);
+            float y1 = std::min(a.startPt.y, a.endPt.y);
+            float y2 = std::max(a.startPt.y, a.endPt.y);
+            if (vertical) {
+                consider(x1, y1, y2);
+                consider(x2, y1, y2);
+            } else {
+                consider(y1, x1, x2);
+                consider(y2, x1, x2);
+            }
+        }
+    }
+    if (d.hasSelection) {
+        float ecx = 0.0f, ecy = 0.0f, erx = 0.0f, ery = 0.0f;
+        // A circle area has no straight edge to line up against - its bounding quad is the frame,
+        // not the shape - so it contributes nothing here.
+        if (!SelectionEllipse(d, ecx, ecy, erx, ery)) {
+            POINT sq[4];
+            int n = d.GetSelectionPolygonPoints(sq);
+            float x1 = 1e9f, x2 = -1e9f, y1 = 1e9f, y2 = -1e9f;
+            for (int k = 0; k < n; ++k) {
+                x1 = std::min(x1, (float)sq[k].x);
+                x2 = std::max(x2, (float)sq[k].x);
+                y1 = std::min(y1, (float)sq[k].y);
+                y2 = std::max(y2, (float)sq[k].y);
+            }
+            if (x2 > x1) {
+                if (vertical) {
+                    consider(x1, y1, y2);
+                    consider(x2, y1, y2);
+                } else {
+                    consider(y1, x1, x2);
+                    consider(y2, x1, x2);
+                }
+            }
+        }
+    }
+    return best;
+}
+
+// Lines a dragged corner up with its neighbours on each axis and draws the same dashed guide an
+// edge resize and a whole move use: one or two lines spanning both shapes, so "these two are
+// flush" is visible rather than inferred. Both axes at once is a corner-to-corner landing.
+//
+// This is the *axis* snap, not the nearest-point one: `FindSnapTarget` lands a corner on a side
+// it is within 4 px of, while this catches the case where the corner is level with a side further
+// away and only one coordinate has to move. Returns true when either axis caught something.
+static bool AlignCornerToEdges(PepperSnapDaemon& d, float& x, float& y) {
+    SnapEdgeLine lx = FindEdgeLine(d, true, x, x, kSnapTolerance);
+    SnapEdgeLine ly = FindEdgeLine(d, false, y, y, kSnapTolerance);
+    if (!lx.found && !ly.found) return false;
+
+    if (lx.found) x = lx.coord;
+    if (ly.found) y = ly.coord;
+
+    int segs = 0;
+    if (lx.found) {
+        d.snapHintSegs[segs][0] = lx.coord;
+        d.snapHintSegs[segs][1] = std::min(y, lx.other1) - 4.0f;
+        d.snapHintSegs[segs][2] = lx.coord;
+        d.snapHintSegs[segs][3] = std::max(y, lx.other2) + 4.0f;
+        ++segs;
+    }
+    if (ly.found) {
+        d.snapHintSegs[segs][0] = std::min(x, ly.other1) - 4.0f;
+        d.snapHintSegs[segs][1] = ly.coord;
+        d.snapHintSegs[segs][2] = std::max(x, ly.other2) + 4.0f;
+        d.snapHintSegs[segs][3] = ly.coord;
+        ++segs;
+    }
+    d.snapHintKind = SnapHintKind::Align;
+    d.snapHintSegCount = segs;
+    d.snapHintTargetX = lx.found ? lx.coord : x;
+    d.snapHintTargetY = ly.found ? ly.coord : y;
+    return true;
+}
+
+static void ClearSnapHint(PepperSnapDaemon& d) {
+    d.snapHintKind = SnapHintKind::None;
+    d.snapHintSegCount = 0;
+    d.snapWarped = false;
+}
+
+static void SetSnapHint(PepperSnapDaemon& d, const SnapTarget& t) {
+    d.snapHintKind = t.kind;
+    d.snapHintTargetX = t.x;
+    d.snapHintTargetY = t.y;
+    d.snapHintSegCount = 0;
+    if (t.kind == SnapHintKind::Outline) {
+        d.snapHintSegs[0][0] = t.segX1;
+        d.snapHintSegs[0][1] = t.segY1;
+        d.snapHintSegs[0][2] = t.segX2;
+        d.snapHintSegs[0][3] = t.segY2;
+        d.snapHintSegCount = 1;
+    }
+    // A point is an exact landing, so the pointer goes with it: otherwise the shape locks to the
+    // point while the cursor stays a few pixels off, which reads as the shape having drifted away
+    // from the cursor. Only a point other than the one already warped to pulls the pointer, so the
+    // drag can still be moved off it - and a warp that lands the cursor exactly on the point makes
+    // the next move report the same point, which stops here.
+    if (t.kind == SnapHintKind::Point) {
+        bool newPoint = !d.snapWarped ||
+                        std::abs(t.x - d.snapWarpX) > 0.5f ||
+                        std::abs(t.y - d.snapWarpY) > 0.5f;
+        if (newPoint) {
+            // The overlay covers the virtual screen, so a client coordinate plus its origin is a
+            // screen coordinate.
+            SetCursorPos(d.vScreenX + (int)std::lround(t.x), d.vScreenY + (int)std::lround(t.y));
+            d.snapWarped = true;
+            d.snapWarpX = t.x;
+            d.snapWarpY = t.y;
+        }
+    } else {
+        d.snapWarped = false;
+    }
+}
+
+static void SetRaySnapHint(PepperSnapDaemon& d, float ax, float ay, float tx, float ty) {
+    d.snapHintKind = SnapHintKind::Ray;
+    d.snapHintAnchorX = ax;
+    d.snapHintAnchorY = ay;
+    d.snapHintTargetX = tx;
+    d.snapHintTargetY = ty;
+    d.snapHintSegCount = 0;
+}
+
+// Shows what a snapped drag latched onto: the 15 degree ray with the pivot it starts from, the
+// point a corner landed on, the outline it landed on, or the edges a move lined up. Without it a
+// snap is a silent few-pixel jump - nothing says which point or which line was taken.
+static void DrawSnapHint(Graphics& g, const PepperSnapDaemon& d) {
+    if (d.snapHintKind == SnapHintKind::None) return;
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    const Color kAccent(255, 56, 189, 248);
+    Pen ring(kAccent, 1.5f);
+    SolidBrush white(Color(255, 255, 255, 255));
+
+    // The geometry under the snap first, so the marker at the landing sits on top of it: the
+    // outline that was matched as a soft thick stroke, or the alignment lines a move produced.
+    for (int i = 0; i < d.snapHintSegCount && i < 2; ++i) {
+        if (d.snapHintKind == SnapHintKind::Align) {
+            Pen line(Color(190, 56, 189, 248), 1.0f);
+            line.SetDashStyle(DashStyleDash);
+            g.DrawLine(&line, d.snapHintSegs[i][0], d.snapHintSegs[i][1],
+                       d.snapHintSegs[i][2], d.snapHintSegs[i][3]);
+        } else {
+            Pen under(Color(110, 56, 189, 248), 3.0f);
+            g.DrawLine(&under, d.snapHintSegs[i][0], d.snapHintSegs[i][1],
+                       d.snapHintSegs[i][2], d.snapHintSegs[i][3]);
+        }
+    }
+
+    if (d.snapHintKind == SnapHintKind::Ray) {
+        float ax = d.snapHintAnchorX;
+        float ay = d.snapHintAnchorY;
+        float dx = d.snapHintTargetX - ax;
+        float dy = d.snapHintTargetY - ay;
+        float len = std::hypot(dx, dy);
+        if (len > 0.5f) {
+            float ux = dx / len;
+            float uy = dy / len;
+            Pen ray(Color(210, 56, 189, 248), 1.0f);
+            ray.SetDashStyle(DashStyleDash);
+            g.DrawLine(&ray, ax, ay, ax + ux * (len + 28.0f), ay + uy * (len + 28.0f));
+        }
+        // The ray's origin is a dot, the corner riding it a ring, so the two ends of the guide
+        // cannot be confused with each other.
+        g.FillEllipse(&white, ax - 3.5f, ay - 3.5f, 7.0f, 7.0f);
+        g.DrawEllipse(&ring, ax - 3.5f, ay - 3.5f, 7.0f, 7.0f);
+        g.FillEllipse(&white, d.snapHintTargetX - 4.5f, d.snapHintTargetY - 4.5f, 9.0f, 9.0f);
+        g.DrawEllipse(&ring, d.snapHintTargetX - 4.5f, d.snapHintTargetY - 4.5f, 9.0f, 9.0f);
+    } else {
+        // A landing is a square, the shape a handle used to be: this is an exact place rather than
+        // a direction.
+        g.FillRectangle(&white, d.snapHintTargetX - 4.5f, d.snapHintTargetY - 4.5f, 9.0f, 9.0f);
+        g.DrawRectangle(&ring, d.snapHintTargetX - 4.5f, d.snapHintTargetY - 4.5f, 9.0f, 9.0f);
+    }
+}
+
 // The selection frame for a rectangle, circle or either mosaic: the custom area's visual, one
 // dashed outline that follows what was drawn, with no resize points. It is pushed out past the
 // stroke itself - half the stroke, plus a pixel and a half - so the dashes never sit on the border
@@ -3628,6 +4099,11 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             // a press anywhere along an edge or on a corner resizes. A circle's box is now drawn
             // for exactly that reason, so a point marker would only duplicate it.
 
+            // What the current drag has latched onto - a 15 degree ray with the point it starts
+            // from, or the point a corner landed on. Drawn over the annotations and the frame so
+            // the guide is never hidden by the thing it is guiding.
+            DrawSnapHint(g, g_Daemon);
+
             // Dynamic Typeable Dimension & Permanent Ratio Pill [ W×H px | ratio | trash icon ] — anchored to the stationary corner when resizing!
             bool pillRight = false, pillBottom = false;
             g_Daemon.GetDimensionPillAnchor(pillRight, pillBottom);
@@ -4968,6 +5444,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             g_Daemon.draggingAnnEdge = (annDragMode == DragMode::DraggingAnnotationEdge) ? annCornerIdx : -1;
                             g_Daemon.draggingAnnCornerFree = (annDragMode == DragMode::DraggingAnnotationCorner) &&
                                                              (annCornerIdx >= 0) && PepperSnapDaemon::IsAltModifierHeld();
+                            // The box as it stands now, so a corner or side can be dragged past its
+                            // opposite without the fixed side running away with the cursor.
+                            g_Daemon.CaptureAnnotationResizeOrig(hitId);
                             g_Daemon.BeginAnnotationClick(hitId, annDragMode, pt, mx, my, multiMod);
                         } else if (multiMod) {
                             // Shift + drag on empty space inside the custom area starts marquee
@@ -5036,10 +5515,32 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.draftAnn.tool = g_Daemon.activeTool;
                     g_Daemon.draftAnn.color = g_Daemon.activeColor;
                     g_Daemon.draftAnn.strokeWidth = g_Daemon.activeStroke;
-                    g_Daemon.draftAnn.startPt = { (float)mx, (float)my };
-                    g_Daemon.draftAnn.endPt   = { (float)mx, (float)my };
-                    g_Daemon.draftAnn.points.push_back({ (float)mx, (float)my });
-                    g_Daemon.penSnapAnchor    = { (float)mx, (float)my };
+                    // A shape or a line that starts on a corner starts exactly on it, so the far
+                    // corner can be joined to the near one - a line end to the next stroke, or a
+                    // rectangle flush against the box it sits on - without a seam or a stray pixel.
+                    // A circle's first corner does not snap at all, for the same reason its moving
+                    // corner does not: the corner is not on the curve.
+                    float draftStartX = (float)mx;
+                    float draftStartY = (float)my;
+                    bool startIsCircle = (g_Daemon.activeTool == OverlayTool::Ellipse ||
+                                          g_Daemon.activeTool == OverlayTool::MosaicCircle);
+                    bool startIsShape = (g_Daemon.activeTool == OverlayTool::Rectangle ||
+                                         startIsCircle ||
+                                         g_Daemon.activeTool == OverlayTool::MosaicSquare);
+                    if (g_Daemon.activeTool == OverlayTool::Line || g_Daemon.activeTool == OverlayTool::Arrow ||
+                        g_Daemon.activeTool == OverlayTool::NumberArrow ||
+                        (startIsShape && !startIsCircle)) {
+                        SnapTargetResult startHit = FindSnapTarget(g_Daemon, draftStartX, draftStartY,
+                                                                   kSnapTolerance, -1, -1, false, startIsShape);
+                        if (startHit.found) {
+                            draftStartX = startHit.target.x;
+                            draftStartY = startHit.target.y;
+                        }
+                    }
+                    g_Daemon.draftAnn.startPt = { draftStartX, draftStartY };
+                    g_Daemon.draftAnn.endPt   = { draftStartX, draftStartY };
+                    g_Daemon.draftAnn.points.push_back({ draftStartX, draftStartY });
+                    g_Daemon.penSnapAnchor    = { draftStartX, draftStartY };
                     g_Daemon.isPenShiftSnapping = false;
                     if (g_Daemon.activeTool == OverlayTool::NumberArrow) {
                         g_Daemon.draftAnn.stepNumber = g_Daemon.nextStepNum;
@@ -5089,6 +5590,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.draggingAnnEdge = (annDragMode == DragMode::DraggingAnnotationEdge) ? annCornerIdx : -1;
                     g_Daemon.draggingAnnCornerFree = (annDragMode == DragMode::DraggingAnnotationCorner) &&
                                                      (annCornerIdx >= 0) && altHeldOnDown;
+                    g_Daemon.CaptureAnnotationResizeOrig(hitId);
                     g_Daemon.BeginAnnotationClick(hitId, annDragMode, pt, mx, my, shiftHeld);
                     if (g_Daemon.dragMode != DragMode::None) SetCapture(hWnd);
                     g_Daemon.UpdateOverlayCursor(mx, my);
@@ -5486,6 +5988,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_Daemon.hasCustomHudPos = false;
                     if (g_Daemon.isDraggingSingleCorner) {
                         for (int i = 0; i < 4; ++i) g_Daemon.selQuad[i] = g_Daemon.dragOrigQuad[i];
+                        g_Daemon.snapHintKind = SnapHintKind::None;
+                        g_Daemon.snapHintSegCount = 0;
                         int cornerIdx = 0;
                         if (g_Daemon.dragMode == DragMode::ResizeTL) cornerIdx = 0;
                         else if (g_Daemon.dragMode == DragMode::ResizeTR) cornerIdx = 1;
@@ -5494,7 +5998,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
                         int targetX = clampedMx;
                         int targetY = clampedMy;
-                        const double kCornerSnapDist = 12.0;
+                        const double kCornerSnapDist = (double)kSnapTolerance;
                         double bestDist = kCornerSnapDist + 0.001;
                         int snappedOtherIdx = -1;
                         for (int i = 0; i < 4; ++i) {
@@ -5529,6 +6033,31 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         if (snappedOtherIdx >= 0) {
                             targetX = g_Daemon.dragOrigQuad[snappedOtherIdx].x;
                             targetY = g_Daemon.dragOrigQuad[snappedOtherIdx].y;
+                            SnapTarget exact{ SnapHintKind::Point, (float)targetX, (float)targetY,
+                                              (float)targetX, (float)targetY,
+                                              (float)targetX, (float)targetY };
+                            SetSnapHint(g_Daemon, exact);
+                        } else if (PepperSnapDaemon::IsShiftModifierHeld()) {
+                            // Shift snaps the edge that runs from the pivot to the pulled corner to
+                            // 15 degree steps, the same step the line tool uses: pull the top-right
+                            // corner and the right edge turns around the bottom-right corner. The
+                            // angle is measured from that pivot, so the edge being dragged is the
+                            // line that gets snapped - which is what makes the corner land where
+                            // the guide says it will.
+                            const POINT& pivot = g_Daemon.dragOrigQuad[(cornerIdx + 1) & 3];
+                            double vx = (double)clampedMx - (double)pivot.x;
+                            double vy = (double)clampedMy - (double)pivot.y;
+                            double rayLen = std::hypot(vx, vy);
+                            if (rayLen >= 1.0) {
+                                const double kStep15 = 3.14159265358979323846 / 12.0;
+                                double ang = std::round(std::atan2(vy, vx) / kStep15) * kStep15;
+                                targetX = (int)std::lround((double)pivot.x + rayLen * std::cos(ang));
+                                targetY = (int)std::lround((double)pivot.y + rayLen * std::sin(ang));
+                                targetX = std::max(0, std::min(g_Daemon.vScreenW, targetX));
+                                targetY = std::max(0, std::min(g_Daemon.vScreenH, targetY));
+                                SetRaySnapHint(g_Daemon, (float)pivot.x, (float)pivot.y,
+                                               (float)targetX, (float)targetY);
+                            }
                         }
 
                         int moveIdx = cornerIdx;
@@ -5801,6 +6330,64 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         }
                     }
 
+                    // The corner being dragged lands exactly on anything within reach: the area's
+                    // corners and edges, a shape's corners and sides, another line's ends and body.
+                    // That is what lets several strokes be joined into an irregular shape with no
+                    // gap at the joins, and what puts a new shape's corner on an old one. A point
+                    // wins over Shift's angle or 1:1 constraint above, because landing on a point
+                    // is exact and is the reason to hold the two together.
+                    bool lineFamily = (t == OverlayTool::Line || t == OverlayTool::Arrow ||
+                                       t == OverlayTool::NumberArrow);
+                    bool circleFamily = (t == OverlayTool::Ellipse || t == OverlayTool::MosaicCircle);
+                    bool shapeFamily = (t == OverlayTool::Rectangle || circleFamily ||
+                                        t == OverlayTool::MosaicSquare);
+                    // A circle is not snapped while it is being drawn. Its box corner is not on its
+                    // curve, so every landing is either a size the drag did not ask for or a circle
+                    // sitting off the thing it latched onto - which is what made it feel like
+                    // fighting the cursor. Moving one still snaps; resizing does not.
+                    if (!circleFamily && (lineFamily || shapeFamily)) {
+                        g_Daemon.snapHintKind = SnapHintKind::None;
+                        g_Daemon.snapHintSegCount = 0;
+                        SnapTargetResult hit = FindSnapTarget(g_Daemon, targetX, targetY, kSnapTolerance,
+                                                             g_Daemon.draftAnn.id, -1, false, shapeFamily);
+                        // Its own start is not a target - the draft is not in the annotation list -
+                        // but a corner that started on another corner would snap straight back onto
+                        // it, holding the line at zero length or the box at zero size for the first
+                        // few pixels of the drag. That is refused, and so is any landing that would
+                        // leave a shape with no body left to see.
+                        if (hit.found &&
+                            std::hypot(hit.target.x - g_Daemon.draftAnn.startPt.x,
+                                       hit.target.y - g_Daemon.draftAnn.startPt.y) < 0.5f) {
+                            hit.found = false;
+                        }
+                        if (hit.found && shapeFamily &&
+                            (std::abs(hit.target.x - g_Daemon.draftAnn.startPt.x) < 2.0f ||
+                             std::abs(hit.target.y - g_Daemon.draftAnn.startPt.y) < 2.0f)) {
+                            hit.found = false;
+                        }
+                        if (hit.found) {
+                            targetX = hit.target.x;
+                            targetY = hit.target.y;
+                            SetSnapHint(g_Daemon, hit.target);
+                        } else if (shapeFamily && !shiftHeld) {
+                            // Nothing exact within reach, so line the moving corner up with a
+                            // neighbour's side on either axis - the same dashed guide an edge
+                            // resize and a whole move draw, so a box being drawn can be made flush
+                            // with an old one as it is drawn rather than only after. Shift is left
+                            // alone: its 1:1 constraint is the shape of the box, and moving one axis
+                            // would break it.
+                            float rawX = targetX, rawY = targetY;
+                            if (AlignCornerToEdges(g_Daemon, targetX, targetY) &&
+                                (std::abs(targetX - g_Daemon.draftAnn.startPt.x) < 2.0f ||
+                                 std::abs(targetY - g_Daemon.draftAnn.startPt.y) < 2.0f)) {
+                                // Refused: the alignment would flatten the box to a line.
+                                targetX = rawX;
+                                targetY = rawY;
+                                ClearSnapHint(g_Daemon);
+                            }
+                        }
+                    }
+
                     g_Daemon.draftAnn.endPt = { targetX, targetY };
                     break;
                 }
@@ -5844,65 +6431,36 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         bool canPullFree = (a.tool == OverlayTool::Rectangle || a.tool == OverlayTool::MosaicSquare);
                         if (AnnotationIsQuad(a) || (g_Daemon.draggingAnnCornerFree && canPullFree)) {
                             float tx = (float)mx, ty = (float)my;
-                            // Same snapping rule the custom area uses: the pulled corner
-                            // lands exactly on another corner within 12 px, which is also how
-                            // a quad collapses into a triangle.
-                            const float kCornerSnapDist = 12.0f;
-                            float bestDist = kCornerSnapDist + 0.001f;
-                            for (int i = 0; i < 4; ++i) {
-                                if (i == idx) continue;
-                                float d = std::hypot((float)mx - q[i].x, (float)my - q[i].y);
-                                if (d <= bestDist) {
-                                    bestDist = d;
-                                    tx = q[i].x;
-                                    ty = q[i].y;
-                                }
+                            // Anything within reach: this shape's own other corners, every other
+                            // annotation's corners, ends, sides, strokes and curves, and the
+                            // area's corners and edges - which is also how a quad collapses into a
+                            // triangle.
+                            ClearSnapHint(g_Daemon);
+                            SnapTargetResult hit = FindSnapTarget(g_Daemon, (float)mx, (float)my, kSnapTolerance,
+                                                                 a.id, idx, false, true);
+                            if (hit.found) {
+                                tx = hit.target.x;
+                                ty = hit.target.y;
+                                SetSnapHint(g_Daemon, hit.target);
                             }
-                            // Then the corners of every other annotation, so one shape's corner
-                            // can land exactly on another's - which is what makes a row of
-                            // rectangles line up without eyeballing it.
-                            for (const auto& other : g_Daemon.annotations) {
-                                if (other.id == a.id) continue;
-                                if (other.tool == OverlayTool::Rectangle || other.tool == OverlayTool::Ellipse ||
-                                    other.tool == OverlayTool::MosaicSquare || other.tool == OverlayTool::MosaicCircle ||
-                                    other.tool == OverlayTool::TextBox) {
-                                    PointF2D oq[4];
-                                    AnnotationQuadPoints(other, oq);
-                                    for (int k = 0; k < 4; ++k) {
-                                        float d = std::hypot((float)mx - oq[k].x, (float)my - oq[k].y);
-                                        if (d <= bestDist) {
-                                            bestDist = d;
-                                            tx = oq[k].x;
-                                            ty = oq[k].y;
-                                        }
-                                    }
-                                } else {
-                                    float d0 = std::hypot((float)mx - other.startPt.x, (float)my - other.startPt.y);
-                                    if (d0 <= bestDist) {
-                                        bestDist = d0;
-                                        tx = other.startPt.x;
-                                        ty = other.startPt.y;
-                                    }
-                                    float d1 = std::hypot((float)mx - other.endPt.x, (float)my - other.endPt.y);
-                                    if (d1 <= bestDist) {
-                                        bestDist = d1;
-                                        tx = other.endPt.x;
-                                        ty = other.endPt.y;
-                                    }
-                                }
-                            }
-                            // And the window's own corners, so a shape can be aligned to the
-                            // area it is drawn in as well as to another annotation.
-                            if (g_Daemon.hasSelection) {
-                                POINT sq[4];
-                                int sn = g_Daemon.GetSelectionPolygonPoints(sq);
-                                for (int k = 0; k < sn; ++k) {
-                                    float d = std::hypot((float)mx - (float)sq[k].x, (float)my - (float)sq[k].y);
-                                    if (d <= bestDist) {
-                                        bestDist = d;
-                                        tx = (float)sq[k].x;
-                                        ty = (float)sq[k].y;
-                                    }
+                            // Alt makes the pull; Shift alongside it snaps the edge from the corner
+                            // next to the one being pulled to 15 degree steps, the same step the
+                            // line tool uses. Pulling the top-right corner turns the right edge,
+                            // whose lower end is the bottom-right corner - so the pivot is the next
+                            // corner round the shape, and the guide ray lies along that edge. A
+                            // corner that has landed on another point keeps that exact place; it is
+                            // what turns a quad into a triangle.
+                            if (!hit.found && PepperSnapDaemon::IsShiftModifierHeld()) {
+                                const PointF2D& pivot = q[(idx + 1) & 3];
+                                float vx = (float)mx - pivot.x;
+                                float vy = (float)my - pivot.y;
+                                float rayLen = std::hypot(vx, vy);
+                                if (rayLen >= 1.0f) {
+                                    const float kStep15 = 3.14159265358979323846f / 12.0f;
+                                    float ang = std::round(std::atan2(vy, vx) / kStep15) * kStep15;
+                                    tx = pivot.x + rayLen * std::cos(ang);
+                                    ty = pivot.y + rayLen * std::sin(ang);
+                                    SetRaySnapHint(g_Daemon, pivot.x, pivot.y, tx, ty);
                                 }
                             }
                             q[idx] = { tx, ty };
@@ -5913,13 +6471,57 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             // that is already a quad takes the branch above, so dragging one of
                             // its corners keeps it uneven instead of flattening it back into a
                             // rectangle.
+                            //
+                            // The anchor is the corner the drag *started* with, not the one the
+                            // shape has now: once the dragged corner passes it, the shape's box
+                            // flips and the opposite corner would be the one under the cursor, so
+                            // the resize would turn into a move that could never cross.
                             PointF2D anchor = q[(idx + 2) & 3];
+                            if (g_Daemon.annResizeOrigValid) anchor = g_Daemon.annResizeOrig[(idx + 2) & 3];
                             float tx = (float)mx, ty = (float)my;
                             if (shiftHeld) {
                                 float sdx = tx - anchor.x, sdy = ty - anchor.y;
                                 float side = std::max(std::abs(sdx), std::abs(sdy));
                                 tx = anchor.x + (sdx >= 0.0f ? side : -side);
                                 ty = anchor.y + (sdy >= 0.0f ? side : -side);
+                            }
+                            // The dragged corner still lands exactly on another annotation's
+                            // corner, side, stroke or curve, or on the area's, so two shapes can be
+                            // made flush by resizing as well as by pulling a free corner. Its own
+                            // outline is skipped: the opposite corner is where it starts.
+                            ClearSnapHint(g_Daemon);
+                            // A circle's corner is not on its curve, so resizing one is left
+                            // unsnapped: every landing would either resize it to a size the drag
+                            // did not ask for or leave the circle off the thing it latched onto.
+                            if (a.tool != OverlayTool::Ellipse && a.tool != OverlayTool::MosaicCircle) {
+                                SnapTargetResult resizeHit = FindSnapTarget(g_Daemon, tx, ty, kSnapTolerance,
+                                                                           a.id, -1, true, true);
+                                // A landing that would flatten the shape to nothing is refused: the
+                                // snap is a convenience, not a way to lose the annotation.
+                                bool landed = false;
+                                if (resizeHit.found &&
+                                    std::abs(resizeHit.target.x - anchor.x) >= 2.0f &&
+                                    std::abs(resizeHit.target.y - anchor.y) >= 2.0f) {
+                                    tx = resizeHit.target.x;
+                                    ty = resizeHit.target.y;
+                                    SetSnapHint(g_Daemon, resizeHit.target);
+                                    landed = true;
+                                }
+                                // Nothing exact within reach: line the corner up with a neighbour's
+                                // side on either axis, with the same dashed guide an edge resize
+                                // draws. A corner that landed on a point is already lined up.
+                                if (!landed) {
+                                    float rawX = tx, rawY = ty;
+                                    // Shift's 1:1 constraint is the shape of the box, so an axis
+                                    // alignment that moved one side alone would break it.
+                                    if (!shiftHeld && AlignCornerToEdges(g_Daemon, tx, ty) &&
+                                        (std::abs(tx - anchor.x) < 2.0f || std::abs(ty - anchor.y) < 2.0f)) {
+                                        // Refused: the alignment would flatten the shape to a line.
+                                        tx = rawX;
+                                        ty = rawY;
+                                        ClearSnapHint(g_Daemon);
+                                    }
+                                }
                             }
                             a.points.clear();
                             a.startPt = anchor;
@@ -5946,25 +6548,86 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         if (a.id != g_Daemon.selectedAnnotationId) continue;
                         int e = g_Daemon.draggingAnnEdge;
                         if (e < 0 || e > 3) break;
-                        float ox1 = std::min(a.startPt.x, a.endPt.x);
-                        float ox2 = std::max(a.startPt.x, a.endPt.x);
-                        float oy1 = std::min(a.startPt.y, a.endPt.y);
-                        float oy2 = std::max(a.startPt.y, a.endPt.y);
+                        // Two boxes: the one the shape has *now*, which is what a deformed quad is
+                        // rescaled from, and the one the drag started with, which is where the
+                        // fixed side comes from. They differ as soon as the dragged side passes its
+                        // opposite - the shape's box flips at that moment, and a fixed side read
+                        // back from the flipped box would be the side under the cursor, so the
+                        // resize would stop dead at the opposite line.
+                        float cx1 = std::min(a.startPt.x, a.endPt.x);
+                        float cx2 = std::max(a.startPt.x, a.endPt.x);
+                        float cy1 = std::min(a.startPt.y, a.endPt.y);
+                        float cy2 = std::max(a.startPt.y, a.endPt.y);
+                        float ox1 = cx1, ox2 = cx2, oy1 = cy1, oy2 = cy2;
+                        if (g_Daemon.annResizeOrigValid) {
+                            ox1 = oy1 = 1e9f;
+                            ox2 = oy2 = -1e9f;
+                            for (int k = 0; k < 4; ++k) {
+                                ox1 = std::min(ox1, g_Daemon.annResizeOrig[k].x);
+                                ox2 = std::max(ox2, g_Daemon.annResizeOrig[k].x);
+                                oy1 = std::min(oy1, g_Daemon.annResizeOrig[k].y);
+                                oy2 = std::max(oy2, g_Daemon.annResizeOrig[k].y);
+                            }
+                        }
                         float nx1 = ox1, nx2 = ox2, ny1 = oy1, ny2 = oy2;
-                        // The moving side cannot cross its opposite, so the shape cannot turn
-                        // inside out mid-drag.
-                        if (e == 0) ny1 = std::min((float)my, oy2 - 2.0f);
-                        if (e == 1) nx2 = std::max((float)mx, ox1 + 2.0f);
-                        if (e == 2) ny2 = std::max((float)my, oy1 + 2.0f);
-                        if (e == 3) nx1 = std::min((float)mx, ox2 - 2.0f);
-                        float ow = std::max(1.0f, ox2 - ox1);
-                        float oh = std::max(1.0f, oy2 - oy1);
+                        if (e == 0) ny1 = (float)my;
+                        if (e == 1) nx2 = (float)mx;
+                        if (e == 2) ny2 = (float)my;
+                        if (e == 3) nx1 = (float)mx;
+                        // A side may be dragged past its opposite: the shape flips and keeps growing,
+                        // which is what dragging a side through the far edge asks for. Clamping it
+                        // there is what made it stop at the opposite line.
+                        bool crossed = (nx1 > nx2) || (ny1 > ny2);
+                        if (nx1 > nx2) std::swap(nx1, nx2);
+                        if (ny1 > ny2) std::swap(ny1, ny2);
+                        // The pulled side lines up flush with another annotation's side, or with
+                        // the area's edge - which is what puts two boxes exactly edge to edge
+                        // instead of a pixel apart. A circle's side is its bounding box, not its
+                        // curve, so a circle is resized unsnapped, exactly like a corner drag.
+                        ClearSnapHint(g_Daemon);
+                        bool circleEdge = (a.tool == OverlayTool::Ellipse || a.tool == OverlayTool::MosaicCircle);
+                        if (!circleEdge && !crossed) {
+                            bool verticalSide = (e == 1 || e == 3);
+                            float moving = verticalSide ? (e == 1 ? nx2 : nx1) : (e == 0 ? ny1 : ny2);
+                            // The side that is not being dragged, as it was when the drag began.
+                            float opposite = verticalSide ? (e == 1 ? ox1 : ox2) : (e == 0 ? oy2 : oy1);
+                            SnapEdgeLine line = FindEdgeLine(g_Daemon, verticalSide, moving, moving, kSnapTolerance);
+                            // Only when the side stays on its own outer side: snapping must not
+                            // turn the shape inside out.
+                            bool roomy = line.found &&
+                                         (verticalSide ? (e == 1 ? line.coord > opposite + 1.0f
+                                                                 : line.coord < opposite - 1.0f)
+                                                       : (e == 0 ? line.coord < opposite - 1.0f
+                                                                 : line.coord > opposite + 1.0f));
+                            if (roomy) {
+                                if (verticalSide) {
+                                    if (e == 1) nx2 = line.coord; else nx1 = line.coord;
+                                } else {
+                                    if (e == 0) ny1 = line.coord; else ny2 = line.coord;
+                                }
+                                float lo = std::min(verticalSide ? ny1 : nx1, line.other1) - 4.0f;
+                                float hi = std::max(verticalSide ? ny2 : nx2, line.other2) + 4.0f;
+                                g_Daemon.snapHintKind = SnapHintKind::Align;
+                                g_Daemon.snapHintTargetX = verticalSide ? line.coord : (nx1 + nx2) * 0.5f;
+                                g_Daemon.snapHintTargetY = verticalSide ? (ny1 + ny2) * 0.5f : line.coord;
+                                g_Daemon.snapHintSegCount = 1;
+                                g_Daemon.snapHintSegs[0][0] = verticalSide ? line.coord : lo;
+                                g_Daemon.snapHintSegs[0][1] = verticalSide ? lo : line.coord;
+                                g_Daemon.snapHintSegs[0][2] = verticalSide ? line.coord : hi;
+                                g_Daemon.snapHintSegs[0][3] = verticalSide ? hi : line.coord;
+                            }
+                        }
+                        // A deformed quad follows the drag by being rescaled from the box it is in
+                        // *now* into the new one, so the mapping composes over the whole drag
+                        // instead of drifting.
+                        float ow = std::max(1.0f, cx2 - cx1);
+                        float oh = std::max(1.0f, cy2 - cy1);
                         float nw = std::max(1.0f, nx2 - nx1);
                         float nh = std::max(1.0f, ny2 - ny1);
                         if (AnnotationIsQuad(a)) {
                             for (auto& p : a.points) {
-                                p.x = nx1 + (p.x - ox1) * (nw / ow);
-                                p.y = ny1 + (p.y - oy1) * (nh / oh);
+                                p.x = nx1 + (p.x - cx1) * (nw / ow);
+                                p.y = ny1 + (p.y - cy1) * (nh / oh);
                             }
                         }
                         a.startPt = { nx1, ny1 };
@@ -5988,6 +6651,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
                     if (g_Daemon.dragMode == DragMode::DraggingAnnotationStart ||
                         g_Daemon.dragMode == DragMode::DraggingAnnotationEnd) {
+                        ClearSnapHint(g_Daemon);
                         for (auto& a : g_Daemon.annotations) {
                             if (a.id == g_Daemon.selectedAnnotationId) {
                                 PointF2D anchor = (g_Daemon.dragMode == DragMode::DraggingAnnotationStart) ? a.endPt : a.startPt;
@@ -6007,6 +6671,16 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                                         ty = anchor.y + (sdy >= 0.0f ? side : -side);
                                     }
                                 }
+                                // An existing end lands on anything within reach, exactly as a new
+                                // line's end does - so a stroke drawn earlier can be joined to
+                                // another one after the fact.
+                                SnapTargetResult endHit = FindSnapTarget(g_Daemon, tx, ty, kSnapTolerance,
+                                                                        a.id, -1, true);
+                                if (endHit.found) {
+                                    tx = endHit.target.x;
+                                    ty = endHit.target.y;
+                                    SetSnapHint(g_Daemon, endHit.target);
+                                }
                                 if (g_Daemon.dragMode == DragMode::DraggingAnnotationStart) a.startPt = { tx, ty };
                                 else a.endPt = { tx, ty };
                                 break;
@@ -6024,6 +6698,57 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             }
                         }
                         if (foundPrimary) {
+                            // A whole annotation lines up with its neighbours before the move is
+                            // committed: its own sides onto another shape's sides, or onto the
+                            // area's edges. Both axes caught at once is corner to corner, so this
+                            // one rule covers "side to side" and "corner to corner".
+                            ClearSnapHint(g_Daemon);
+                            const Annotation* primary = nullptr;
+                            for (const auto& a : g_Daemon.annotations) {
+                                if (a.id == g_Daemon.selectedAnnotationId) {
+                                    primary = &a;
+                                    break;
+                                }
+                            }
+                            if (primary) {
+                                float bx1 = std::min(primary->startPt.x, primary->endPt.x);
+                                float bx2 = std::max(primary->startPt.x, primary->endPt.x);
+                                float by1 = std::min(primary->startPt.y, primary->endPt.y);
+                                float by2 = std::max(primary->startPt.y, primary->endPt.y);
+                                SnapEdgeLine lx = FindEdgeLine(g_Daemon, true, bx1 + adx, bx2 + adx, kSnapTolerance);
+                                SnapEdgeLine ly = FindEdgeLine(g_Daemon, false, by1 + ady, by2 + ady, kSnapTolerance);
+                                if (lx.found) {
+                                    float edge = (std::abs(lx.coord - (bx1 + adx)) <= std::abs(lx.coord - (bx2 + adx)))
+                                                     ? bx1 + adx : bx2 + adx;
+                                    adx += lx.coord - edge;
+                                }
+                                if (ly.found) {
+                                    float edge = (std::abs(ly.coord - (by1 + ady)) <= std::abs(ly.coord - (by2 + ady)))
+                                                     ? by1 + ady : by2 + ady;
+                                    ady += ly.coord - edge;
+                                }
+                                if (lx.found || ly.found) {
+                                    int segs = 0;
+                                    if (lx.found) {
+                                        g_Daemon.snapHintSegs[segs][0] = lx.coord;
+                                        g_Daemon.snapHintSegs[segs][1] = std::min(by1 + ady, lx.other1) - 4.0f;
+                                        g_Daemon.snapHintSegs[segs][2] = lx.coord;
+                                        g_Daemon.snapHintSegs[segs][3] = std::max(by2 + ady, lx.other2) + 4.0f;
+                                        ++segs;
+                                    }
+                                    if (ly.found) {
+                                        g_Daemon.snapHintSegs[segs][0] = std::min(bx1 + adx, ly.other1) - 4.0f;
+                                        g_Daemon.snapHintSegs[segs][1] = ly.coord;
+                                        g_Daemon.snapHintSegs[segs][2] = std::max(bx2 + adx, ly.other2) + 4.0f;
+                                        g_Daemon.snapHintSegs[segs][3] = ly.coord;
+                                        ++segs;
+                                    }
+                                    g_Daemon.snapHintKind = SnapHintKind::Align;
+                                    g_Daemon.snapHintSegCount = segs;
+                                    g_Daemon.snapHintTargetX = lx.found ? lx.coord : (bx1 + bx2) * 0.5f + adx;
+                                    g_Daemon.snapHintTargetY = ly.found ? ly.coord : (by1 + by2) * 0.5f + ady;
+                                }
+                            }
                             for (auto& a : g_Daemon.annotations) {
                                 if (g_Daemon.IsAnnotationSelected(a.id)) {
                                     a.startPt.x += adx;
@@ -6045,6 +6770,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         case WM_LBUTTONUP: {
+            // A snap guide belongs to the drag that produced it; nothing should be left showing
+            // after the button is released.
+            ClearSnapHint(g_Daemon);
             if (g_Daemon.overlayFramePressedItem != PepperSnapDaemon::FrameStripPressedItem::None) {
                 auto pressedItem = g_Daemon.overlayFramePressedItem;
                 int pressedCard = g_Daemon.overlayFramePressedCardIdx;

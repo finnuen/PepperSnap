@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.48";
+    static constexpr const wchar_t* APP_VERSION = L"4.58";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -38,6 +38,10 @@ public:
     ImageFormat copyFormat = ImageFormat::PNG;
     int jpegQuality = 90;
     bool nonStackingHighlighter = true;
+    // Annotations land on each other's corners, sides and outlines while drawn, pulled, resized or
+    // moved. The custom area's own corners are not affected by this - they stay a snap target so a
+    // corner can still be pulled into a triangle.
+    bool snapAnnotationsToEachOther = true;
     bool penSmoothingEnabled = true;
     int penSmoothingStrength = 15; // 5% to 100% (default 15%)
     std::wstring lastSavedFilePath;
@@ -164,6 +168,30 @@ public:
     // pulled, and whether Alt made it a free-form pull rather than an axis-aligned resize.
     int draggingAnnCorner = -1;
     bool draggingAnnCornerFree = false;
+    // The four corners a shape had when its corner or side drag began. A resize reads the fixed
+    // side from here and not from the shape: the shape's own box flips the instant the dragged
+    // corner or side crosses the opposite one, so reading it back every move would make the fixed
+    // side follow the cursor and turn the resize into a move.
+    PointF2D annResizeOrig[4] = {};
+    bool annResizeOrigValid = false;
+    // What the current drag has snapped to, so the overlay can show the point and the line: the
+    // pivot a 15 degree ray starts from (with the ray drawn through the corner), the point the
+    // corner landed on, the outline it landed on, or the edges a move lined up. Cleared on mouse-up
+    // and at the start of every move that does not snap.
+    SnapHintKind snapHintKind = SnapHintKind::None;
+    float snapHintAnchorX = 0.0f;
+    float snapHintAnchorY = 0.0f;
+    float snapHintTargetX = 0.0f;
+    float snapHintTargetY = 0.0f;
+    // The geometry under that guide: the outline that was matched, or the one or two alignment
+    // lines a move produced. Each entry is x1, y1, x2, y2.
+    float snapHintSegs[2][4] = {};
+    int snapHintSegCount = 0;
+    // The last point the pointer was warped onto, so a point snap pulls the cursor in once. Warping
+    // on every move would pin the pointer to the point and the drag could not be pulled off it.
+    bool snapWarped = false;
+    float snapWarpX = 0.0f;
+    float snapWarpY = 0.0f;
     // Which side of a selected shape annotation is being pulled: 0 top, 1 right, 2 bottom, 3 left,
     // the same order `GetSelectionHandlePoints` uses for the custom area.
     int draggingAnnEdge = -1;
@@ -505,6 +533,15 @@ public:
                ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
                ((GetAsyncKeyState(VK_LMENU) & 0x8000) != 0) ||
                ((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
+    }
+
+    // Read live rather than latched at mouse-down, so Shift can be pressed and released in the
+    // middle of a drag - which is how the 15 degree corner snap is meant to be used.
+    static bool IsShiftModifierHeld() {
+        return ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ||
+               ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+               ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+               ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
     }
 
     static void ApplyEllipseMaskToBitmap(Bitmap* bmp) {
@@ -948,6 +985,7 @@ public:
     DragMode HitTestSelectionHandles(int mx, int my) const;
     static bool AnnotationIntersectsRect(const Annotation& a, const RECT& rc);
     int HitTestAnnotation(float x, float y, DragMode* outHandleMode, int* outCornerIdx = nullptr) const;
+    void CaptureAnnotationResizeOrig(int annId);
     void CheckAndPromptClipboardHistory();
 };
 
