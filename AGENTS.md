@@ -246,10 +246,14 @@ is the pixels *inside* the area, so an outline drawn on the border hides part of
 what is being saved: `DrawRectangle(x, y, w, h)` paints along `x .. x + w`, and
 the old code passed the capture width, which put the left and top edges on the
 first captured row and column. The frame now starts at `sx - 1` / `sy - 1` with
-the width one larger, so every edge lands beyond the last captured pixel. An
-ellipse grows the same way, and a deformed quad pushes each corner 1 px away from
-its centre. The crop arithmetic, the W×H pill and the masks are untouched by
-this — only where the line is painted.
+the width one larger, so every edge lands beyond the last captured pixel. A
+deformed quad pushes each corner 1 px away from its centre. The crop arithmetic,
+the W×H pill and the masks are untouched by this — only where the line is painted.
+
+A circle area draws **both** its bounding box and its curve, from that same pen.
+The curve is the shape that is kept and masked, but the grab zones are the box —
+the curve is away from the corners and the middle of each side — so a curve with
+no box would leave a resize band with nothing under the cursor.
 
 Two consequences worth knowing:
 
@@ -259,27 +263,60 @@ Two consequences worth knowing:
   `frameL` / `frameT` clamp to 0 and that one edge still covers the first
   captured row or column. Nothing else can be drawn there.
 
-### Resize points: ellipse only, and a whole side resizes
+### The area draws no resize points, and a whole side resizes
 
-The eight white squares are **not** drawn on a rectangle or a deformed quad. The
-frame itself is the affordance: `HitTestSelectionHandles` returns the resize mode
-for a press within 7 px of an edge, anywhere along it — not merely around the
-invisible midpoint — and `UpdateOverlayCursor` uses the same function to show a
-resize arrow. Corners are tested first, so a press in the overlap at a corner
-still pulls that corner. The test is distance to the real segment, so a deformed
-quad's slanted sides work the same as an axis-aligned rectangle's. That band only
-exists while the effective tool is `SelectMove`, so a drawing tool can still draw
-up to the frame; Ctrl, being the temporary select tool, brings the band back with
-it.
+No resize squares are drawn on the area, whatever its shape. The frame itself is
+the affordance: `HitTestSelectionHandles` returns the resize mode for a press
+within 7 px of an edge, anywhere along it — not merely around the invisible
+midpoint — and `UpdateOverlayCursor` uses the same function to show a resize
+arrow. Corners are tested first, so a press in the overlap at a corner still
+pulls that corner. The test is distance to the real segment, so a deformed quad's
+slanted sides work the same as an axis-aligned rectangle's. That band only exists
+while the effective tool is `SelectMove`, so a drawing tool can still draw up to
+the frame; Ctrl, being the temporary select tool, brings the band back with it.
 
-An ellipse **does** draw all eight points. Its handles live on the bounding box,
-away from the curve, so a hidden point there is not an invisible affordance but a
-detached one. Do not "restore" the squares on rectangles without asking, and do
-not remove them from ellipses.
+A circle used to be the exception: its eight points were drawn because they sit
+on the bounding box rather than on the curve. Drawing the box removed the reason,
+and adding a point marker on top of a dashed frame only doubled it. Do not
+"restore" squares to the area without asking.
 
 One thing went with the rectangle points: the pale-yellow fill that used to mark a
 corner snapped onto another corner during a Ctrl + corner pull. The snap still
 happens; only that highlight is gone.
+
+### A selected annotation is framed the way the area is
+
+There are three selection visuals, and which one a tool gets follows its shape:
+
+- **Rectangle, circle, mosaic square, mosaic circle** — `DrawShapeAnnotationFrame`,
+  the area's language: one dashed outline that follows what was drawn and no
+  resize points. It is pushed out past the stroke itself (half the stroke, plus
+  1.5 px) so the dashes never sit on the border they mark, for the same reason the
+  area's frame sits outside its capture; a mosaic's stroke is its block size rather
+  than a drawn border, so it only takes a token gap. A circle gets its bounding box
+  as well as its curve, paired exactly as the area's is.
+- **Line, arrow, numbered arrow** — a pair of dashed rails that follow the stroke,
+  one either side of it, plus the end points. A box around a diagonal line encloses
+  mostly empty space and says nothing about what was picked. The rails stop where
+  the arrowhead begins so they never cut across it, and a numbered arrow gets a
+  dashed ring around its badge instead of a start dot that would sit on the number.
+- **Pen, highlighter** — the box stays. A freehand stroke has no frame of its own
+  to follow, so the box is the only honest outline for it.
+
+Selecting a mosaic replaces its always-on white-and-red guide rather than adding to
+it, otherwise the two outlines sit a pixel apart and the shape reads as doubled.
+
+Because nothing marks the shape's frame, all of it has to be grabbable without a
+marker to aim at. `HitTestAnnotation` returns `DraggingAnnotationCorner` within
+7 px of a corner, `DraggingAnnotationEdge` within 7 px of a side (or `0..3`, the
+same order the area uses, so the cursor can pick the right arrow), and
+`MovingAnnotation` anywhere inside the frame — that last one matters, because
+otherwise the whole outline being a resize band would leave a rectangle or a
+circle with no body left to drag. An edge drag moves that side and leaves the
+opposite one put; a deformed quad is scaled inside the new box so it follows the
+drag instead of snapping back to a rectangle. Only Rectangle and MosaicSquare can
+be pulled free: an ellipse has no corners to deform, so Alt on its corner stays an
+ordinary resize.
 
 ### Only the select tool starts a new custom area
 
@@ -337,11 +374,20 @@ Two consequences worth knowing:
   to the custom area's corners, all within 12 px, which is also how a quad
   collapses into a triangle.
 
-`HitTestAnnotation` returns the corner index through an out parameter and the new
-`DraggingAnnotationCorner` mode; `draggingAnnCorner` and
-`draggingAnnCornerFree` carry it into `WM_MOUSEMOVE`. Rectangle and Mosaic-square
-are excluded from the old two-endpoint handle path, so their four corners are the
-only handles they offer.
+`HitTestAnnotation` returns the corner index through an out parameter and the
+`DraggingAnnotationCorner` mode; `draggingAnnCorner` and `draggingAnnCornerFree`
+carry it into `WM_MOUSEMOVE`. Rectangle, circle and both mosaics now share one
+frame hit test (corner, then side, then the body to move), and the line family
+keeps the two-endpoint handles; a freehand stroke is moved rather than reshaped.
+Corner and side are not drawn — the frame is the cue — so the cursor is what says
+they are there: `UpdateOverlayCursor` maps the corner to a diagonal arrow and the
+side to a straight one, the same arrows the custom area uses.
+
+`DraggingAnnotationCorner` and the newer `DraggingAnnotationEdge` are separate
+modes, and an edge index rides in the same out parameter as a corner index
+(`0..3`, top/right/bottom/left, matching the area's own order). `draggingAnnEdge`
+carries it; both are reset from `annDragMode` on mouse-down so a stale index can
+never be read from the other mode.
 
 The pulled corner snaps to its own other three corners **and to every other
 annotation's corners** within the same 12 px, so two rectangles can be lined up

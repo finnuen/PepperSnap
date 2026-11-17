@@ -26,7 +26,7 @@ public:
     std::wstring pendingEditFile;
     std::wstring pendingSearchFile;
 
-    static constexpr const wchar_t* APP_VERSION = L"4.47";
+    static constexpr const wchar_t* APP_VERSION = L"4.48";
     static constexpr const wchar_t* DEFAULT_GITHUB_REPO = L"finnuen/PepperSnap";
 
     // Configuration (Desktop default, PNG default for custom area & copy, JPEG for fullscreen, unified Options modal)
@@ -160,10 +160,13 @@ public:
     POINT selQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
     POINT dragOrigQuad[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
     bool isDraggingSingleCorner = false;
-    // Which corner of the selected rectangle / mosaic square is being pulled, and whether
-    // Ctrl made it a free-form pull rather than a rectangle resize.
+    // Which corner of a selected shape annotation (rectangle, circle, either mosaic) is being
+    // pulled, and whether Alt made it a free-form pull rather than an axis-aligned resize.
     int draggingAnnCorner = -1;
     bool draggingAnnCornerFree = false;
+    // Which side of a selected shape annotation is being pulled: 0 top, 1 right, 2 bottom, 3 left,
+    // the same order `GetSelectionHandlePoints` uses for the custom area.
+    int draggingAnnEdge = -1;
     // When the last arrow-key nudge happened, so a burst of auto-repeat is one undo step.
     ULONGLONG lastAnnNudgeTick = 0;
     std::vector<RECT> desktopWindowRects;

@@ -165,6 +165,7 @@ enum class DragMode {
     DraggingAnnotationStart,
     DraggingAnnotationEnd,
     DraggingAnnotationCorner,
+    DraggingAnnotationEdge,
     MarqueeSelectingAnnotations,
     DraggingHUD,
     ResizingFrameStrip,

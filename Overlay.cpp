@@ -168,6 +168,15 @@ static bool AnnotationIsQuad(const Annotation& a) {
            a.points.size() == 4;
 }
 
+// The four tools whose selection frame is drawn the way the custom area's is: one dashed outline
+// that follows what was drawn, with no resize points on it. A corner resizes both dimensions, a
+// side resizes that side, and the body moves the shape - the frame itself is the affordance. A
+// line, arrow and numbered arrow are not in this group: their outline follows the stroke instead.
+static bool AnnotationHasShapeFrame(OverlayTool tool) {
+    return tool == OverlayTool::Rectangle || tool == OverlayTool::Ellipse ||
+           tool == OverlayTool::MosaicSquare || tool == OverlayTool::MosaicCircle;
+}
+
 static void AnnotationQuadPoints(const Annotation& a, PointF2D out[4]) {
     if (AnnotationIsQuad(a)) {
         for (int i = 0; i < 4; ++i) out[i] = a.points[i];
@@ -192,6 +201,58 @@ static void SetAnnotationQuad(Annotation& a, const PointF2D q[4]) {
     float maxY = std::max(std::max(q[0].y, q[1].y), std::max(q[2].y, q[3].y));
     a.startPt = { minX, minY };
     a.endPt = { maxX, maxY };
+}
+
+// The selection frame for a rectangle, circle or either mosaic: the custom area's visual, one
+// dashed outline that follows what was drawn, with no resize points. It is pushed out past the
+// stroke itself - half the stroke, plus a pixel and a half - so the dashes never sit on the border
+// they mark, for the same reason the area's frame sits outside its capture. A mosaic's stroke is
+// its block size rather than a drawn border, so it only needs a token gap.
+static void DrawShapeAnnotationFrame(Graphics& g, const Annotation& ann, int offsetX, int offsetY) {
+    Pen pen(Color(255, 56, 189, 248), 1.5f);
+    pen.SetDashStyle(DashStyleDash);
+    pen.SetLineJoin(LineJoinRound);
+
+    bool isCircle = (ann.tool == OverlayTool::Ellipse || ann.tool == OverlayTool::MosaicCircle);
+    bool isMosaic = (ann.tool == OverlayTool::MosaicSquare || ann.tool == OverlayTool::MosaicCircle);
+    float pad = isMosaic ? 1.5f : ann.strokeWidth * 0.5f + 1.5f;
+
+    PointF2D q[4];
+    AnnotationQuadPoints(ann, q);
+
+    if (AnnotationIsQuad(ann)) {
+        // A deformed quad has no axis-aligned sides to step outwards along, so each corner is
+        // pushed away from the shape's centre instead - the rule the area's quad frame uses.
+        double cx = 0.0, cy = 0.0;
+        for (int i = 0; i < 4; ++i) {
+            cx += q[i].x;
+            cy += q[i].y;
+        }
+        cx = cx / 4.0 - offsetX;
+        cy = cy / 4.0 - offsetY;
+        PointF pts[4];
+        for (int i = 0; i < 4; ++i) {
+            double vx = (double)(q[i].x - offsetX) - cx;
+            double vy = (double)(q[i].y - offsetY) - cy;
+            double len = std::sqrt(vx * vx + vy * vy);
+            double grow = (len > 0.01) ? (1.0 + (double)pad / len) : 1.0;
+            pts[i] = PointF((REAL)(cx + vx * grow), (REAL)(cy + vy * grow));
+        }
+        g.DrawPolygon(&pen, pts, 4);
+        return;
+    }
+
+    float x1 = std::min(q[0].x, q[2].x) - offsetX - pad;
+    float y1 = std::min(q[0].y, q[2].y) - offsetY - pad;
+    float w = std::abs(q[2].x - q[0].x) + pad * 2.0f;
+    float h = std::abs(q[2].y - q[0].y) + pad * 2.0f;
+    if (w < 1.0f || h < 1.0f) return;
+    // A circle draws its bounding box as well as its curve: the curve is the shape that is kept,
+    // the box is what its corners and sides grab. Same pairing the custom area's circle uses.
+    g.DrawRectangle(&pen, x1, y1, w, h);
+    if (isCircle) {
+        g.DrawEllipse(&pen, x1, y1, w, h);
+    }
 }
 
 void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, int offsetX, int offsetY, bool isSelected, bool isEditingCaret, bool forceOpaqueHighlighter) {
@@ -545,33 +606,70 @@ void PepperSnapDaemon::DrawVectorAnnotation(Graphics& g, const Annotation& ann, 
     }
 
     if (isSelected && ann.tool != OverlayTool::TextBox) {
-        Pen selPen(Color(255, 56, 189, 248), 1.5f);
-        selPen.SetDashStyle(DashStyleDash);
         SolidBrush handleFill(Color(255, 255, 255, 255));
         Pen handleBorder(Color(255, 56, 189, 248), 1.5f);
 
-        // A rectangle or square mosaic offers all four corners, because any of them can be
-        // pulled free-form with Alt; the other tools keep their two end handles.
-        if (ann.tool == OverlayTool::Rectangle || ann.tool == OverlayTool::MosaicSquare) {
-            PointF2D q[4];
-            AnnotationQuadPoints(ann, q);
-            PointF pts[4];
-            for (int i = 0; i < 4; ++i) {
-                pts[i] = PointF((REAL)(q[i].x - offsetX), (REAL)(q[i].y - offsetY));
+        if (AnnotationHasShapeFrame(ann.tool)) {
+            // A rectangle, circle or either mosaic is selected the way the custom area is: one
+            // dashed frame that follows what was drawn and no resize squares. The frame is the
+            // affordance - a drag on a corner or a side is what resizes it - so there is no point
+            // marker left to hide.
+            DrawShapeAnnotationFrame(g, ann, offsetX, offsetY);
+        } else if (ann.tool == OverlayTool::Line || ann.tool == OverlayTool::Arrow ||
+                   ann.tool == OverlayTool::NumberArrow) {
+            // A line, arrow or numbered arrow has no box. A box around a diagonal line encloses
+            // mostly empty space and says nothing about what was picked, so the selection is a
+            // pair of dashed rails that follow the stroke, one either side of it, plus the end
+            // points - which are also the handles that move an end.
+            float ldx = ex - sx, ldy = ey - sy;
+            float len = std::hypot(ldx, ldy);
+            bool isNumberArrow = (ann.tool == OverlayTool::NumberArrow);
+            if (len >= 2.0f) {
+                Pen railPen(Color(255, 56, 189, 248), 1.5f);
+                railPen.SetDashStyle(DashStyleDash);
+                float ux = ldx / len, uy = ldy / len;
+                float off = std::max(5.0f, ann.strokeWidth * 0.5f + 3.5f);
+                float railAx = sx, railAy = sy, railBx = ex, railBy = ey;
+                if (ann.tool == OverlayTool::Arrow) {
+                    // The rails stop where the head begins, so they never cut across it.
+                    float headLen = std::max(14.0f, ann.strokeWidth * 3.8f);
+                    float shaftLen = std::max(0.0f, len - headLen * 0.78f);
+                    railBx = sx + ux * shaftLen;
+                    railBy = sy + uy * shaftLen;
+                } else if (isNumberArrow) {
+                    // The badge is round, so it takes a dashed ring of its own instead of the
+                    // start rail - and no dot, which would sit on top of the number.
+                    float r = std::max(14.0f, ann.strokeWidth * 2.0f + 8.0f);
+                    float headLen = std::max(14.0f, ann.strokeWidth * 3.8f);
+                    float shaftEnd = std::max(r, len - headLen * 0.78f);
+                    g.DrawEllipse(&railPen, sx - r - 3.5f, sy - r - 3.5f,
+                                  (r + 3.5f) * 2.0f, (r + 3.5f) * 2.0f);
+                    railAx = sx + ux * (r + 3.5f);
+                    railAy = sy + uy * (r + 3.5f);
+                    railBx = sx + ux * shaftEnd;
+                    railBy = sy + uy * shaftEnd;
+                }
+                float px = -uy * off, py = ux * off;
+                g.DrawLine(&railPen, railAx + px, railAy + py, railBx + px, railBy + py);
+                g.DrawLine(&railPen, railAx - px, railAy - py, railBx - px, railBy - py);
             }
-            g.DrawPolygon(&selPen, pts, 4);
-            for (int i = 0; i < 4; ++i) {
-                g.FillRectangle(&handleFill, pts[i].X - 4.0f, pts[i].Y - 4.0f, 8.0f, 8.0f);
-                g.DrawRectangle(&handleBorder, pts[i].X - 4.0f, pts[i].Y - 4.0f, 8.0f, 8.0f);
+            if (!isNumberArrow) {
+                g.FillEllipse(&handleFill, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
+                g.DrawEllipse(&handleBorder, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
             }
+            g.FillEllipse(&handleFill, ex - 5.0f, ey - 5.0f, 10.0f, 10.0f);
+            g.DrawEllipse(&handleBorder, ex - 5.0f, ey - 5.0f, 10.0f, 10.0f);
         } else {
+            // A freehand stroke has no frame of its own to follow, so the box stays the only
+            // honest outline for it, with the two end points as handles.
             float x = std::min(sx, ex) - 6.0f;
             float y = std::min(sy, ey) - 6.0f;
             float w = std::max(16.0f, std::abs(ex - sx) + 12.0f);
             float h = std::max(16.0f, std::abs(ey - sy) + 12.0f);
+            Pen selPen(Color(255, 56, 189, 248), 1.5f);
+            selPen.SetDashStyle(DashStyleDash);
             g.DrawRectangle(&selPen, x, y, w, h);
 
-            // Endpoint handles for lines, arrows, and number-arrows
             g.FillEllipse(&handleFill, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
             g.DrawEllipse(&handleBorder, sx - 5.0f, sy - 5.0f, 10.0f, 10.0f);
             g.FillEllipse(&handleFill, ex - 5.0f, ey - 5.0f, 10.0f, 10.0f);
@@ -1656,10 +1754,11 @@ int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMod
     for (int i = (int)annotations.size() - 1; i >= 0; --i) {
         const auto& a = annotations[i];
 
-        // Four corners for a selected rectangle / square mosaic: any of them can be pulled
-        // free-form with Alt, so all four have to be grabbable.
-        if (IsAnnotationSelected(a.id) &&
-            (a.tool == OverlayTool::Rectangle || a.tool == OverlayTool::MosaicSquare)) {
+        // A selected rectangle, circle or either mosaic is grabbed by its frame, the way the
+        // custom area is: a corner resizes both dimensions, a side resizes that one side, and the
+        // body moves the shape. Nothing is drawn to mark the corners or sides - the frame itself
+        // is the affordance - so all of them have to be grabbable without a marker to aim at.
+        if (IsAnnotationSelected(a.id) && AnnotationHasShapeFrame(a.tool)) {
             PointF2D q[4];
             AnnotationQuadPoints(a, q);
             for (int c = 0; c < 4; ++c) {
@@ -1670,15 +1769,35 @@ int PepperSnapDaemon::HitTestAnnotation(float x, float y, DragMode* outHandleMod
                     return a.id;
                 }
             }
+            // The side band is 7 px, the same reach the area's frame uses, and it is measured to
+            // the real segment so a deformed quad's slanted sides behave like a rectangle's.
+            for (int e = 0; e < 4; ++e) {
+                const PointF2D& p0 = q[e];
+                const PointF2D& p1 = q[(e + 1) & 3];
+                if (distToSeg(x, y, p0.x, p0.y, p1.x, p1.y) <= 7.0f) {
+                    if (outHandleMode) *outHandleMode = DragMode::DraggingAnnotationEdge;
+                    if (outCornerIdx) *outCornerIdx = e;
+                    return a.id;
+                }
+            }
+            // Inside the frame the shape is moved. Without this the whole outline being a resize
+            // band would leave a rectangle or a circle with no body to drag.
+            float bx1 = std::min(q[0].x, q[2].x), bx2 = std::max(q[0].x, q[2].x);
+            float by1 = std::min(q[0].y, q[2].y), by2 = std::max(q[0].y, q[2].y);
+            if (x >= bx1 && x <= bx2 && y >= by1 && y <= by2) {
+                if (outHandleMode) *outHandleMode = DragMode::MovingAnnotation;
+                return a.id;
+            }
         }
 
-        // Endpoint resize handles only when the annotation is already selected
+        // Endpoint resize handles only when the annotation is already selected. These are the
+        // line family's two ends: the shape tools above have already returned, and a freehand
+        // stroke is moved rather than reshaped by them.
         if (IsAnnotationSelected(a.id) &&
             a.tool != OverlayTool::Pen &&
             a.tool != OverlayTool::Highlighter &&
             a.tool != OverlayTool::TextBox &&
-            a.tool != OverlayTool::Rectangle &&
-            a.tool != OverlayTool::MosaicSquare) {
+            !AnnotationHasShapeFrame(a.tool)) {
             float dxs = x - a.startPt.x, dys = y - a.startPt.y;
             if (dxs * dxs + dys * dys <= 49.0f) {
                 if (outHandleMode) *outHandleMode = DragMode::DraggingAnnotationStart;
@@ -3382,41 +3501,33 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 } else if (ann.tool != OverlayTool::MosaicSquare && ann.tool != OverlayTool::MosaicCircle) {
                     PepperSnapDaemon::DrawVectorAnnotation(g, ann, 0, 0, isSel, false);
                 } else {
-                    // Retain temporary outline for Mosaic Rectangle & Mosaic Circle until save so it stays as an indicator!
-                    float mx0 = std::min(ann.startPt.x, ann.endPt.x);
-                    float my0 = std::min(ann.startPt.y, ann.endPt.y);
-                    float mw  = std::abs(ann.endPt.x - ann.startPt.x);
-                    float mh  = std::abs(ann.endPt.y - ann.startPt.y);
-                    Pen whiteGuide(Color(230, 255, 255, 255), isSel ? 2.0f : 1.6f);
-                    Pen dashGuide(isSel ? Color(255, 56, 189, 248) : Color(255, 239, 68, 68), isSel ? 2.0f : 1.6f);
-                    dashGuide.SetDashStyle(DashStyleDash);
-                    if (ann.tool == OverlayTool::MosaicCircle) {
-                        g.DrawEllipse(&whiteGuide, mx0, my0, mw, mh);
-                        g.DrawEllipse(&dashGuide, mx0, my0, mw, mh);
-                    } else if (AnnotationIsQuad(ann)) {
-                        PointF quadPts[4];
-                        for (int k = 0; k < 4; ++k) {
-                            quadPts[k] = PointF((REAL)ann.points[k].x, (REAL)ann.points[k].y);
-                        }
-                        g.DrawPolygon(&whiteGuide, quadPts, 4);
-                        g.DrawPolygon(&dashGuide, quadPts, 4);
-                    } else {
-                        g.DrawRectangle(&whiteGuide, mx0, my0, mw, mh);
-                        g.DrawRectangle(&dashGuide, mx0, my0, mw, mh);
-                    }
+                    // A mosaic keeps its white-and-red guide while it is not selected, because the
+                    // pixelation has no other edge to show. Selecting it replaces that guide with
+                    // the frame the custom area uses - one dashed outline, no resize points -
+                    // otherwise the two outlines sat a pixel apart and the shape read as doubled.
                     if (isSel) {
-                        SolidBrush hFill(Color(255, 255, 255, 255));
-                        Pen hBorder(Color(255, 56, 189, 248), 1.5f);
-                        if (AnnotationIsQuad(ann)) {
+                        DrawShapeAnnotationFrame(g, ann, 0, 0);
+                    } else {
+                        float mx0 = std::min(ann.startPt.x, ann.endPt.x);
+                        float my0 = std::min(ann.startPt.y, ann.endPt.y);
+                        float mw  = std::abs(ann.endPt.x - ann.startPt.x);
+                        float mh  = std::abs(ann.endPt.y - ann.startPt.y);
+                        Pen whiteGuide(Color(230, 255, 255, 255), 1.6f);
+                        Pen dashGuide(Color(255, 239, 68, 68), 1.6f);
+                        dashGuide.SetDashStyle(DashStyleDash);
+                        if (ann.tool == OverlayTool::MosaicCircle) {
+                            g.DrawEllipse(&whiteGuide, mx0, my0, mw, mh);
+                            g.DrawEllipse(&dashGuide, mx0, my0, mw, mh);
+                        } else if (AnnotationIsQuad(ann)) {
+                            PointF quadPts[4];
                             for (int k = 0; k < 4; ++k) {
-                                g.FillRectangle(&hFill, ann.points[k].x - 4.0f, ann.points[k].y - 4.0f, 8.0f, 8.0f);
-                                g.DrawRectangle(&hBorder, ann.points[k].x - 4.0f, ann.points[k].y - 4.0f, 8.0f, 8.0f);
+                                quadPts[k] = PointF((REAL)ann.points[k].x, (REAL)ann.points[k].y);
                             }
+                            g.DrawPolygon(&whiteGuide, quadPts, 4);
+                            g.DrawPolygon(&dashGuide, quadPts, 4);
                         } else {
-                            g.FillRectangle(&hFill, ann.startPt.x - 4.0f, ann.startPt.y - 4.0f, 8.0f, 8.0f);
-                            g.DrawRectangle(&hBorder, ann.startPt.x - 4.0f, ann.startPt.y - 4.0f, 8.0f, 8.0f);
-                            g.FillRectangle(&hFill, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
-                            g.DrawRectangle(&hBorder, ann.endPt.x - 4.0f, ann.endPt.y - 4.0f, 8.0f, 8.0f);
+                            g.DrawRectangle(&whiteGuide, mx0, my0, mw, mh);
+                            g.DrawRectangle(&dashGuide, mx0, my0, mw, mh);
                         }
                     }
                 }
@@ -3475,6 +3586,11 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
             int frameW = std::max(1, (sx + sw) - frameL);
             int frameH = std::max(1, (sy + sh) - frameT);
             if (g_Daemon.hasEllipseSelection) {
+                // A circle area draws both its bounding box and its curve. The curve is the shape
+                // that is kept and masked, but the grab zones are the box - the curve is away from
+                // the corners and sides - so drawing only the curve left a resize band with
+                // nothing under the cursor. Both come from the guide pen above.
+                g.DrawRectangle(&selBorder, frameL, frameT, frameW, frameH);
                 g.DrawEllipse(&selBorder, frameL, frameT, frameW, frameH);
             } else if (g_Daemon.hasCustomQuad) {
                 selBorder.SetLineJoin(LineJoinRound);
@@ -3508,29 +3624,9 @@ static void RenderOverlayWindow(HWND, HDC hdc) {
                 g.DrawRectangle(&selBorder, frameL, frameT, frameW, frameH);
             }
 
-            // Resize points are drawn for an ellipse only. On a rectangle or a quad the frame is
-            // itself under the cursor: a press anywhere along an edge resizes, and the arrow
-            // cursor says so. On an ellipse the handles sit on the bounding box, away from the
-            // shape, so without the squares their positions are not visible at all.
-            if (g_Daemon.hasEllipseSelection) {
-                POINT ellHandles[8];
-                g_Daemon.GetSelectionHandlePoints(ellHandles);
-                SolidBrush handleFill(Color(255, 255, 255, 255));
-                Pen handleOutline(Color(255, 239, 68, 68), 1.5f);
-                for (int hi = 0; hi < 8; ++hi) {
-                    const POINT& hpt = ellHandles[hi];
-                    bool alreadyDrawn = false;
-                    for (int prev = 0; prev < hi; ++prev) {
-                        if (ellHandles[prev].x == hpt.x && ellHandles[prev].y == hpt.y) {
-                            alreadyDrawn = true;
-                            break;
-                        }
-                    }
-                    if (alreadyDrawn) continue;
-                    g.FillRectangle(&handleFill, hpt.x - 4, hpt.y - 4, 8, 8);
-                    g.DrawRectangle(&handleOutline, hpt.x - 4, hpt.y - 4, 8, 8);
-                }
-            }
+            // No resize points on the area, whatever its shape: the frame is the affordance, and
+            // a press anywhere along an edge or on a corner resizes. A circle's box is now drawn
+            // for exactly that reason, so a point marker would only duplicate it.
 
             // Dynamic Typeable Dimension & Permanent Ratio Pill [ W×H px | ratio | trash icon ] — anchored to the stationary corner when resizing!
             bool pillRight = false, pillBottom = false;
@@ -4868,8 +4964,10 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             // Alt turns a corner handle into a free-form pull. Ctrl deliberately
                             // does not: it is the temporary select tool, so Ctrl + corner has to
                             // stay an ordinary resize.
-                            g_Daemon.draggingAnnCorner = annCornerIdx;
-                            g_Daemon.draggingAnnCornerFree = (annCornerIdx >= 0) && PepperSnapDaemon::IsAltModifierHeld();
+                            g_Daemon.draggingAnnCorner = (annDragMode == DragMode::DraggingAnnotationCorner) ? annCornerIdx : -1;
+                            g_Daemon.draggingAnnEdge = (annDragMode == DragMode::DraggingAnnotationEdge) ? annCornerIdx : -1;
+                            g_Daemon.draggingAnnCornerFree = (annDragMode == DragMode::DraggingAnnotationCorner) &&
+                                                             (annCornerIdx >= 0) && PepperSnapDaemon::IsAltModifierHeld();
                             g_Daemon.BeginAnnotationClick(hitId, annDragMode, pt, mx, my, multiMod);
                         } else if (multiMod) {
                             // Shift + drag on empty space inside the custom area starts marquee
@@ -4984,11 +5082,13 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 DragMode annDragMode = DragMode::MovingAnnotation;
                 int annCornerIdx = -1;
                 int hitId = g_Daemon.HitTestAnnotation((float)mx, (float)my, &annDragMode, &annCornerIdx);
-                bool altWantsCornerOnly = altHeldOnDown && !(hitId != -1 && annCornerIdx >= 0);
+                bool altWantsCornerOnly = altHeldOnDown && !(hitId != -1 && annDragMode == DragMode::DraggingAnnotationCorner);
                 if (hitId != -1 && !altWantsCornerOnly) {
                     autoHideFrameStripOnFocus();
-                    g_Daemon.draggingAnnCorner = annCornerIdx;
-                    g_Daemon.draggingAnnCornerFree = (annCornerIdx >= 0) && altHeldOnDown;
+                    g_Daemon.draggingAnnCorner = (annDragMode == DragMode::DraggingAnnotationCorner) ? annCornerIdx : -1;
+                    g_Daemon.draggingAnnEdge = (annDragMode == DragMode::DraggingAnnotationEdge) ? annCornerIdx : -1;
+                    g_Daemon.draggingAnnCornerFree = (annDragMode == DragMode::DraggingAnnotationCorner) &&
+                                                     (annCornerIdx >= 0) && altHeldOnDown;
                     g_Daemon.BeginAnnotationClick(hitId, annDragMode, pt, mx, my, shiftHeld);
                     if (g_Daemon.dragMode != DragMode::None) SetCapture(hWnd);
                     g_Daemon.UpdateOverlayCursor(mx, my);
@@ -5739,7 +5839,10 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         if (idx < 0 || idx > 3) break;
                         PointF2D q[4];
                         AnnotationQuadPoints(a, q);
-                        if (g_Daemon.draggingAnnCornerFree || AnnotationIsQuad(a)) {
+                        // Only a rectangle or square mosaic can be pulled out of true; an ellipse
+                        // or circle has no corners to deform, so Alt on its corner stays a resize.
+                        bool canPullFree = (a.tool == OverlayTool::Rectangle || a.tool == OverlayTool::MosaicSquare);
+                        if (AnnotationIsQuad(a) || (g_Daemon.draggingAnnCornerFree && canPullFree)) {
                             float tx = (float)mx, ty = (float)my;
                             // Same snapping rule the custom area uses: the pulled corner
                             // lands exactly on another corner within 12 px, which is also how
@@ -5822,6 +5925,50 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             a.startPt = anchor;
                             a.endPt = { tx, ty };
                         }
+                        break;
+                    }
+                    break;
+                }
+                case DragMode::DraggingAnnotationEdge: {
+                    // A side of a selected shape annotation pulled: that one side moves, the
+                    // opposite side stays put, and a deformed quad is scaled inside the new box so
+                    // its own outline follows the drag rather than snapping back to a rectangle.
+                    if (!g_Daemon.moveAnnUndoPushed) {
+                        if (std::abs(mx - g_Daemon.dragStartPt.x) >= 1 || std::abs(my - g_Daemon.dragStartPt.y) >= 1) {
+                            g_Daemon.PushUndo();
+                            g_Daemon.moveAnnUndoPushed = true;
+                            g_Daemon.clickedAlreadySelectedAnn = false;
+                        } else {
+                            break;
+                        }
+                    }
+                    for (auto& a : g_Daemon.annotations) {
+                        if (a.id != g_Daemon.selectedAnnotationId) continue;
+                        int e = g_Daemon.draggingAnnEdge;
+                        if (e < 0 || e > 3) break;
+                        float ox1 = std::min(a.startPt.x, a.endPt.x);
+                        float ox2 = std::max(a.startPt.x, a.endPt.x);
+                        float oy1 = std::min(a.startPt.y, a.endPt.y);
+                        float oy2 = std::max(a.startPt.y, a.endPt.y);
+                        float nx1 = ox1, nx2 = ox2, ny1 = oy1, ny2 = oy2;
+                        // The moving side cannot cross its opposite, so the shape cannot turn
+                        // inside out mid-drag.
+                        if (e == 0) ny1 = std::min((float)my, oy2 - 2.0f);
+                        if (e == 1) nx2 = std::max((float)mx, ox1 + 2.0f);
+                        if (e == 2) ny2 = std::max((float)my, oy1 + 2.0f);
+                        if (e == 3) nx1 = std::min((float)mx, ox2 - 2.0f);
+                        float ow = std::max(1.0f, ox2 - ox1);
+                        float oh = std::max(1.0f, oy2 - oy1);
+                        float nw = std::max(1.0f, nx2 - nx1);
+                        float nh = std::max(1.0f, ny2 - ny1);
+                        if (AnnotationIsQuad(a)) {
+                            for (auto& p : a.points) {
+                                p.x = nx1 + (p.x - ox1) * (nw / ow);
+                                p.y = ny1 + (p.y - oy1) * (nh / oh);
+                            }
+                        }
+                        a.startPt = { nx1, ny1 };
+                        a.endPt = { nx2, ny2 };
                         break;
                     }
                     break;
@@ -9686,6 +9833,25 @@ void PepperSnapDaemon::UpdateOverlayCursor(int mx, int my) {
             SetCursor(LoadCursorW(nullptr, IDC_CROSS));
         }
         return;
+    }
+
+    // The frame around a selected shape annotation is grabbed the way the area's frame is, so it
+    // has to answer with the same resize arrows. Without this the frame was invisible feedback:
+    // the cursor stayed an arrow over a corner that resizes.
+    if (GetEffectiveTool() == OverlayTool::SelectMove && HasSelectedAnnotations()) {
+        DragMode annDrag = DragMode::MovingAnnotation;
+        int annIdx = -1;
+        int annHit = HitTestAnnotation((float)mx, (float)my, &annDrag, &annIdx);
+        if (annHit != -1) {
+            if (annDrag == DragMode::DraggingAnnotationCorner) {
+                SetCursor(LoadCursorW(nullptr, (annIdx == 0 || annIdx == 2) ? IDC_SIZENWSE : IDC_SIZENESW));
+                return;
+            }
+            if (annDrag == DragMode::DraggingAnnotationEdge) {
+                SetCursor(LoadCursorW(nullptr, (annIdx == 0 || annIdx == 2) ? IDC_SIZENS : IDC_SIZEWE));
+                return;
+            }
+        }
     }
 
     // Tool-specific cursors per user specification:
