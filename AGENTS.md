@@ -436,6 +436,19 @@ Four rules keep the set honest:
   what a triangle is made from, and the crop has to be something annotations can be
   laid out against. A circle area is the one exception on *shape*: it contributes its
   curve, never its box.
+- **The area's targets are inset by half the dragged stroke.** An annotation's
+  coordinates are its stroke's *centre*, and the crop cuts exactly at the area's
+  edge, so a shape snapped to that edge lost its outer half to the save. The snap
+  searches therefore take an `areaInset` — half the stroke width of whatever is being
+  dragged — and pull the area's corners, edges and curve in by it, so the stroke's
+  outside lands on the edge and the whole stroke is inside the crop.
+  `SelectionInsetPoints` does the polygon (min corners in, max corners back, exact
+  for a rectangle and approximate along a deformed quad's slanted sides) and
+  `SelectionEllipse` shrinks the radii. The inset applies to the *area* only:
+  annotation-to-annotation snapping still meets centreline to centreline, which is
+  what makes two boxes share an edge instead of leaving a gap.
+  `GetSelectionPolygonPoints` stays the drawing form — the frame is drawn one pixel
+  outside the capture — so only the snap searches use the inset one.
 
 `snapAnnotationsToEachOther` (Options → *Snap annotation to each other*, on by
 default, `SnapAnnotationsToEachOther` in `settings.ini`) gates the *annotation*

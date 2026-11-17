@@ -308,17 +308,49 @@ static float ClosestPointOnEllipse(float px, float py, float cx, float cy, float
 // so its bounding quad is a selection visual and nothing more - the same rule the circle
 // annotations follow. Returning false means the area is a rectangle or a deformed quad, whose
 // corners and sides really are the shape.
-static bool SelectionEllipse(const PepperSnapDaemon& d, float& cx, float& cy, float& rx, float& ry) {
+//
+// `inset` pulls the curve in by that much. An annotation's coordinates are its stroke's centre,
+// and the crop cuts at the area's edge, so a stroke sitting on the edge loses its outer half; the
+// caller passes half the stroke width so the stroke's outside lands on the edge instead.
+static bool SelectionEllipse(const PepperSnapDaemon& d, float inset,
+                             float& cx, float& cy, float& rx, float& ry) {
     if (!d.hasSelection || !d.hasEllipseSelection) return false;
     float x1 = (float)std::min(d.selRect.left, d.selRect.right);
     float y1 = (float)std::min(d.selRect.top, d.selRect.bottom);
     float x2 = (float)std::max(d.selRect.left, d.selRect.right);
     float y2 = (float)std::max(d.selRect.top, d.selRect.bottom);
-    rx = (x2 - x1) * 0.5f;
-    ry = (y2 - y1) * 0.5f;
+    rx = (x2 - x1) * 0.5f - inset;
+    ry = (y2 - y1) * 0.5f - inset;
     cx = x1 + rx;
     cy = y1 + ry;
     return rx >= 1.0f && ry >= 1.0f;
+}
+
+// The custom area's polygon, pulled in by `inset` so a stroke centred on it stays inside the crop.
+// The area's own geometry is the pixel edge, and a stroke is centred on the line it is given, so
+// without this half the stroke fell outside and the save cut it. Min-x/min-y corners move in by
+// the inset and max-x/max-y corners back by it, which is exact for a rectangle area and a close
+// approximation along a deformed quad's slanted sides.
+static int SelectionInsetPoints(const PepperSnapDaemon& d, float inset, POINT out[4]) {
+    int n = d.GetSelectionPolygonPoints(out);
+    if (n < 3 || inset <= 0.0f) return n;
+    int minX = out[0].x, maxX = out[0].x, minY = out[0].y, maxY = out[0].y;
+    for (int k = 1; k < n; ++k) {
+        minX = std::min(minX, (int)out[k].x);
+        maxX = std::max(maxX, (int)out[k].x);
+        minY = std::min(minY, (int)out[k].y);
+        maxY = std::max(maxY, (int)out[k].y);
+    }
+    // Never collapse the box: a thin area still has to offer something to land on.
+    int ix = std::max(0, std::min((int)std::lround(inset), (maxX - minX) / 2 - 1));
+    int iy = std::max(0, std::min((int)std::lround(inset), (maxY - minY) / 2 - 1));
+    for (int k = 0; k < n; ++k) {
+        if (out[k].x == minX) out[k].x += ix;
+        if (out[k].x == maxX) out[k].x -= ix;
+        if (out[k].y == minY) out[k].y += iy;
+        if (out[k].y == maxY) out[k].y -= iy;
+    }
+    return n;
 }
 
 // Every place a dragged annotation can land: another annotation's corner, end, side, stroke or
@@ -335,10 +367,13 @@ static bool SelectionEllipse(const PepperSnapDaemon& d, float& cx, float& cy, fl
 // area's alike. Only the line family lands on a curve: a line end on a curve is exact and reads as
 // the two meeting, while a shape's corner landing on one leaves the drawn shape visibly off the
 // curve it "snapped" to, which felt like fighting the cursor.
+// `areaInset` pulls the custom area's targets in by that much, which is how half the dragged
+// stroke stays inside the crop - see SelectionEllipse.
 static SnapTargetResult FindSnapTarget(const PepperSnapDaemon& d, float x, float y, float maxDist,
                                        int ownAnnId = -1, int ownCornerIdx = -1,
                                        bool skipOwnAnnotation = false,
-                                       bool skipCircleTargets = false) {
+                                       bool skipCircleTargets = false,
+                                       float areaInset = 0.0f) {
     SnapTargetResult best;
     float bestDist = maxDist + 0.001f;
     bool bestIsPoint = false;
@@ -437,7 +472,7 @@ static SnapTargetResult FindSnapTarget(const PepperSnapDaemon& d, float x, float
 
     if (d.hasSelection) {
         float ecx = 0.0f, ecy = 0.0f, erx = 0.0f, ery = 0.0f;
-        if (SelectionEllipse(d, ecx, ecy, erx, ery)) {
+        if (SelectionEllipse(d, areaInset, ecx, ecy, erx, ery)) {
             // A circle area is the curve it is cropped and masked by; its bounding quad is only the
             // selection frame. Offering that quad here is what made a circle area snap as a square.
             // A shape being dragged skips the curve for the same reason it skips a circle
@@ -445,7 +480,7 @@ static SnapTargetResult FindSnapTarget(const PepperSnapDaemon& d, float x, float
             if (!skipCircleTargets) considerCurve(ecx, ecy, erx, ery);
         } else {
             POINT sq[4];
-            int n = d.GetSelectionPolygonPoints(sq);
+            int n = SelectionInsetPoints(d, areaInset, sq);
             for (int k = 0; k < n; ++k) considerPoint((float)sq[k].x, (float)sq[k].y);
             for (int k = 0; k < n; ++k) {
                 const POINT& p0 = sq[k];
@@ -469,7 +504,8 @@ struct SnapEdgeLine {
 };
 
 static SnapEdgeLine FindEdgeLine(const PepperSnapDaemon& d, bool vertical,
-                                 float movingA, float movingB, float maxDist) {
+                                 float movingA, float movingB, float maxDist,
+                                 float areaInset = 0.0f) {
     SnapEdgeLine best;
     float bestDist = maxDist + 0.001f;
     const float mine[2] = { movingA, movingB };
@@ -512,9 +548,9 @@ static SnapEdgeLine FindEdgeLine(const PepperSnapDaemon& d, bool vertical,
         float ecx = 0.0f, ecy = 0.0f, erx = 0.0f, ery = 0.0f;
         // A circle area has no straight edge to line up against - its bounding quad is the frame,
         // not the shape - so it contributes nothing here.
-        if (!SelectionEllipse(d, ecx, ecy, erx, ery)) {
+        if (!SelectionEllipse(d, areaInset, ecx, ecy, erx, ery)) {
             POINT sq[4];
-            int n = d.GetSelectionPolygonPoints(sq);
+            int n = SelectionInsetPoints(d, areaInset, sq);
             float x1 = 1e9f, x2 = -1e9f, y1 = 1e9f, y2 = -1e9f;
             for (int k = 0; k < n; ++k) {
                 x1 = std::min(x1, (float)sq[k].x);
@@ -543,9 +579,9 @@ static SnapEdgeLine FindEdgeLine(const PepperSnapDaemon& d, bool vertical,
 // This is the *axis* snap, not the nearest-point one: `FindSnapTarget` lands a corner on a side
 // it is within 4 px of, while this catches the case where the corner is level with a side further
 // away and only one coordinate has to move. Returns true when either axis caught something.
-static bool AlignCornerToEdges(PepperSnapDaemon& d, float& x, float& y) {
-    SnapEdgeLine lx = FindEdgeLine(d, true, x, x, kSnapTolerance);
-    SnapEdgeLine ly = FindEdgeLine(d, false, y, y, kSnapTolerance);
+static bool AlignCornerToEdges(PepperSnapDaemon& d, float& x, float& y, float areaInset = 0.0f) {
+    SnapEdgeLine lx = FindEdgeLine(d, true, x, x, kSnapTolerance, areaInset);
+    SnapEdgeLine ly = FindEdgeLine(d, false, y, y, kSnapTolerance, areaInset);
     if (!lx.found && !ly.found) return false;
 
     if (lx.found) x = lx.coord;
@@ -5531,7 +5567,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         g_Daemon.activeTool == OverlayTool::NumberArrow ||
                         (startIsShape && !startIsCircle)) {
                         SnapTargetResult startHit = FindSnapTarget(g_Daemon, draftStartX, draftStartY,
-                                                                   kSnapTolerance, -1, -1, false, startIsShape);
+                                                                   kSnapTolerance, -1, -1, false, startIsShape,
+                                                                   g_Daemon.draftAnn.strokeWidth * 0.5f);
                         if (startHit.found) {
                             draftStartX = startHit.target.x;
                             draftStartY = startHit.target.y;
@@ -6349,7 +6386,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         g_Daemon.snapHintKind = SnapHintKind::None;
                         g_Daemon.snapHintSegCount = 0;
                         SnapTargetResult hit = FindSnapTarget(g_Daemon, targetX, targetY, kSnapTolerance,
-                                                             g_Daemon.draftAnn.id, -1, false, shapeFamily);
+                                                             g_Daemon.draftAnn.id, -1, false, shapeFamily,
+                                                             g_Daemon.draftAnn.strokeWidth * 0.5f);
                         // Its own start is not a target - the draft is not in the annotation list -
                         // but a corner that started on another corner would snap straight back onto
                         // it, holding the line at zero length or the box at zero size for the first
@@ -6377,7 +6415,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             // alone: its 1:1 constraint is the shape of the box, and moving one axis
                             // would break it.
                             float rawX = targetX, rawY = targetY;
-                            if (AlignCornerToEdges(g_Daemon, targetX, targetY) &&
+                            if (AlignCornerToEdges(g_Daemon, targetX, targetY,
+                                                   g_Daemon.draftAnn.strokeWidth * 0.5f) &&
                                 (std::abs(targetX - g_Daemon.draftAnn.startPt.x) < 2.0f ||
                                  std::abs(targetY - g_Daemon.draftAnn.startPt.y) < 2.0f)) {
                                 // Refused: the alignment would flatten the box to a line.
@@ -6437,7 +6476,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             // triangle.
                             ClearSnapHint(g_Daemon);
                             SnapTargetResult hit = FindSnapTarget(g_Daemon, (float)mx, (float)my, kSnapTolerance,
-                                                                 a.id, idx, false, true);
+                                                                 a.id, idx, false, true, a.strokeWidth * 0.5f);
                             if (hit.found) {
                                 tx = hit.target.x;
                                 ty = hit.target.y;
@@ -6495,7 +6534,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             // did not ask for or leave the circle off the thing it latched onto.
                             if (a.tool != OverlayTool::Ellipse && a.tool != OverlayTool::MosaicCircle) {
                                 SnapTargetResult resizeHit = FindSnapTarget(g_Daemon, tx, ty, kSnapTolerance,
-                                                                           a.id, -1, true, true);
+                                                                           a.id, -1, true, true,
+                                                                           a.strokeWidth * 0.5f);
                                 // A landing that would flatten the shape to nothing is refused: the
                                 // snap is a convenience, not a way to lose the annotation.
                                 bool landed = false;
@@ -6514,7 +6554,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                                     float rawX = tx, rawY = ty;
                                     // Shift's 1:1 constraint is the shape of the box, so an axis
                                     // alignment that moved one side alone would break it.
-                                    if (!shiftHeld && AlignCornerToEdges(g_Daemon, tx, ty) &&
+                                    if (!shiftHeld && AlignCornerToEdges(g_Daemon, tx, ty, a.strokeWidth * 0.5f) &&
                                         (std::abs(tx - anchor.x) < 2.0f || std::abs(ty - anchor.y) < 2.0f)) {
                                         // Refused: the alignment would flatten the shape to a line.
                                         tx = rawX;
@@ -6591,7 +6631,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             float moving = verticalSide ? (e == 1 ? nx2 : nx1) : (e == 0 ? ny1 : ny2);
                             // The side that is not being dragged, as it was when the drag began.
                             float opposite = verticalSide ? (e == 1 ? ox1 : ox2) : (e == 0 ? oy2 : oy1);
-                            SnapEdgeLine line = FindEdgeLine(g_Daemon, verticalSide, moving, moving, kSnapTolerance);
+                            SnapEdgeLine line = FindEdgeLine(g_Daemon, verticalSide, moving, moving, kSnapTolerance,
+                                                             a.strokeWidth * 0.5f);
                             // Only when the side stays on its own outer side: snapping must not
                             // turn the shape inside out.
                             bool roomy = line.found &&
@@ -6675,7 +6716,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                                 // line's end does - so a stroke drawn earlier can be joined to
                                 // another one after the fact.
                                 SnapTargetResult endHit = FindSnapTarget(g_Daemon, tx, ty, kSnapTolerance,
-                                                                        a.id, -1, true);
+                                                                        a.id, -1, true, false,
+                                                                        a.strokeWidth * 0.5f);
                                 if (endHit.found) {
                                     tx = endHit.target.x;
                                     ty = endHit.target.y;
@@ -6715,8 +6757,10 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                                 float bx2 = std::max(primary->startPt.x, primary->endPt.x);
                                 float by1 = std::min(primary->startPt.y, primary->endPt.y);
                                 float by2 = std::max(primary->startPt.y, primary->endPt.y);
-                                SnapEdgeLine lx = FindEdgeLine(g_Daemon, true, bx1 + adx, bx2 + adx, kSnapTolerance);
-                                SnapEdgeLine ly = FindEdgeLine(g_Daemon, false, by1 + ady, by2 + ady, kSnapTolerance);
+                                SnapEdgeLine lx = FindEdgeLine(g_Daemon, true, bx1 + adx, bx2 + adx, kSnapTolerance,
+                                                               primary->strokeWidth * 0.5f);
+                                SnapEdgeLine ly = FindEdgeLine(g_Daemon, false, by1 + ady, by2 + ady, kSnapTolerance,
+                                                               primary->strokeWidth * 0.5f);
                                 if (lx.found) {
                                     float edge = (std::abs(lx.coord - (bx1 + adx)) <= std::abs(lx.coord - (bx2 + adx)))
                                                      ? bx1 + adx : bx2 + adx;
