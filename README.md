@@ -1,3 +1,7 @@
+Direct download latest
+
+Windows 10/11  :  https://github.com/finnuen/peppersnap/releases/latest/download/PepperSnap.exe
+
 # 🌶️ PepperSnap
 
 **A fast, lightweight screenshot tool for Windows that lives in your system tray.**
