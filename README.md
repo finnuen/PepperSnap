@@ -1,6 +1,6 @@
 Direct download latest
 
-Windows 10/11  :  https://github.com/finnuen/peppersnap/releases/latest/download/PepperSnap.exe
+Windows 10/11  :  https://github.com/finnuen/PepperSnap/releases/latest/download/PepperSnap.exe
 
 # 🌶️ PepperSnap
 
